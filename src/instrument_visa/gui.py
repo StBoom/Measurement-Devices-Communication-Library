@@ -27,7 +27,7 @@ SETTINGS_PATH = Path("gui_settings.json")
 class InstrumentVisaApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Instrument VISA Export")
+        self.title("Measurement Devices Communication Library")
 
         self.settings = self._load_settings()
         self.geometry(self.settings.get("window_geometry", "1040x820"))

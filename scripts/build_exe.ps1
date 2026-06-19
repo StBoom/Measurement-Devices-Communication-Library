@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$appName = "InstrumentVisaExport"
+$appName = "MeasurementDevicesCommunicationLibrary"
 $entryPoint = Join-Path $projectRoot "src\instrument_visa\gui_launcher.py"
 $distDir = Join-Path $projectRoot "dist"
 $buildDir = Join-Path $projectRoot "build"

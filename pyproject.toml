@@ -1,7 +1,7 @@
 [project]
-name = "instrument-visa-export"
+name = "measurement-devices-communication-library"
 version = "0.1.0"
-description = "Standalone Python tool for VISA/SCPI instrument communication and Excel export."
+description = "Measurement devices communication library and GUI for VISA/SCPI instruments."
 requires-python = ">=3.10"
 dependencies = [
     "openpyxl>=3.1.0",
@@ -13,6 +13,8 @@ dependencies = [
 [project.scripts]
 instrument-visa = "instrument_visa.cli:main"
 instrument-visa-gui = "instrument_visa.gui:main"
+measurement-devices = "instrument_visa.cli:main"
+measurement-devices-gui = "instrument_visa.gui:main"
 
 [build-system]
 requires = ["setuptools>=68"]

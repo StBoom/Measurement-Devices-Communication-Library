@@ -1,4 +1,4 @@
-# Instrument VISA Export
+# Measurement Devices Communication Library
 
 Standalone-Python-Projekt zur Ablösung des vorhandenen VBA-Add-ins für Messgerätekommunikation.
 
@@ -29,10 +29,10 @@ scripts\build_exe.ps1
 Das Skript installiert bei Bedarf `pyinstaller`, entfernt alte Build-Artefakte und erzeugt eine Onedir-Anwendung unter:
 
 ```text
-dist\InstrumentVisaExport\InstrumentVisaExport.exe
+dist\MeasurementDevicesCommunicationLibrary\MeasurementDevicesCommunicationLibrary.exe
 ```
 
-Der Ordner `dist\InstrumentVisaExport` kann anschließend als ZIP weitergegeben werden. `README.md` und `config.example.ini` werden mit in den Ordner kopiert, falls sie vorhanden sind.
+Der Ordner `dist\MeasurementDevicesCommunicationLibrary` kann anschließend als ZIP weitergegeben werden. `README.md` und `config.example.ini` werden mit in den Ordner kopiert, falls sie vorhanden sind.
 
 Für sauber benannte Verteilerordner kann das Paketier-Skript ausgeführt werden. Es baut standardmäßig zuerst die EXE neu und erzeugt danach beide Verteilerordner:
 
@@ -46,7 +46,7 @@ Wenn `pyinstaller` bereits installiert ist, geht es schneller mit:
 scripts\package_release.ps1 -SkipInstall
 ```
 
-Falls nur aus einem bereits vorhandenen `dist\InstrumentVisaExport` paketiert werden soll:
+Falls nur aus einem bereits vorhandenen `dist\MeasurementDevicesCommunicationLibrary` paketiert werden soll:
 
 ```powershell
 scripts\package_release.ps1 -SkipExeBuild
@@ -55,8 +55,8 @@ scripts\package_release.ps1 -SkipExeBuild
 Es erzeugt zwei Ordner unter `release\`:
 
 ```text
-InstrumentVisaExport_EXE_Windows_<Datum>
-InstrumentVisaExport_Python_Source_<Datum>
+MeasurementDevicesCommunicationLibrary_EXE_Windows_<Datum>
+MeasurementDevicesCommunicationLibrary_Python_Source_<Datum>
 ```
 
 Der EXE-Ordner ist für Kollegen ohne Python gedacht. Der Python-Source-Ordner enthält Quellcode, Tests, Skripte, `pyproject.toml`, README und Beispielkonfiguration.
@@ -89,6 +89,13 @@ Nach `py -m pip install -e .` steht zusätzlich dieser Befehl zur Verfügung:
 
 ```powershell
 instrument-visa-gui
+```
+
+Zusätzlich stehen nach der Installation die neuen Aliasse zur Verfügung:
+
+```powershell
+measurement-devices
+measurement-devices-gui
 ```
 
 Die Oberfläche bietet Geräte-Suche, IDN-Test, DMM-Messwert, Scope-Messwert, getimtes Messen, Screenshot, Waveform-Export und S-Parameter-Export in eine auswählbare Excel-Datei. Nach `IDN testen` wird ein Geräteprofil erkannt und die passenden Bereiche werden aktiviert. Für Oszilloskope sollte `Scope Messwert` genutzt werden, da `DMM Messwert` den Multimeter-Befehl `:READ?` sendet. Beim Waveform-Export können `CH1` bis `CH4` beliebig kombiniert werden. Zusätzlich ist der Punktmodus `RAW`, `NORMAL` oder `MAXIMUM` auswählbar. Jede Waveform-Messung wird zur besseren Übersicht in ein eigenes Tabellenblatt geschrieben.

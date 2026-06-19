@@ -1,4 +1,4 @@
-"""Instrument VISA communication and Excel export."""
+"""Measurement devices communication library for VISA/SCPI instruments."""
 
 __all__ = ["__version__"]
 

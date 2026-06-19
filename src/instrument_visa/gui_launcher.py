@@ -13,5 +13,5 @@ if __name__ == "__main__":
     except Exception as exc:
         error_text = traceback.format_exc()
         Path("startup_error.log").write_text(error_text, encoding="utf-8")
-        messagebox.showerror("Instrument VISA Export", f"Startfehler: {exc}\n\nDetails: startup_error.log")
+        messagebox.showerror("Measurement Devices Communication Library", f"Startfehler: {exc}\n\nDetails: startup_error.log")
         raise

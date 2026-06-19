@@ -8,12 +8,12 @@ $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $releaseRoot = Join-Path $projectRoot "release"
-$exeSource = Join-Path $projectRoot "dist\InstrumentVisaExport"
+$exeSource = Join-Path $projectRoot "dist\MeasurementDevicesCommunicationLibrary"
 $buildScript = Join-Path $PSScriptRoot "build_exe.ps1"
-$exeReleaseBase = Join-Path $releaseRoot "InstrumentVisaExport_EXE_Windows_$ReleaseDate"
-$pythonReleaseBase = Join-Path $releaseRoot "InstrumentVisaExport_Python_Source_$ReleaseDate"
+$exeReleaseBase = Join-Path $releaseRoot "MeasurementDevicesCommunicationLibrary_EXE_Windows_$ReleaseDate"
+$pythonReleaseBase = Join-Path $releaseRoot "MeasurementDevicesCommunicationLibrary_Python_Source_$ReleaseDate"
 
-$running = Get-Process -Name "InstrumentVisaExport" -ErrorAction SilentlyContinue
+$running = Get-Process -Name "MeasurementDevicesCommunicationLibrary" -ErrorAction SilentlyContinue
 if ($running) {
     $running | Stop-Process -Force
 }
@@ -61,7 +61,7 @@ function New-UniqueDirectory {
 $exeRelease = New-UniqueDirectory -BasePath $exeReleaseBase
 $pythonRelease = New-UniqueDirectory -BasePath $pythonReleaseBase
 
-Copy-Item -LiteralPath (Join-Path $exeSource "InstrumentVisaExport.exe") -Destination $exeRelease -Force
+Copy-Item -LiteralPath (Join-Path $exeSource "MeasurementDevicesCommunicationLibrary.exe") -Destination $exeRelease -Force
 Copy-Item -LiteralPath (Join-Path $exeSource "_internal") -Destination $exeRelease -Recurse -Force
 
 foreach ($file in @("README.md", "config.example.ini")) {
