@@ -1,0 +1,19 @@
+Attribute VB_Name = "TypeDefs"
+Option Explicit
+Type Confing
+    Titel As String
+    Address As String
+    Funktionsname As String
+    EinfuegenInSheet As Boolean
+    S1 As Boolean
+    S2 As Boolean
+    S3 As Boolean
+    S4 As Boolean
+    Format As String
+End Type
+
+Type Data
+    File As String
+    Filetype As String
+    EinfuegenInSheet As Boolean
+End Type

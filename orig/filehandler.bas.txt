@@ -1,0 +1,128 @@
+Attribute VB_Name = "filehandler"
+Public Function saveIt(File As TypeDefs.Data, Optional ToSheet As Boolean)
+    If File.Filetype = "NoFile" Then
+            End
+    ElseIf File.Filetype = "value" Then
+            ValueToScheet File.File
+            End
+    End If
+    
+    If ToSheet Then
+        If File.Filetype = "png" Or File.Filetype = "wmv" Or File.Filetype = "bmp" Then
+            PictureToScheet File
+        ElseIf File.Filetype = "csv" Then
+            CSVToSheet File
+        Else
+            MsgBox "Unbekannter Filetyp"
+        End If
+    Else
+        Dim Path As String
+        Path = getSpeicherort(Environ("%HOMEPATH%") & "\Desktop\", File.Filetype)
+        SaveToDisk File, Path
+    End If
+End Function
+
+Public Function CSVToSheet(File As TypeDefs.Data)
+    On Error GoTo ups
+    Dim intFH  As Integer
+    Dim strBuf As String
+    Dim pct As Object
+    Dim StrDateiname As String
+    intFH = FreeFile
+    StrDateiname = strVerzeichnis & "vesa." & File.Filetype
+    Open StrDateiname For Output Lock Read Write As intFH
+    Print #intFH, File.File
+    Close intFH
+    Dim tmp As New QueryTable
+    On Error GoTo 0
+    Set tmp = ActiveSheet.QueryTables.Add(Connection:="TEXT;" & StrDateiname, destination:=ActiveCell)
+    tmp.SaveData = False
+    tmp.TextFileCommaDelimiter = True
+    tmp.Refresh BackgroundQuery:=False
+    Debug.Print tmp.Name
+    Dim cn As Variant
+    For Each cn In ThisWorkbook.Connections
+        Debug.Print cn.Name
+        cn.Delete
+    Next cn
+    tmp.Delete
+    Exit Function
+ups:
+    MsgBox "Fehler in Funkion CSVToSheet" & vbCrLf & "Fehlermeldung: " & Err.Description & vbCrLf & "Fehler Source: " & Err.source
+    End
+    End Function
+Public Function PictureToScheet(File As TypeDefs.Data)
+    On Error GoTo ups
+    Dim intFH  As Integer
+    Dim strBuf As String
+    Dim pct As Object
+    Dim StrDateiname As String
+    intFH = FreeFile
+    StrDateiname = Environ("TEMP") & "\vesa." & File.Filetype
+    Open StrDateiname For Output Lock Read Write As intFH
+    Print #intFH, File.File
+    Close intFH
+    ActiveSheet.Shapes.AddPicture((StrDateiname & Bild), False, True, ActiveCell.Left, ActiveCell.Top, -1, -1).Select
+    Kill StrDateiname
+    Exit Function
+ups:
+    MsgBox "Fehler in Funkion PictureToSheet" & vbCrLf & "Fehlermeldung: " & Err.Description & vbCrLf & "Fehler Source: " & Err.source
+    End
+    End Function
+Public Function ValueToScheet(Value As String)
+    On Error GoTo ups
+    Application.ActiveCell = Value
+    Exit Function
+ups:
+    MsgBox "Fehler in Funkion PictureToSheet" & vbCrLf & "Fehlermeldung: " & Err.Description & vbCrLf & "Fehler Source: " & Err.source
+    End
+    End Function
+Public Function SaveToDisk(File As TypeDefs.Data, StrDateiname As String)
+    On Error GoTo ups
+    Dim intFH  As Integer
+    intFH = FreeFile
+    'Open "test.wmf" For Output Lock Read Write As intFH
+    Open StrDateiname For Output Lock Read Write As intFH
+    Print #intFH, File.File
+    Close intFH
+    Exit Function
+ups:
+    MsgBox "Fehler in Funkion SaveToDisk" & vbCrLf & "Fehlermeldung: " & Err.Description & vbCrLf & "Fehler Source: " & Err.source
+    End
+    End Function
+Public Function FileOpen(StrDateiname As String)
+    On Error GoTo ups
+    Dim oShell As Object
+    Set oShell = CreateObject("WScript.Shell")
+    oShell.Run StrDateiname
+    Exit Function
+ups:
+    MsgBox "Fehler in Funkion FileOpen" & vbCrLf & "Fehlermeldung: " & Err.Description & vbCrLf & "Fehler Source: " & Err.source
+    End
+    End Function
+Public Function getSpeicherort(strVerzeichnis As String, StrDateityp As String)
+On Error GoTo ups
+    Dim StrDateiname As String
+Ort:
+       StrDateiname = Application.GetSaveAsFilename(InitialFileName:=strVerzeichnis & _
+       "." & StrDateityp, FileFilter:="Dateityp (*." & StrDateityp & "), *." & StrDateityp)
+    If StrDateiname = "Falsch" Then
+        End
+    Else
+    End If
+    Dim fso As Object
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    If fso.fileExists(StrDateiname) Then ' Abfrage ob Datei existiert
+        If MsgBox("Datei Vorhanden, überschreiben?", vbYesNo) = vbYes Then
+            getSpeicherort = StrDateiname
+            Exit Function 'Überschreiben wenn Gewünscht
+        ElseIf MsgBox("Datei Vorhanden, überschreiben?", vbYesNo) = vbNo Then
+            GoTo Ort 'Neue Pfadabfrage
+        End If
+    End If
+    getSpeicherort = StrDateiname
+    Exit Function
+ups:
+    MsgBox "Fehler in Funkion getSpeicherort" & vbCrLf & "Fehlermeldung: " & Err.Description & vbCrLf & "Fehler Source: " & Err.source
+    End
+    End Function

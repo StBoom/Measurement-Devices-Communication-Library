@@ -1,0 +1,236 @@
+Attribute VB_Name = "RibbonFunktionen"
+Option Private Module
+Option Explicit
+Public objRibbon As IRibbonUI
+Public oeText    As String
+Dim iniClass As clsIni  ' klasse zum ini Speichern einbinden
+Dim Path As String
+
+#If VBA7 Then
+    Public Declare PtrSafe Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (ByRef destination As Any, ByRef source As Any, ByVal length As Long)
+#Else
+    Public Declare Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (ByRef destination As Any, ByRef source As Any, ByVal length As Long)
+#End If
+
+#If VBA7 Then
+Function GetRibbon(ByVal lRibbonPointer As LongPtr) As Object
+#Else
+Function GetRibbon(ByVal lRibbonPointer As Long) As Object
+#End If
+        Dim objRibbon As Object
+        CopyMemory objRibbon, lRibbonPointer, LenB(lRibbonPointer)
+        Set GetRibbon = objRibbon
+        Set objRibbon = Nothing
+End Function
+
+'Callback for customUI.onLoad
+Sub onLoad_Test1(ribbon As IRibbonUI)
+ Init
+ Set objRibbon = ribbon
+ iniClass.WritePrivateProfileString Path, "Ribbon", "Ribbon_obj_id", ObjPtr(ribbon)
+ 'Überprüfen ob die Nötigen Biblitekten installiert sind
+End Sub
+Public Sub Init()
+    'Initialisieren der INI Funktion Pfad und Objekt erzeugen
+    Path = Environ("APPDATA") & "\Microsoft\AddIns\INSTRUMENT_VISA.ini"
+    Set iniClass = New clsIni   ' Instanz erstellen
+    If Dir(Path) = "" Then
+        generate_standard_ini
+    End If
+End Sub
+Public Function generate_standard_ini()
+        iniClass.WritePrivateProfileString Path, "Ribbon", "edit_address", "Adresse des Instruments"
+        iniClass.WritePrivateProfileString Path, "Ribbon", "edit_title", "Titel der Messung"
+        iniClass.WritePrivateProfileString Path, "Ribbon", "check_S1", "Falsch"
+        iniClass.WritePrivateProfileString Path, "Ribbon", "check_S2", "Falsch"
+        iniClass.WritePrivateProfileString Path, "Ribbon", "check_S3", "Falsch"
+        iniClass.WritePrivateProfileString Path, "Ribbon", "check_S4", "Falsch"
+        iniClass.WritePrivateProfileString Path, "Ribbon", "sfile_format", "AUTO"
+        iniClass.WritePrivateProfileString Path, "Ribbon", "sfile_format_index", "0"
+        iniClass.WritePrivateProfileString Path, "VISA_INSTRUMENTS", "visa_instruments_addr_up", "Geräteaddresse"
+        iniClass.WritePrivateProfileString Path, "VISA_INSTRUMENTS", "visa_instruments_addr_down", "Geräteaddresse"
+        iniClass.WritePrivateProfileString Path, "equipment", "Anzahl", "2"
+        iniClass.WritePrivateProfileString Path, "equipment", "Item1", "Multimeter"
+        iniClass.WritePrivateProfileString Path, "equipment", "Item2", "Oszilloskop"
+        iniClass.WritePrivateProfileString Path, "Multimeter", "Anzahl", "2"
+        iniClass.WritePrivateProfileString Path, "Multimeter", "Item1", "*IDN?"
+        iniClass.WritePrivateProfileString Path, "Multimeter", "Item2", "*RST"
+        iniClass.WritePrivateProfileString Path, "Oszilloskop", "Anzahl", "2"
+        iniClass.WritePrivateProfileString Path, "Oszilloskop", "Item1", "*IDN?"
+        iniClass.WritePrivateProfileString Path, "Oszilloskop", "Item2", "*RST"
+End Function
+Sub RefreshRibbon()
+    If objRibbon Is Nothing Then
+        Set objRibbon = GetRibbon(iniClass.GetPrivateProfileString(Path, "Ribbon", "Ribbon_obj_id"))   ' -------- Neu eigefügt
+        objRibbon.Invalidate
+    Else
+        objRibbon.Invalidate
+    End If
+End Sub
+'Callback for eingabebox0 onChange
+Sub changeAddresse(control As IRibbonControl, Text As String)
+    Init
+    iniClass.WritePrivateProfileString Path, "Ribbon", "edit_address", Text
+    Call RefreshRibbon
+End Sub
+
+'Callback for eingabebox0 getText
+Sub AddressegetText(control As IRibbonControl, ByRef returnedVal)
+    Init
+    returnedVal = iniClass.GetPrivateProfileString(Path, "Ribbon", "edit_address")
+End Sub
+'Callback for eingabebox1 onChange
+Sub changeTitel(control As IRibbonControl, Text As String)
+    iniClass.WritePrivateProfileString Path, "Ribbon", "edit_title", Text
+    Call RefreshRibbon
+End Sub
+'Callback for eingabebox1 getText
+Sub TitelgetText(control As IRibbonControl, ByRef returnedVal)
+    Init
+    returnedVal = iniClass.GetPrivateProfileString(Path, "Ribbon", "edit_title")
+End Sub
+'Callback for button0 onAction
+Sub actionScreenshot(control As IRibbonControl)
+    On Error GoTo ups
+    Dim Config As TypeDefs.Confing
+    Dim Device As New getVisaFile
+    Dim Bild As TypeDefs.Data
+    Init
+    Config.Address = iniClass.GetPrivateProfileString(Path, "Ribbon", "edit_address")
+    Config.Titel = iniClass.GetPrivateProfileString(Path, "Ribbon", "edit_title")
+    Config.EinfuegenInSheet = True
+    Device.Init Config
+    Bild = Device.Screenshot
+    filehandler.saveIt Bild, Bild.EinfuegenInSheet
+    Exit Sub
+ups:
+    MsgBox "Fehler in Funkion Screenshot" & vbCrLf & "Fehlermeldung: " & Err.Description & vbCrLf & "Fehler Source: " & Err.source
+    End
+End Sub
+'Callback for button4 onAction
+Sub actionSearchInst(control As IRibbonControl)
+    On Error GoTo ups
+    Dim Config As TypeDefs.Confing
+    Dim Devices As New getVisaDevices
+    Devices.SearchVisaDevices
+    On Error GoTo ArrayLeer
+    If UBound(Devices.getDeviceAddr) >= 0 Then
+        Init
+        iniClass.WritePrivateProfileString Path, "Ribbon", "edit_address", Devices.ChooseDevice
+        Call RefreshRibbon
+    End If
+    Exit Sub
+ArrayLeer:
+        MsgBox "kein Gerät gefunden, Überüfen sie die Verbindung, oder nutzen sie das R&S Tool zur Gerätesuche"
+    Exit Sub
+ups:
+    MsgBox "Fehler in Funkion actionSearchInst" & vbCrLf & "Fehlermeldung: " & Err.Description & vbCrLf & "Fehler Source: " & Err.source
+    End
+End Sub
+'Callback for button1 onAction
+Sub actionWaveform(control As IRibbonControl)
+    On Error GoTo ups
+    Dim Config As TypeDefs.Confing
+    Dim Device As New getVisaFile
+    Dim Wavefile As TypeDefs.Data
+    Init
+    Config.Address = iniClass.GetPrivateProfileString(Path, "Ribbon", "edit_address")
+    Config.EinfuegenInSheet = False
+    Device.Init Config
+    Wavefile = Device.Wavefile
+    filehandler.saveIt Wavefile, Wavefile.EinfuegenInSheet
+    Exit Sub
+ups:
+    MsgBox "Fehler in Funktion Waveform" & vbCrLf & "Fehlermeldung: " & Err.Description & vbCrLf & "Fehler Source: " & Err.source
+    End
+End Sub
+
+'Callback for button2 onAction
+Sub actionInst(control As IRibbonControl)
+    Visa_Diagnose
+End Sub
+
+'Callback for auswahlbox0 getPressed
+Sub pressedS1(control As IRibbonControl, ByRef returnedVal)
+    Init
+    returnedVal = iniClass.GetPrivateProfileString(Path, "Ribbon", "check_S1")
+End Sub
+
+'Callback for auswahlbox0 onAction
+Sub actionS1(control As IRibbonControl, pressed As Boolean)
+    Init
+    iniClass.WritePrivateProfileString Path, "Ribbon", "check_S1", pressed
+    Call RefreshRibbon
+End Sub
+
+'Callback for auswahlbox1 getPressed
+Sub pressedS2(control As IRibbonControl, ByRef returnedVal)
+    Init
+    returnedVal = iniClass.GetPrivateProfileString(Path, "Ribbon", "check_S2")
+End Sub
+
+'Callback for auswahlbox1 onAction
+Sub actionS2(control As IRibbonControl, pressed As Boolean)
+    Init
+    iniClass.WritePrivateProfileString Path, "Ribbon", "check_S2", pressed
+    Call RefreshRibbon
+End Sub
+
+'Callback for droptown0 getSelectedItemIndex
+Sub getSFileFormatItemIndex(control As IRibbonControl, ByRef returnedVal)
+    Init
+    returnedVal = iniClass.GetPrivateProfileString(Path, "Ribbon", "sfile_format_index")
+End Sub
+
+'Callback for droptown0 onAction
+Sub OnactionSFileFormat(control As IRibbonControl, ID As String, index As Integer)
+    Init
+    iniClass.WritePrivateProfileString Path, "Ribbon", "sfile_format", ID
+    iniClass.WritePrivateProfileString Path, "Ribbon", "sfile_format_index", index
+    Call RefreshRibbon
+End Sub
+
+'Callback for auswahlbox2 getPressed
+Sub pressedS3(control As IRibbonControl, ByRef returnedVal)
+    Init
+    returnedVal = iniClass.GetPrivateProfileString(Path, "Ribbon", "check_S3")
+End Sub
+
+'Callback for auswahlbox2 onAction
+Sub actionS3(control As IRibbonControl, pressed As Boolean)
+    Init
+    iniClass.WritePrivateProfileString Path, "Ribbon", "check_S3", pressed
+    Call RefreshRibbon
+End Sub
+
+'Callback for auswahlbox3 getPressed
+Sub pressedS4(control As IRibbonControl, ByRef returnedVal)
+    Init
+    returnedVal = iniClass.GetPrivateProfileString(Path, "Ribbon", "check_S4")
+End Sub
+
+'Callback for auswahlbox3 onAction
+Sub actionS4(control As IRibbonControl, pressed As Boolean)
+    Init
+    iniClass.WritePrivateProfileString Path, "Ribbon", "check_S4", pressed
+    Call RefreshRibbon
+End Sub
+
+'Callback for button3 onAction
+Sub actionGetSfile(control As IRibbonControl)
+    Init
+    Dim Config As TypeDefs.Confing
+    Dim Device As New getVisaFile
+    Dim SFile As TypeDefs.Data
+    'Daten Aus Ini Holen (bzw. Ribbon Buttons
+    Config.S1 = iniClass.GetPrivateProfileString(Path, "Ribbon", "check_S1")
+    Config.S2 = iniClass.GetPrivateProfileString(Path, "Ribbon", "check_S2")
+    Config.S3 = iniClass.GetPrivateProfileString(Path, "Ribbon", "check_S3")
+    Config.S4 = iniClass.GetPrivateProfileString(Path, "Ribbon", "check_S4")
+    Config.Address = iniClass.GetPrivateProfileString(Path, "Ribbon", "edit_address")
+    Config.Format = iniClass.GetPrivateProfileString(Path, "Ribbon", "sfile_format")
+    'An Funktion Übergeben
+    Device.Init Config
+    SFile = Device.SFile
+    filehandler.saveIt SFile, False
+End Sub

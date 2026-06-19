@@ -1,0 +1,70 @@
+Attribute VB_Name = "PortDeklaration"
+' RS232 Port Deklarationen
+
+Option Explicit
+
+'***********************************************************************
+'*                  RS232 Port declaration
+'***********************************************************************
+Private Declare PtrSafe Function IX_OPENCOM Lib "RSAPI.DLL" (ByVal ix%, ByVal para$) As Integer
+Private Declare PtrSafe Function IX_CLOSECOM Lib "RSAPI.DLL" (ByVal ix%) As Integer
+Private Declare PtrSafe Function IX_TIMEOUT Lib "RSAPI.DLL" (ByVal ix%, ByVal Datum%) As Integer
+Private Declare PtrSafe Function IX_READSTRING Lib "RSAPI.DLL" (ByVal ix%, ByVal Rein$) As Integer
+Private Declare PtrSafe Function IX_SENDSTRING Lib "RSAPI.DLL" (ByVal ix%, ByVal Raus$) As Integer
+Private Declare PtrSafe Function IX_SENDBYTE Lib "RSAPI.DLL" (ByVal ix%, ByVal Datum As Integer) As Integer
+Private Declare PtrSafe Function IX_READBYTE Lib "RSAPI.DLL" (ByVal ix%) As Integer
+Private Declare PtrSafe Function IX_STRLENGTH Lib "RSAPI.DLL" (ByVal ix%, ByVal laenge%)
+Private Declare PtrSafe Sub IX_DTR Lib "RSAPI.DLL" (ByVal ix%, ByVal EinsNull As Integer)
+Private Declare PtrSafe Sub IX_RTS Lib "RSAPI.DLL" (ByVal ix%, ByVal EinsNull As Integer)
+Private Declare PtrSafe Function TIMEOUT Lib "RSAPI.DLL" (ByVal MS%) As Integer
+Private Declare PtrSafe Sub STRREAD Lib "RSAPI.DLL" (ByVal S As String)
+Private Declare PtrSafe Sub STRLENGTH Lib "RSAPI.DLL" (ByVal Datum%)
+Private Declare PtrSafe Sub Delay Lib "RSAPI.DLL" Alias "DELAY" (ByVal MS%)
+
+
+
+
+'***********************************************************************
+'*                  Parallel Port DLL declaration
+'***********************************************************************
+' PIN   Bezeichnung           Zugriff         Datenrichtung
+'   2     D0                  BA,Bit0         Ein/Ausgang
+'   3     D1                  BA,Bit1         Ein/Ausgang
+'   4     D2                  BA,Bit2         Ein/Ausgang
+'   5     D3                  BA,Bit3         Ein/Ausgang
+'   6     D4                  BA,Bit4         Ein/Ausgang
+'   7     D5                  BA,Bit5         Ein/Ausgang
+'   8     D6                  BA,Bit6         Ein/Ausgang
+'   9     D7                  BA,Bit7         Ein/Ausgang
+'
+'  15     Error               BA+1,Bit3       Eingang
+'  13     Select              BA+1,Bit4       Eingang
+'  12     PE                  BA+1,Bit5       Eingang
+'  10     ACK                 BA+1,Bit6       Eingang
+'  11     Busy                BA+1,Bit7       Eingang,invertiert
+'
+'   1     Strobe              BA+2,Bit0       Ein/Ausgang invert.
+'  14     Auto Feed           BA+2,Bit1       Ein/Ausgang invert.
+'  16     Init                BA+2,Bit2       Ein/Ausgang
+'  17     SLCT IN             BA+2,Bit3       Ein/Ausgang invert.
+'         Direction           BA+2,Bit5       EPP dirction for Register0
+'************************************************************************
+Private Declare PtrSafe Function OPENCOM Lib "Port" (ByVal A$) As Integer
+Private Declare PtrSafe Sub CLOSECOM Lib "Port" ()
+Private Declare PtrSafe Sub SENDBYTE Lib "Port" (ByVal b%)
+Private Declare PtrSafe Function READBYTE Lib "Port" () As Integer
+Private Declare PtrSafe Sub DTR Lib "Port" (ByVal b%)
+Private Declare PtrSafe Sub RTS Lib "Port" (ByVal b%)
+Private Declare PtrSafe Sub TXD Lib "Port" (ByVal b%)
+Private Declare PtrSafe Function CTS Lib "Port" () As Integer
+Private Declare PtrSafe Function DSR Lib "Port" () As Integer
+Private Declare PtrSafe Function RI Lib "Port" () As Integer
+Private Declare PtrSafe Function DCD Lib "Port" () As Integer
+Private Declare PtrSafe Sub TIMEINIT Lib "Port" ()
+Private Declare PtrSafe Sub TIMEINITUS Lib "Port" ()
+Private Declare PtrSafe Function TIMEREAD Lib "Port" () As Long
+Private Declare PtrSafe Function TIMEREADUS Lib "Port" () As Long
+Private Declare PtrSafe Sub DELAYUS Lib "Port" (ByVal l As Long)
+Private Declare PtrSafe Sub REALTIME Lib "Port" (ByVal i As Boolean)
+Private Declare PtrSafe Sub OUTPORT Lib "Port" (ByVal A%, ByVal b%)
+Private Declare PtrSafe Function INPORT Lib "Port" (ByVal p%) As Integer

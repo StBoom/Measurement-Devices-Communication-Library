@@ -1,0 +1,97 @@
+Attribute VB_Name = "verweise"
+Option Explicit
+Sub ListReferences()
+    Dim ref As reference
+    On Error Resume Next
+    For Each ref In Application.VBE.ActiveVBProject.References
+        Debug.Print ref.Name & " : " & ref.Guid & " - " & ref.Major & " - " & ref.Minor & " - " _
+        & ref.FullPath
+    Next
+End Sub
+Sub TestGuid()
+    AddReferenceFromGuid "{DB8CBF00-D6D3-11D4-AA51-00A024EE30BD}", 1, 0  ' VisaComLib
+End Sub
+Sub TestFile()
+    AddReferenceFromFile "C:\Program Files (x86)\IVI Foundation\VISA\VisaCom\GlobMgr.dll"  ' VisaComLib
+End Sub
+Sub AddReferenceFromFile(strName As String)
+    Dim blnRefExists As Boolean
+    Dim ref As reference
+    
+    For Each ref In Application.VBE.ActiveVBProject.References
+        If ref.FullPath = strName Then
+            blnRefExists = True
+            MsgBox "Verweis auf """ & ref.Name & """ war schon gesetzt!"
+            Exit For
+        End If
+    Next
+    
+    If Not blnRefExists Then
+        
+        On Error Resume Next
+        Set ref = Application.VBE.ActiveVBProject.References.AddFromFile(strName)
+        
+        If Err.Number <> 0 Then
+            MsgBox "Verweis auf """ & strName & """ konnte nicht erstellt werden!"
+            End
+        Else
+            MsgBox "Verweis auf """ & strName & """ wurde erstellt!"
+        End If
+        
+    End If
+End Sub
+Sub AddReferenceFromGuid(strGUID As String, lngMajor As Long, lngMinor As Long)
+    Dim blnRefExists As Boolean
+    Dim ref As reference
+    
+    For Each ref In Application.VBE.ActiveVBProject.References
+        If ref.Guid = strGUID Then
+            blnRefExists = True
+            If ref.Major <> lngMajor Or ref.Minor <> lngMinor Then
+                MsgBox "Versionsnummer von " & ref.Name & " nicht identisch!"
+            Else
+                MsgBox "Verweis auf """ & ref.Name & """ war schon gesetzt!"
+            End If
+            Exit For
+        End If
+    Next
+    
+    If Not blnRefExists Then
+        
+        On Error Resume Next
+        Set ref = Application.VBE.ActiveVBProject.References.AddFromGuid(strGUID, lngMajor, _
+lngMinor)
+        
+        If Err.Number <> 0 Then
+            MsgBox "Verweis konnte nicht erstellt werden!" & vbCrLf _
+                 & "GUID: " & strGUID
+        Else
+            MsgBox "Verweis auf """ & ref.Name & """ wurde erstellt!"
+        End If
+        
+    End If
+End Sub
+Public Sub CheckReferences()
+  Dim i As Integer
+    'ggf ActiveWorkbook
+  For i = 1 To ThisWorkbook.VBProject.References.Count
+    If ThisWorkbook.VBProject.References(i).IsBroken Then
+      ThisWorkbook.VBProject.References.remove _
+      ThisWorkbook.VBProject.References(i)
+      Exit For
+    End If
+  Next i
+End Sub
+Sub RemoveReference(vergleich As String)
+    Dim lngZähler As Long
+    Dim blnVerweisDa As Boolean
+
+    With ThisWorkbook.VBProject.References
+      For lngZähler = 1 To .Count
+        If .Item(lngZähler).Name = _
+        vergleich Then
+            .remove .Item(lngZähler)
+        End If
+      Next
+    End With
+End Sub

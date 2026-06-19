@@ -1,0 +1,638 @@
+VERSION 1.0 CLASS
+BEGIN
+  MultiUse = -1  'True
+END
+Attribute VB_Name = "getVisaFile"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Option Explicit
+Private mConfig As TypeDefs.Confing
+'    Early Binding
+Dim mIoMgr As VisaComLib.ResourceManager
+Dim mInstrument As VisaComLib.FormattedIO488
+'    Late Binding
+'Dim mIoMgr As Object
+'Dim mInstrument As Object
+
+Private mFile As TypeDefs.Data
+Private mIdn As String
+Private initialisert As Boolean
+
+'Übergabeparameter
+'Public Property Let SetFileConfig(ByRef NewConfig As TypeDefs.Confing)
+'    mConfig = NewConfig
+'End Property
+'Public Property Let SetInstrument(ByRef NewInstrument As VisaComLib.FormattedIO488)
+'    Set mInstrument = NewInstrument
+'End Property
+
+Public Function Init(Config As TypeDefs.Confing)
+    '    Early Binding
+    Set mIoMgr = New VisaComLib.ResourceManager
+    Set mInstrument = New VisaComLib.FormattedIO488
+    '    Late Binding
+    'On Error Resume Next
+    'Set mIoMgr = GetObject(, "VisaComLib.ResourceManager")
+    'If Err.Number <> 0 Then 'Word isn't running so start it
+    '    Set mIoMgr = CreateObject("VisaComLib.ResourceManager")
+    'End If
+    'Set mIoMgr = GetObject(, "VisaComLib.FormattedIO488")
+    'If Err.Number <> 0 Then 'Word isn't running so start it
+    '    Set mIoMgr = CreateObject("VisaComLib.FormattedIO488")
+    'End If
+    On Error GoTo ups
+    If Not initialisert Then
+        Set mInstrument.IO = mIoMgr.Open(Config.Address)
+        mConfig = Config
+        mInstrument.WriteString "*Idn?"
+        mIdn = mInstrument.ReadString
+        initialisert = True
+    End If
+    Exit Function
+ups:
+    MsgBox "Initialisierung Fehlgeschlagen, Addresse überprüfen"
+End Function
+'Private Function VISA_Init(ByVal AddressString As String)
+'    On Error GoTo ups
+'    Set mInstrument.IO = mIoMgr.Open(AddressString) ' use instrument specific address for Open() parameter – i.e. GPIB0::22 this has the form of "GPIB0::27::INSTR" or "USB0::0x0957::0x0618::MY50280110::INSTR"
+'    ' introduce a delay...
+'    If (Left(AddressString, 4) = "ASRL") Or (Left(AddressString, 3) = "USB") Then
+'        Sleep 2500  ' USB, ASRL slower than GPIB
+'    End If
+'    Exit Function
+'ups:
+'    ErrorhandlerVisa mInstrument.IO, "VISA_Init"
+'End Function
+Public Function Screenshot() As TypeDefs.Data
+    If initialisert Then
+         If InStr(1, mIdn, "Hewlett-Packard, E740", 1) > 0 Then
+            Picture_E7402A
+        ElseIf InStr(1, mIdn, "Agilent Technologies,E50", 1) > 0 Then
+            Picture_E5071C
+        ElseIf InStr(1, mIdn, "Rohde&Schwarz,FSW", 1) > 0 Then
+            Picture_FSW
+        ElseIf InStr(1, mIdn, "AGILENT TECHNOLOGIES,DSO-X", 1) > 0 Or _
+        InStr(1, mIdn, "AGILENT TECHNOLOGIES,MSO-X", 1) > 0 Then
+            Picture_3034A
+        ElseIf InStr(1, mIdn, "Agilent Technologies,N90", 1) > 0 Then
+            Picture_PXA_MXA_EXA_CXA
+        ElseIf InStr(1, mIdn, "Rohde-Schwarz,ZNB", 1) > 0 Then
+            If MsgBox("Soll nur das Aktive Fenster aufgenommen werden", vbYesNo) = vbYes Then
+                Picture_ZNB_Act
+            Else
+                Picture_ZNB_Full
+            End If
+        ElseIf InStr(1, mIdn, "TEKTRONIX,MSO4", 1) > 0 Or _
+        InStr(1, mIdn, "TEKTRONIX,MDO4", 1) > 0 Or _
+        InStr(1, mIdn, "TEKTRONIX,MDO3", 1) > 0 Or _
+        InStr(1, mIdn, "TEKTRONIX,DPO4", 1) > 0 Then
+            Picture_Tek_mdo
+        ElseIf InStr(1, mIdn, "TEKTRONIX,TDS30", 1) > 0 Then
+            Picture_Tek_tds
+        ElseIf InStr(1, mIdn, "AGILENT TECHNOLOGIES,MSO7", 1) > 0 Or _
+        InStr(1, mIdn, "AGILENT TECHNOLOGIES,DSO7", 1) > 0 Then
+            Picture_InfiniiVision7000B
+        Else
+            MsgBox "Unbekanntes Gerät"
+            mFile.Filetype = "NoFile"
+        End If
+            
+    Else
+        MsgBox "getVisaFile ist nicht initialisiert worden."
+        mFile.Filetype = "NoFile"
+    End If
+        Screenshot = mFile
+End Function
+Public Function Wavefile() As TypeDefs.Data
+    If initialisert Then
+        If InStr(1, mIdn, "Hewlett-Packard, E740", 1) > 0 Then
+            Waveform_E7402A
+        ElseIf InStr(1, mIdn, "Hewlett-Packard,4395A", 1) > 0 Then
+            Waveform_4395A
+        ElseIf InStr(1, mIdn, "AGILENT TECHNOLOGIES,DSO-X 3", 1) > 0 Or _
+        InStr(1, mIdn, "AGILENT TECHNOLOGIES,MSO-X 3", 1) > 0 Then
+            Waveform3034A
+        ElseIf InStr(1, mIdn, "Agilent Technologies,344", 1) > 0 Or _
+                InStr(1, mIdn, "Keysight Technologies,344", 1) > 0 Or _
+               InStr(1, mIdn, "Agilent Technologies,L44", 1) > 0 Then
+            Messwert_34410A
+        Else
+            MsgBox "Unbekanntes Gerät"
+            mFile.Filetype = "NoFile"
+        End If
+    Else
+        MsgBox "getVisaFile ist nicht initialisiert worden."
+        mFile.Filetype = "NoFile"
+    End If
+        Wavefile = mFile
+End Function
+Public Function SFile() As TypeDefs.Data
+    If initialisert Then
+        If InStr(1, mIdn, "E5071C", 1) > 0 Then
+            Sfile_E5071C
+        ElseIf InStr(1, mIdn, "Rohde-Schwarz,ZNB", 1) > 0 Then
+            Sfile_ZNB
+        Else
+            MsgBox "Unbekanntes Gerät"
+            mFile.Filetype = "NoFile"
+        End If
+            
+    Else
+        MsgBox "getVisaFile ist nicht initialisiert worden."
+        mFile.Filetype = "NoFile"
+    End If
+        SFile = mFile
+End Function
+Private Function Sfile_E5071C() As String
+    On Error GoTo ups
+    Dim Filetyp As Integer
+    Dim SX As String
+    Filetyp = (mConfig.S1 + mConfig.S2 + mConfig.S3 + mConfig.S4) * -1
+    If mConfig.S1 Then
+        SX = SX & "1,"
+    End If
+    If mConfig.S2 Then
+        SX = SX & "2,"
+    End If
+    If mConfig.S3 Then
+        SX = SX & "3,"
+    End If
+    If mConfig.S4 Then
+        SX = SX & "4,"
+    End If
+    If Len(SX) > 1 Then
+        SX = Left(SX, Len(SX) - 1)
+        mFile.Filetype = "s" & Filetyp & "p"
+        mInstrument.WriteString ":SYST:BEEP:COMP:STAT OFF" & vbLf
+        mInstrument.WriteString ":MMEM:STOR:SNP:FORM " & mConfig.Format & "; *WAI" & vbLf ' AUTO / DB / MA / RI
+        mInstrument.WriteString ":MMEM:STOR:SNP:TYPE:S" & Filetyp & "P " & SX & ";*WAI" & vbLf
+        mInstrument.WriteString ":MMEM:STOR:SNP 'D:\SNP01." & mFile.Filetype & "';*WAI" & vbLf
+        mInstrument.WriteString ":MMEM:TRAN? 'D:\SNP01." & mFile.Filetype & "';*WAI" & vbLf
+        mFile.File = mInstrument.ReadString()
+        mInstrument.WriteString ":MMEM:DEL 'D:\SNP01." & mFile.Filetype & "';*WAI" & vbLf
+        mFile.File = Right(mFile.File, Len(mFile.File) - 8) ' Datenmüll am Anfang der Datei abschneiden
+        mInstrument.IO.Close
+    End If
+    Exit Function
+ups:
+    ErrorhandlerVisa mInstrument, "Sfile_E5071C"
+End Function
+Private Function Sfile_ZNB() As String
+    On Error GoTo ups
+    Dim Filetyp As Integer
+    Dim SX As String
+    Dim activeCH As Integer
+    Dim Portstatus As String
+    Dim ports() As String
+    Dim anzahlPorts As Integer
+    
+    If mConfig.Format = "DB" Then
+        mConfig.Format = "LOGP"
+    ElseIf mConfig.Format = "AUTO" Or mConfig.Format = "RI" Then
+        mConfig.Format = "COMP"
+    ElseIf mConfig.Format = "MA" Then
+        mConfig.Format = "LINP"
+    End If
+    Filetyp = (mConfig.S1 + mConfig.S2 + mConfig.S3 + mConfig.S4) * -1
+    If mConfig.S1 Then
+        SX = SX & "1,"
+    End If
+    If mConfig.S2 Then
+        SX = SX & "2,"
+    End If
+    If mConfig.S3 Then
+        SX = SX & "3,"
+    End If
+    If mConfig.S4 Then
+        SX = SX & "4,"
+    End If
+    mInstrument.WriteString "INST:NSEL?" & vbLf ' aktiven kanal abfragen
+    activeCH = mInstrument.ReadString
+    
+    mInstrument.WriteString "SOUR:GRO:PPOR?" & vbLf ' aktiven Ports abfragen
+    Portstatus = mInstrument.ReadString
+    ports = Split(Portstatus, ",")
+    anzahlPorts = UBound(ports) - LBound(ports) + 1
+    
+    If Filetyp > anzahlPorts Then
+        MsgBox "Zu viele S Parameter angehakt, für die Anzahl der aktivierten Ports am Gerät"
+        End
+    End If
+    
+    If Len(SX) > 1 Then
+        SX = Left(SX, Len(SX) - 1)
+        mFile.Filetype = "s" & Filetyp & "p"
+        mInstrument.WriteString "MMEM:CDIR DEF" & vbLf ' Speicherort angeben
+        mInstrument.WriteString "MMEM:STOR:TRAC:PORT " & activeCH & ", " & "'Traces\visatmp." & mFile.Filetype & "', " & mConfig.Format & ", CIMP, " & SX & vbLf ' Trace Speichern"
+        'mInstrument.WriteString "MMEM:STOR:TRAC 'Trc1', 'Traces\visatmp." & mFile.Filetype & "' ," & "UNF, " & mConfig.Format & vbLf ' Trace Speichern"
+        mInstrument.WriteString "MMEM:DATA? 'Traces\visatmp." & mFile.Filetype & "'" & vbLf ' Trace Ausgeben
+        mFile.File = mInstrument.ReadString() 'ausgegebenen Trace Lesen
+        mFile.File = Right(mFile.File, Len(mFile.File) - 8) ' Datenmüll am Anfang der Datei abschneiden
+        mInstrument.WriteString "MMEM:DEL 'Traces\visatmp." & mFile.Filetype & "'" & vbLf ' Trace Löschen
+        mInstrument.IO.Close
+    End If
+    Exit Function
+ups:
+    ErrorhandlerVisa mInstrument, "Function Sfile_ZNB"
+End Function
+
+Private Function Picture_E5071C()
+    On Error GoTo ups
+    Dim dispstatus As String
+    Dim menustatus As String
+    mInstrument.WriteString ":DISP:MENU:STATE 0" & vbLf ' Menü auschalten
+    mInstrument.WriteString ":HCOP:SDUM:DATA:FORM PNG" & vbLf ' Format auf PNG stellen
+    mInstrument.WriteString ":DISP:IMAG?" & vbLf ' Abfragen wie der Screen des Gerätes eingestellt ist
+    dispstatus = mInstrument.ReadString() ' Status sichern
+    mInstrument.WriteString ":DISP:IMAG INV" & vbLf ' Screen auf Invertiert stellen
+    mInstrument.WriteString ":DISP:SKEY:STAT?" & vbLf ' Abfragen wie das Menü des Gerätes eingestelt ist
+    menustatus = mInstrument.ReadString() ' Status sichern
+    mInstrument.WriteString ":DISP:SKEY:STAT 0" & vbLf ' Menü des Gerätes deaktivieren
+    Delay 250 'Pause damit das Menü ausgeblendet ist
+    mInstrument.WriteString ":HCOP:SDUM:DATA?" & vbLf ' Datei von Gerät über Bus ausgeben und Lokal einlesen"
+    mFile.File = mInstrument.ReadString()
+    mInstrument.WriteString ":DISP:IMAG " & dispstatus & vbLf  ' Screen wieder in Originalzustand
+    mInstrument.WriteString ":DISP:SKEY:STAT " & menustatus & vbLf ' Menü des Gerätes wieder in Originalzustand
+    mFile.File = Right(mFile.File, Len(mFile.File) - 8) ' Datenmüll am Anfang der Datei abschneiden
+    mFile.Filetype = "png"
+    mInstrument.IO.Close
+    Exit Function
+ups:
+ErrorhandlerVisa mInstrument, "Picture_E5071C"
+End Function
+Private Function Picture_3034A()
+    On Error GoTo ups
+    mInstrument.WriteString ":DISPLAY:DATA? PNG, COLOR" & vbLf
+    Dim Picture As String
+    mFile.File = mInstrument.ReadString()
+    mFile.File = Right(mFile.File, Len(mFile.File) - 10) ' Datenmüll am Anfang der Datei abschneiden
+    mFile.Filetype = "png"
+    mInstrument.IO.Close
+    Exit Function
+ups:
+    ErrorhandlerVisa mInstrument, "Picture_3034A"
+End Function
+Private Function Picture_FSW()
+    On Error GoTo ups
+    mInstrument.WriteString "HCOP:DEV:LANG PNG;*WAI" & vbLf
+    mInstrument.WriteString "HCOP:DEST1 MMEM;*WAI" & vbLf
+    mInstrument.WriteString "MMEM:NAME 'C:\R_S\Instr\user\screenshot.png';*WAI" & vbLf
+    mInstrument.WriteString "HCOP:PAGE:WIND:COUN;*WAI" & vbLf
+    mInstrument.WriteString "HCOP:CONT WIND 1;*WAI" & vbLf 'auf PNG Format stellen, Ziel Speichern, Speicherort,auf welche Seite des Printouts, Fenster 1
+    mInstrument.WriteString "HCOP;*WAI" & vbLf ' Datei erstellen
+    mInstrument.WriteString "MMEM:DATA? 'C:\R_S\Instr\user\screenshot.png';*WAI" & vbLf
+    mFile.File = mInstrument.ReadString()
+    mFile.File = Right(mFile.File, Len(mFile.File) - 7) ' Datenmüll am Anfang der Datei abschneiden
+    mFile.Filetype = "png"
+    mInstrument.IO.Close
+    Exit Function
+ups:
+    ErrorhandlerVisa mInstrument, "Picture_FSW"
+End Function
+Private Function Picture_ZNB_Act()
+    On Error GoTo ups
+    mInstrument.WriteString "HCOP:DEV:LANG PNG;*WAI" & vbLf
+    mInstrument.WriteString "MMEM:NAME 'C:\Screenshots\screenshot.png';*WAI" & vbLf
+    mInstrument.WriteString "HCOP:PAGE:WIND ACT" & vbLf ' Aktives Fenster auswählen
+    mInstrument.WriteString "HCOP;*WAI" & vbLf ' Datei erstellen
+    mInstrument.WriteString "MMEM:DATA? 'C:\Screenshots\screenshot.png';*WAI" & vbLf
+    mFile.File = mInstrument.ReadString()
+    mInstrument.WriteString "MMEM:DEL 'C:\Screenshots\screenshot.png';*WAI" & vbLf
+    mFile.File = Right(mFile.File, Len(mFile.File) - 7) ' Datenmüll am Anfang der Datei abschneiden
+    mFile.Filetype = "png"
+    mInstrument.IO.Close
+    Exit Function
+ups:
+    ErrorhandlerVisa mInstrument, "Picture_ZNB"
+End Function
+Private Function Picture_ZNB_Full()
+    On Error GoTo ups
+    mInstrument.WriteString "HCOP:DEV:LANG PNG;*WAI" & vbLf
+    mInstrument.WriteString "MMEM:NAME 'C:\Screenshots\screenshot.png';*WAI" & vbLf
+    mInstrument.WriteString "HCOP:PAGE:WIND ALL" & vbLf ' Aktives Fenster auswählen
+    mInstrument.WriteString "HCOP;*WAI" & vbLf ' Datei erstellen
+    mInstrument.WriteString "MMEM:DATA? 'C:\Screenshots\screenshot.png';*WAI" & vbLf
+    mFile.File = mInstrument.ReadString()
+    mInstrument.WriteString "MMEM:DEL 'C:\Screenshots\screenshot.png';*WAI" & vbLf
+    mFile.File = Right(mFile.File, Len(mFile.File) - 7) ' Datenmüll am Anfang der Datei abschneiden
+    mFile.Filetype = "png"
+    mInstrument.IO.Close
+    Exit Function
+ups:
+    ErrorhandlerVisa mInstrument, "Picture_ZNB"
+End Function
+Private Function Picture_PXA_MXA_EXA_CXA()
+    On Error GoTo ups
+    Dim menustatus As String
+    mInstrument.WriteString ("DISP:FSCR:STAT?;*WAI") & vbLf ' status des Menüs abfragen
+    menustatus = mInstrument.ReadString()
+    mInstrument.WriteString "DISP:FSCR:STAT 1;*WAI" & vbLf  ' Auf Vollbild schalten
+    Delay 200
+    mInstrument.WriteString "MMEM:STOR:SCR 'D:\\PICTURE.PNG';*WAI" & vbLf ' Screenshot Aufnehmen
+    mInstrument.WriteString "MMEM:DATA? 'D:\\PICTURE.PNG';*WAI" & vbLf 'Screenshot ausgeben
+    mFile.File = mInstrument.ReadString() 'Screenshot vom Bus lesen
+    mFile.File = Right(mFile.File, Len(mFile.File) - 7) ' Datenmüll am Anfang der Datei abschneiden
+    mInstrument.WriteString "MMEM:DEL 'D:\\PICTURE.PNG';*WAI" & vbLf ' Datei auf Gerät wieder löschen
+    mInstrument.WriteString "DISP:FSCR:STAT " & menustatus & ";*WAI" & vbLf  ' Auf Vollbild schalten
+    mFile.Filetype = "png"
+    mInstrument.IO.Close
+    Exit Function
+ups:
+    ErrorhandlerVisa mInstrument, "Picture_FSW"
+End Function
+Private Function Picture_E7402A()
+    On Error GoTo ups
+    SetDateAndTime_E7402A
+    SetTitle_E7402A
+    mInstrument.WriteString ":DISP:MENU:STATE 0" & vbLf ' Menü auschalten
+    mInstrument.WriteString ":MMEM:STOR:SCR  'R:INTUI.WMF'" & vbLf ' Screenshot auf Gerät erstellen
+    mInstrument.WriteString ":MMEM:DATA? 'R:INTUI.WMF';*WAI" & vbLf ' Datei von Gerät über Bus ausgeben und Lokal einlesen"
+    mFile.File = mInstrument.ReadString()
+    mInstrument.WriteString ":MMEM:DEL 'R:INTUI.WMF'" & vbLf 'alte Datei löschen
+    mInstrument.WriteString ":DISP:MENU:STATE 1" & vbLf ' Menü einschalten
+    mFile.File = Right(mFile.File, Len(mFile.File) - 7) ' Datenmüll am Anfang der Datei abschneiden
+    mFile.Filetype = "png"
+    mInstrument.IO.Close
+    Exit Function
+ups:
+    ErrorhandlerVisa mInstrument, "Picture_E7402A"
+End Function
+Private Function Picture_Tek_mdo()
+    On Error GoTo ups
+        mInstrument.WriteString "SAVE:IMAG:FILEF PNG" & vbLf 'Format für den Screenshot einstellen
+        mInstrument.WriteString "HARDCopy:INKS ON" & vbLf
+        mInstrument.WriteString "HARDCOPY START" & vbLf ' Screenshot erstellen und ausgeben
+        mFile.File = mInstrument.ReadString()
+        mFile.Filetype = "png"
+        mInstrument.IO.Close
+    Exit Function
+ups:
+    ErrorhandlerVisa mInstrument, "Picture_Tek_mdo"
+End Function
+Private Function Picture_Tek_tds()
+    On Error GoTo ups
+        mInstrument.WriteString "SAVE:IMAG:FILEF PNG" & vbLf 'Format für den Screenshot einstellen
+        mInstrument.WriteString "HARD:INKS ON" & vbLf
+        mInstrument.WriteString "HARD:STAR" & vbLf ' Screenshot erstellen und ausgeben
+        mFile.File = mInstrument.ReadString()
+        mFile.Filetype = "png"
+        mInstrument.IO.Close
+    Exit Function
+ups:
+    ErrorhandlerVisa mInstrument, "Picture_Tek_tds"
+End Function
+Private Function Picture_InfiniiVision7000B()
+    On Error GoTo ups
+        mInstrument.WriteString ":HARD:INKS ON" & vbLf
+        mInstrument.WriteString ":DISP:DATA? PNG, SCR, COL" & vbLf ' Screenshot erstellen und ausgeben
+        Sleep 2000
+        mFile.File = mInstrument.ReadString()
+        Sleep 200
+        mFile.Filetype = "png"
+        mFile.File = Right(mFile.File, Len(mFile.File) - 10) ' Datenmüll am Anfang der Datei abschneiden
+        mInstrument.IO.Close
+    Exit Function
+ups:
+    ErrorhandlerVisa mInstrument, "Picture_InfiniiVision7000B"
+End Function
+Private Function Waveform_E7402A() As String
+    On Error GoTo ups
+    SetDateAndTime_E7402A
+    mInstrument.WriteString ":DISP:MENU:STATE 0" & vbLf ' Menü auschalten
+    mInstrument.WriteString ":MMEM:STOR:TRAC TRACE1,""R:INTUI.CSV""" & vbLf ' Trace auf Gerät erstellen
+    mInstrument.WriteString ":MMEM:DATA? 'R:INTUI.CSV'" & vbLf
+    mFile.File = mInstrument.ReadString() ' Datei von Gerät über Bus ausgeben und Lokal einlesen
+    mInstrument.WriteString ":MMEM:DEL 'R:INTUI.CSV'" & vbLf 'alte Datei löschen
+    mInstrument.WriteString ":DISP:MENU:STATE 1" & vbLf ' Menü einschalten
+    mFile.File = Right(mFile.File, Len(mFile.File) - 8) ' Datenmüll am Anfang der Datei abschneiden
+    mFile.Filetype = "csv"
+    mInstrument.IO.Close
+    Exit Function
+ups:
+    ErrorhandlerVisa mInstrument, "Waveform_E7402A"
+End Function
+Private Function Waveform_4395A() As String
+    On Error GoTo ups
+    Dim file1() As String
+    'Dim file2() As String
+    Dim file3() As String
+    Dim file3a() As String
+    Dim file3b() As String
+    Dim trace As String
+    Dim header As String
+    Dim X_Achse As String
+    'Dim Y_Achse1 As String
+    'Dim Y_Achse2 As String
+    Dim K_Y_Achse1 As String
+    Dim K_Y_Achse2 As String
+    Dim K_Y_Achse3 As String
+    Dim K_Y_Achse4 As String
+
+    Dim untere_Grenze As Integer
+    Dim obere_Grenze As Integer
+    Dim Messpunkte As Integer
+    Dim i As Integer
+    
+    mInstrument.WriteString "FORM4" & vbLf ' Format auf Ascii stellen
+    
+    mInstrument.WriteString "OUTPSWPRM?" & vbLf 'Frequenzinformationen auslesen
+    mFile.File = mInstrument.ReadString() ' Datei von Gerät über Bus ausgeben und Lokal einlesen
+    X_Achse = mFile.File ' Frequenzdaten
+    Messpunkte = UBound(Split(X_Achse, ",")) ' Anzahl Messpunkte ermitteln
+    
+    
+    
+    'Trace auslesen und aufbereiten
+    mInstrument.WriteString "OUTPDTRC?" & vbLf 'Trace auslesen
+    mFile.File = mFile.File & mInstrument.ReadString() ' Datei von Gerät über Bus ausgeben und Lokal einlesen´
+    mFile.File = Replace(mFile.File, Chr(13), ";") 'umbrüche durch gut Splitbares Zeichen ersetzen
+    mFile.File = Replace(mFile.File, Chr(10), ";") 'umbrüche durch gut Splitbares Zeichen ersetzen
+    mFile.File = Replace(mFile.File, ";;", ";")
+    'mFile.File = Left(mFile.File, Len(mFile.File) - 1) 'unnötiges Zeichen am Ende entfernen
+    file2 = Split(mFile.File, ";") 'String splitten um Frequenzdaten sauber von Messdaten zu trennen
+    file2 = Split(file2(1), ",") 'Messwerte splitten
+
+
+    'komplexes Format auslesen und aufbereiten
+    mInstrument.WriteString "OUTPDATA?" & vbLf 'Komplexes Format auslesen
+    mFile.File = mFile.File & mInstrument.ReadString() ' Datei von Gerät über Bus ausgeben und Lokal einlesen
+    mFile.File = Replace(mFile.File, Chr(13), ";") 'umbrüche durch gut Splitbares Zeichen ersetzen
+    mFile.File = Replace(mFile.File, Chr(10), ";") 'umbrüche durch gut Splitbares Zeichen ersetzen
+    mFile.File = Replace(mFile.File, ";;", ";")
+    mFile.File = Left(mFile.File, Len(mFile.File) - 1) 'unnötiges Zeichen am Ende entfernen
+    file3 = Split(mFile.File, ";") 'String splitten um Frequenzdaten sauber von Messdaten zu trennen
+    'file3 = Split(file3(1), ",")
+    'file3(Messpunkte * 2 + 1) = Left(file3(Messpunkte * 2 + 1), 14) & ";" & Right(file3(Messpunkte * 2 + 1), 14)
+    'mFile.File = Join(file3, ",")
+    'file3 = Split(mFile.File, ";")
+    file3a = Split(file3(1), ",")
+    file3b = Split(file3(2), ",")
+    
+    mFile.EinfuegenInSheet = False
+    mFile.Filetype = "csv"
+    mInstrument.IO.Close
+    
+    
+    'trace
+    'untere_Grenze = LBound(file2)
+    'obere_Grenze = UBound(file2)
+    '
+    'For i = 0 To obere_Grenze Step 2
+    '    Y_Achse1 = Y_Achse1 & file2(i) & ","
+    '    Y_Achse2 = Y_Achse2 & file2(i + 1) & ","
+    '
+    '    If i > obere_Grenze - 2 Then
+    '        i = obere_Grenze
+    '    End If
+    'Next i
+    
+    'mFile.File = X_Achse & Y_Achse1 & vbLf & Y_Achse2
+    
+    'Komplexes Format
+    untere_Grenze = LBound(file2)
+    obere_Grenze = UBound(file2)
+    
+    For i = 0 To obere_Grenze Step 2
+        Y_Achse1 = Y_Achse1 & file2(i) & ","
+        Y_Achse2 = Y_Achse2 & file2(i + 1) & ","
+        K_Y_Achse1 = K_Y_Achse1 & file3a(i) & ","
+        K_Y_Achse2 = K_Y_Achse2 & file3a(i + 1) & ","
+        K_Y_Achse3 = K_Y_Achse3 & file3b(i) & ","
+        K_Y_Achse4 = K_Y_Achse4 & file3b(i + 1) & ","
+        If i >= obere_Grenze - 2 Then
+            i = obere_Grenze
+        End If
+    Next i
+    
+    header = "Frequency, Magnitude1, Magnitude2, Komplex1, Komplex2"
+    
+    
+    mFile.File = "Frequency, " & X_Achse & "Magnitude1, " & K_Y_Achse1 & vbLf & "Magnitude2, " & K_Y_Achse2 & vbLf & "Komplex1, " & K_Y_Achse3 & vbLf & "Komplex2, " & K_Y_Achse4
+    'mFile.File = X_Achse & K_Y_Achse1 & vbLf & K_Y_Achse2 & vbLf & K_Y_Achse3 & vbLf & K_Y_Achse4
+    
+    Exit Function
+ups:
+    ErrorhandlerVisa mInstrument, "Waveform_4395A"
+End Function
+Private Function Messwert_34410A() As String
+    On Error GoTo ups
+    Dim Messwert As String
+    mInstrument.WriteString ":READ?" & vbLf ' Messwert Abfragen
+    mFile.File = mInstrument.ReadString
+    mFile.Filetype = "value"
+    Exit Function
+ups:
+    ErrorhandlerVisa mInstrument, "Waveform_E7402A"
+End Function
+Private Function SetDateAndTime_E7402A()
+    On Error GoTo ups
+    Dim sendstring As String
+    sendstring = ":SYST:TIME " & Hour(Now) & "," & Minute(Now) & "," & Second(Now) & vbLf ' Uhrzeit einstellen
+    mInstrument.WriteString sendstring
+    sendstring = ":SYST:DATE " & Year(Now) & "," & Month(Now) & "," & Day(Now) & vbLf ' Datum einstellen
+    mInstrument.WriteString sendstring
+    Exit Function
+ups:
+    ErrorhandlerVisa mInstrument, "SetDateAndTime_E7402A"
+End Function
+Private Function SetTitle_E7402A()
+    On Error GoTo ups
+    mInstrument.WriteString ":DISP:ANN:Title:Data '" & mConfig.Titel & "'" & vbLf
+    Exit Function
+ups:
+    ErrorhandlerVisa mInstrument, "SetTitle_E7402A"
+End Function
+Private Function Waveform3034A() As String
+    On Error GoTo ups
+    Dim PointsNum As String
+    Dim Error_Check As String
+    mInstrument.WriteString ":WAVEFORM:FORMAT ASCII" & vbLf
+    mInstrument.WriteString ":WAVEFORM:POINTS?" & vbLf
+    PointsNum = mInstrument.ReadString()
+    Dim currChannel As Integer
+    Dim Target As Range
+    Dim timewritten As Boolean
+    Set Target = Application.ActiveCell
+    For currChannel = 1 To 4
+        If ChannelActive3034A(currChannel) Then
+            Dim waveformdata As String
+            waveformdata = getWaveformData3034A(currChannel)
+            WriteToWorkbook3034A (ActiveSheet.Cells(Target.row, Target.Column + currChannel - 1)), waveformdata, currChannel
+            If Not timewritten Then
+                WriteTimebaseToWorkbook3034A Target, waveformdata
+                timewritten = True
+            End If
+        End If
+    Next
+    'Error Check
+    mInstrument.WriteString ":SYSTEM:ERROR?" & vbLf
+    Error_Check = mInstrument.ReadString
+    ActiveSheet.Cells(Target.row, Target.Column + 5) = Error_Check
+    mInstrument.IO.Close
+    mFile.File = "NoFile"
+    mFile.Filetype = "NoFile"
+    Exit Function
+ups:
+    ErrorhandlerVisa mInstrument, "Waveform3034A"
+End Function
+Private Function ChannelActive3034A(ChNo As Integer) As Boolean
+    On Error GoTo ups
+    mInstrument.WriteString ":CHAN" & ChNo & ":DISP?" & vbLf
+    ChannelActive3034A = mInstrument.ReadString()
+    Exit Function
+ups:
+    ErrorhandlerVisa mInstrument, "ChannelActive3034A"
+End Function
+Private Function getWaveformData3034A(ChNo As Integer) As String
+    On Error GoTo ups
+    mInstrument.WriteString ":WAVEFORM:SOURCE CHAN" & ChNo & vbLf
+    mInstrument.WriteString ":WAVEFORM:DATA?" & vbLf
+    getWaveformData3034A = mInstrument.ReadString
+    Exit Function
+ups:
+    ErrorhandlerVisa mInstrument, "getWaveformData3034A"
+End Function
+Private Function WriteTimebaseToWorkbook3034A(ByRef Target As Range, waveformdata As String)
+    On Error GoTo ups
+    Dim TsXInc As String, TsXRef As String, TsXorigin As String
+    mInstrument.WriteString ":WAVEFORM:XINCREMENT?" & vbLf
+    TsXInc = mInstrument.ReadString()
+    mInstrument.WriteString ":WAVEFORM:XREFERENCE?" & vbLf
+    TsXRef = mInstrument.ReadString()
+    mInstrument.WriteString ":WAVEFORM:XORIGIN?" & vbLf
+    TsXorigin = mInstrument.ReadString()
+    'ArraySplit = Split(waveformdata, ",")
+    Target.Parent.Cells(Target.Cells(1, 1).row, Target.Cells(1, 1).Column) = "Time"
+    Dim M As Long
+    For M = 0 To UBound(Split(waveformdata, ","))
+        Target.Parent.Cells(Target.Cells(1, 1).row + M + 1, Target.Cells(1, 1).Column) = ((M - TsXRef) * TsXInc) + TsXorigin
+        'time = [(data point number - xreference) * xincrement] + xorigin
+    Next M
+    Exit Function
+ups:
+    ErrorhandlerVisa mInstrument, "WriteTimebaseToWorkbook3034A"
+End Function
+Private Function WriteToWorkbook3034A(ByRef Target As Range, ByRef waveformdata As String, currChannel As Integer)
+    Dim j As Long
+    Dim ArraySplit As Variant
+    Dim Remove_Header As String
+    ArraySplit = Split(waveformdata, ",")
+    Target.Parent.Cells(Target.Cells(1, 1).row, Target.Cells(1, 1).Column + 1).Value = "CH" & currChannel
+    For j = 1 To UBound(ArraySplit)
+        Target.Parent.Cells(Target.Cells(1, 1).row + j + 1, Target.Cells(1, 1).Column + 1).Value = ArraySplit(j)
+    Next j
+    Remove_Header = ArraySplit(0)
+    'The following function splits off the IEEE header from the first data value.
+    'This function assumes the header is 10 characters in length, which is
+    'consistent for 5000, 6000A/L, and 7000-series scopes.
+    Target.Parent.Cells(Target.Cells(1, 1).row + 1, Target.Cells(1, 1).Column + 1).Value = Mid(Remove_Header, 11, (Len(Remove_Header) - 10))
+    'Works for newer 2000X, 3000X/T, 4000X, 6000X scopes that have a space following the header.
+    'ArraySplit_Header1 = Split(Remove_Header1, " ")
+    'Tabelle1.Cells(9, 2) = ArraySplit_Header1(1)
+    Exit Function
+ups:
+    MsgBox "Fehler in Funkion WriteToWorkbook3034A" & vbCrLf & "Fehlermeldung: " & Err.Description & vbCrLf & "Fehler Source: " & Err.source
+    End
+End Function

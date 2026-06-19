@@ -1,0 +1,84 @@
+Attribute VB_Name = "Funktionen"
+'Funktionen FSW 13 per VISA
+Option Explicit
+Dim iniClass As clsIni  ' klasse zum ini Speichern einbinden
+Dim Path As String
+Declare PtrSafe Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long) ' this accesses the "sleep" function. very useful for introducing delays into read/write cycles.
+Dim ioMgr As New VisaComLib.ResourceManager
+Dim Instrument As New VisaComLib.FormattedIO488
+
+Public Function VISA_Init(ByVal AddressString As String, ByRef ioMgr As VisaComLib.ResourceManager) As VisaComLib.FormattedIO488
+    On Error GoTo ups
+    'Dim ioMgr As New VisaComLib.ResourceManager
+    'Dim instrument As New VisaComLib.FormattedIO488
+    Set Instrument.IO = ioMgr.Open(AddressString) ' use instrument specific address for Open() parameter – i.e. GPIB0::22 this has the form of "GPIB0::27::INSTR" or "USB0::0x0957::0x0618::MY50280110::INSTR"
+    ' introduce a delay...
+    If (Left(AddressString, 4) = "ASRL") Or (Left(AddressString, 3) = "USB") Then
+        Sleep 2500  ' USB, ASRL slower than GPIB
+    End If
+    Set VISA_Init = Instrument
+    Exit Function
+ups:
+    ErrorhandlerVisa Instrument.IO, "VISA_Init"
+End Function
+Public Function SendRead(AddressString As String, CommandString As String, Optional close_delay As Long = 100) As String
+    On Error GoTo ups
+    Set Instrument = VISA_Init(AddressString, ioMgr)
+    If Not Instrument.IO Is Nothing Then
+        Instrument.WriteString CommandString & vbLf  ' good for Agilent DMMs, regardless of connection
+        SendRead = Instrument.ReadString()  ' read length 100
+        Sleep (close_delay)
+        Instrument.IO.Close
+    End If
+    Exit Function
+ups:
+    ErrorhandlerVisa Instrument, "VISA_Init"
+End Function
+Public Function Send(AddressString As String, CommandString As String, Optional close_delay As Long = 100) As IMessage
+    On Error GoTo ups
+    Set Instrument = VISA_Init(AddressString, ioMgr)
+    Instrument.WriteString CommandString & vbLf  ' good for Agilent DMMs, regardless of connection
+    '  examples:  ":MEAS:VOLT?" , ":MEAS:CURRENT:AC?"   etc
+    'Set Send = instrument
+    Sleep (close_delay)
+    Instrument.IO.Close
+    Exit Function
+ups:
+    ErrorhandlerVisa Instrument, "Send"
+End Function
+Public Function saveFile(File As TypeDefs.Data, strVerzeichnis As String, Optional EinfügenInSheet As Boolean = False)
+On Error GoTo ups
+Dim StrDateiname As String
+If EinfügenInSheet = True Then
+    PictureToScheet File
+    Exit Function
+End If
+StrDateiname = getSpeicherort(strVerzeichnis, File.Filetype)
+SaveToDisk File, StrDateiname
+Exit Function
+ups:
+    MsgBox "Fehler in Funkion saveFile" & vbCrLf & "Fehlermeldung: " & Err.Description & vbCrLf & "Fehler Source: " & Err.source
+    End
+    End Function
+    Public Function S_File(Config As TypeDefs.Confing)
+    On Error GoTo ups
+    Dim Device As New getVisaFile
+    Dim SFile As TypeDefs.Data
+    Dim folder As String
+    Device.Init Config
+    SFile = Device.SFile
+    filehandler.saveIt SFile, False
+    Exit Function
+ups:
+    MsgBox "Fehler in Funktion Function S_File" & vbCrLf & "Fehlermeldung: " & Err.Description & vbCrLf & "Fehler Source: " & Err.source
+    End
+    End Function
+Public Sub Visa_Diagnose()
+    On Error GoTo ups
+    Init
+    VISA_INSTRUMENTS.Show
+     Exit Sub
+ups:
+    MsgBox "Fehler in Sub Visa_Diagnose" & vbCrLf & "Fehlermeldung: " & Err.Description & vbCrLf & "Fehler Source: " & Err.source
+    End
+End Sub

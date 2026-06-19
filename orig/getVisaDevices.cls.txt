@@ -1,0 +1,111 @@
+VERSION 1.0 CLASS
+BEGIN
+  MultiUse = -1  'True
+END
+Attribute VB_Name = "getVisaDevices"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Option Explicit
+Dim mIoMgr As VisaComLib.ResourceManager
+Dim mInstrument As VisaComLib.FormattedIO488
+Private mFile As TypeDefs.Data
+Private mIdn As String
+Private initialisert As Boolean
+Private DeviceNames() As String
+Private DeviceAddr() As String
+Public Property Get getDeviceNames() As String()
+    getDeviceNames = DeviceNames
+End Property
+Public Property Get getDeviceAddr() As String()
+        getDeviceAddr = DeviceAddr
+End Property
+Public Function Init()
+    On Error GoTo ups
+    If Not initialisert Then
+        Set mIoMgr = New VisaComLib.ResourceManager
+        Set mInstrument = New VisaComLib.FormattedIO488
+        initialisert = True
+    End If
+    Exit Function
+ups:
+    MsgBox "Initialisierung Fehlgeschlagen, Addresse überprüfen"
+End Function
+Public Function SearchVisaDevices()
+    On Error Resume Next
+    Init
+    Dim i As Integer
+    Dim j As Integer
+    DeviceAddr = mIoMgr.FindRsrc("?*") 'Alle zu findenen Geräte von Allen Typen ermitteln alternative = (GPIB|VXI|PXI|VXI-11|TCPIP)?*INSTR
+    
+    ReDim Preserve DeviceNames(UBound(DeviceAddr) - LBound(DeviceAddr))
+    DeviceAddr = DeviceAddr()
+    For i = LBound(DeviceAddr) To UBound(DeviceAddr)
+weiter:
+    If i <= UBound(DeviceAddr) Then 'unerwünschte Gerätetypen und doppelte filtern, ggf mit Ursprungsliste vergleichen und anpassn
+                If InStr(1, DeviceAddr(i), "MY44324535", 1) > 0 Or _
+                InStr(1, DeviceAddr(i), "ASRL", 1) > 0 Or _
+                InStr(1, DeviceAddr(i), "MEMACC", 1) > 0 Or _
+                InStr(1, DeviceAddr(i), "hislip", 1) > 0 Or _
+                InStr(1, DeviceAddr(i), "SOCKET", 1) > 0 Or _
+                InStr(1, DeviceAddr(i), "GPIB0::INTFC", 1) > 0 Then
+                    GoTo DeviceEntfernen
+                End If
+                Dim mInstrument As New VisaComLib.FormattedIO488
+                On Error Resume Next
+                Set mInstrument.IO = mIoMgr.Open(DeviceAddr(i))
+                mInstrument.WriteString ("*IDN?")
+                DeviceNames(i) = mInstrument.ReadString
+                mInstrument.IO.Close
+                On Error GoTo 0
+                If DeviceNames(i) = "" Then GoTo DeviceEntfernen:
+        End If
+        Next i
+    Exit Function
+DeviceEntfernen:
+    Err.Clear
+    If UBound(DeviceAddr) > 0 Then
+        For j = i To UBound(DeviceAddr) - 1
+            DeviceAddr(j) = DeviceAddr(j + 1)
+            DeviceNames(j) = DeviceNames(j + 1)
+        Next
+        ReDim Preserve DeviceAddr(UBound(DeviceAddr) - 1)
+        ReDim Preserve DeviceNames(UBound(DeviceNames) - 1)
+        GoTo weiter
+    Else
+        Erase DeviceAddr
+    End If
+End Function
+Public Function ChooseDevice() As String
+    On Error Resume Next
+    deleteAllBars
+    'MsgBox Worksheets("Protokoll").Range("J2").Value = "Wurst"
+    Worksheets("Protokoll").Range("Date").Value = Date
+    Dim myBar As CommandBar
+    Set myBar = Application.CommandBars.Add("DeviceList", msoBarPopup, False, True)
+    Dim comboBox As CommandBarComboBox
+    Set comboBox = myBar.Controls.Add(Type:=msoControlComboBox)
+    Dim i As Integer
+    For i = LBound(DeviceNames) To UBound(DeviceNames)
+        comboBox.AddItem DeviceNames(i)
+    Next i
+    Dim Nummer As Integer
+    comboBox.Caption = "Geräte"
+    comboBox.Width = 400
+    'comboBox.OnAction = ThisWorkbook.Name & "'!" & "getName"
+    'comboBox.OnAction = "getVisaFile.getName"
+    'For Each Item In Application.ActiveWorkbook.
+    Application.CommandBars("DeviceList").ShowPopup
+    Nummer = Application.CommandBars("DeviceList").Controls("Geräte").ListIndex - 1
+    ChooseDevice = DeviceAddr(Nummer)
+    On Error GoTo 0
+End Function
+Private Sub deleteAllBars()
+    Dim bar As CommandBar
+    
+    For Each bar In Application.CommandBars
+        If Not bar.BuiltIn And Not bar.Visible Then bar.Delete
+    Next
+End Sub
+

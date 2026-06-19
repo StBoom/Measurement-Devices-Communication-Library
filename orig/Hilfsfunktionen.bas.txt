@@ -1,0 +1,83 @@
+Attribute VB_Name = "Hilfsfunktionen"
+Public Function HexToByte(strHex As String) As Byte()
+    On Error GoTo ups
+    Dim i As Integer
+    Dim tempByte As Byte
+    Dim outBytes() As Byte
+    ReDim outBytes(Len(strHex) \ 2 - 1)
+    For i = 0 To Len(strHex) \ 2 - 1
+        For j = 0 To 1
+            char = Mid(strHex, i * 2 + j + 1, 1)
+            Select Case char
+                Case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
+                    tempByte = tempByte Or (Asc(char) - 48)
+                Case "A", "B", "C", "D", "E", "F":
+                    tempByte = tempByte Or (Asc(char) - 55)
+            End Select
+            If j = 0 Then
+                tempByte = tempByte * 2 ^ 4
+            Else
+                outBytes(i) = tempByte
+                tempByte = 0
+            End If
+        Next
+    Next
+    HexToByte = outBytes
+    Exit Function
+ups:
+    MsgBox "Fehler in Funkion HexToByte" & vbCrLf & "Fehlermeldung: " & Err.Description & vbCrLf & "Fehler Source: " & Err.source
+    End
+    End Function
+Public Function calculateCRC8(ByVal AppID As String) As String
+    On Error GoTo ups
+    Dim CRC8 As Byte
+    Dim i As Integer
+    Dim j As Integer
+    Dim AppIDarray() As Byte  '<--- explicitly dimensioned as a Byte array to avoid confusion
+
+
+    CRC8 = &H0 '<---- Initial CRC8 &=Long H=Hex
+
+    'The AppID is actually bytes stored in hexadecimal in a string. You have to convert them back to bytes before you can run a crc8 on them.
+    AppIDarray = HexToByte(AppID)
+    aidLength = UBound(AppIDarray)
+            For j = 0 To aidLength
+                CRC8 = CRC8 Xor AppIDarray(j) '"altes" schon berechnetes crc Byte xor mit dem nächsten Byte aus dem AppArray
+                For i = 1 To 8 'Schleife CRC fürs aktuelle Byte
+                    If CRC8 And &H80 Then
+                     'masking off the left-most bit before shifting prevents the Overflow error.
+                     CRC8 = ((&H7F And CRC8) * 2) Xor &H7 'nach links verschieben und Xor mit Polynom
+                    Else
+                     CRC8 = CRC8 * 2 'nach links schieben
+                    End If
+                Next i
+            Next j
+    calculateCRC8 = CRC8
+    Exit Function
+ups:
+    MsgBox "Fehler in Funkion calculateCRC8" & vbCrLf & "Fehlermeldung: " & Err.Description & vbCrLf & "Fehler Source: " & Err.source
+    End
+    End Function
+
+Public Function ErrorhandlerVisa(ByRef Instrument As VisaComLib.FormattedIO488, Funktionsname As String)
+'Errorhandler VISA
+    If Instrument Is Nothing Then
+        MsgBox "Geräteadresse oder Verbindung überprüfen" & vbCrLf & vbCrLf & "Fehler: " & Err.Description & vbCrLf & "Source: " & Err.source & vbCrLf & "Funktion: " & Funktionsname
+    Else
+        Dim errTyp As String * 50, ErrNo As Variant
+        Instrument.WriteString ":SYST:ERR?" & vbLf  'Reads error message
+        errTyp = Instrument.ReadString()
+        ErrNo = Split(errTyp, ",")    'Gets the error code.
+        Instrument.IO.Close
+        If Val(ErrNo(0)) <> 0 Then
+            MsgBox "Fehler in VISA Kommunikation in Funktion: " & Funktionsname & "ggf. Befehl prüfen" & CStr(ErrNo(1)) & vbCrLf & vbCrLf
+        End If
+    End If
+End Function
+
+
+
+
+
+
+
