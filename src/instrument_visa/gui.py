@@ -31,7 +31,19 @@ from .config import SParameterConfig
 from .excel_export import append_result
 from .logging_utils import setup_logging
 from .profiles import UNKNOWN_PROFILE, DeviceProfile, detect_profile, hmp_channel_count
-from .sequence import FrequencySweepConfig, frequency_points, parse_dbm, run_frequency_sweep
+from .sequence import (
+    FrequencySweepConfig,
+    TimedSwitchConfig,
+    VoltageSweepConfig,
+    frequency_points,
+    parse_ampere,
+    parse_dbm,
+    parse_voltage,
+    run_frequency_sweep,
+    run_timed_switch,
+    run_voltage_sweep,
+    voltage_points,
+)
 from .visa_client import VisaInstrument, list_resources
 
 
@@ -80,13 +92,27 @@ class InstrumentVisaApp(tk.Tk):
         self.power_supply_max_current_var = tk.StringVar(value=str(self.settings.get("power_supply_max_current", "10")))
         self.sequence_generator_address_var = tk.StringVar(value=self.settings.get("sequence_generator_address", self.address_var.get()))
         self.sequence_measurement_address_var = tk.StringVar(value=self.settings.get("sequence_measurement_address", self.address_var.get()))
+        self.sequence_source_type_var = tk.StringVar(value=self.settings.get("sequence_source_type", "Signalgenerator"))
         self.sequence_start_frequency_var = tk.StringVar(value=self.settings.get("sequence_start_frequency", "100 MHz"))
         self.sequence_stop_frequency_var = tk.StringVar(value=self.settings.get("sequence_stop_frequency", "110 MHz"))
         self.sequence_step_frequency_var = tk.StringVar(value=self.settings.get("sequence_step_frequency", "1 MHz"))
         self.sequence_power_var = tk.StringVar(value=self.settings.get("sequence_power", "-30 dBm"))
+        self.sequence_supply_channel_var = tk.IntVar(value=int(self.settings.get("sequence_supply_channel", 1)))
+        self.sequence_start_voltage_var = tk.StringVar(value=self.settings.get("sequence_start_voltage", "0 V"))
+        self.sequence_stop_voltage_var = tk.StringVar(value=self.settings.get("sequence_stop_voltage", "5 V"))
+        self.sequence_step_voltage_var = tk.StringVar(value=self.settings.get("sequence_step_voltage", "1 V"))
+        self.sequence_current_limit_var = tk.StringVar(value=self.settings.get("sequence_current_limit", "0.1 A"))
         self.sequence_settle_var = tk.StringVar(value=str(self.settings.get("sequence_settle", "0.5")))
         self.sequence_measurement_mode_var = tk.StringVar(value=self.settings.get("sequence_measurement_mode", "DMM"))
         self.sequence_rf_off_at_end_var = tk.BooleanVar(value=bool(self.settings.get("sequence_rf_off_at_end", True)))
+        self.switch_source_type_var = tk.StringVar(value=self.settings.get("switch_source_type", "Signalgenerator"))
+        self.switch_address_var = tk.StringVar(value=self.settings.get("switch_address", self.address_var.get()))
+        self.switch_on_s_var = tk.StringVar(value=str(self.settings.get("switch_on_s", "1")))
+        self.switch_off_s_var = tk.StringVar(value=str(self.settings.get("switch_off_s", "1")))
+        self.switch_repetitions_var = tk.StringVar(value=str(self.settings.get("switch_repetitions", "3")))
+        self.switch_setup_before_var = tk.BooleanVar(value=bool(self.settings.get("switch_setup_before", False)))
+        self.switch_end_off_var = tk.BooleanVar(value=bool(self.settings.get("switch_end_off", True)))
+        self.switch_power_mode_var = tk.StringVar(value=self.settings.get("switch_power_mode", "Master"))
         self.status_var = tk.StringVar(value="Bereit")
         self._scope_widgets: list[tk.Widget] = []
         self._dmm_widgets: list[tk.Widget] = []
@@ -100,12 +126,16 @@ class InstrumentVisaApp(tk.Tk):
         self._power_supply_widgets: list[tk.Widget] = []
         self._sequence_widgets: list[tk.Widget] = []
         self._sequence_stop_widgets: list[tk.Widget] = []
+        self._switch_widgets: list[tk.Widget] = []
+        self._switch_stop_widgets: list[tk.Widget] = []
         self._device_sections: dict[str, tk.Widget] = {}
         self._power_supply_channel_spinbox: ttk.Spinbox | None = None
         self.timed_stop_event = threading.Event()
         self.sequence_stop_event = threading.Event()
+        self.switch_stop_event = threading.Event()
         self.timed_running = False
         self.sequence_running = False
+        self.switch_running = False
         self.current_profile: DeviceProfile = UNKNOWN_PROFILE
         self._messages: queue.Queue[tuple[str, object]] = queue.Queue()
         self._log_visible = bool(self.settings.get("log_visible", True))
@@ -370,9 +400,12 @@ class InstrumentVisaApp(tk.Tk):
         sequence.columnconfigure(1, weight=1)
         sequence.columnconfigure(3, weight=1)
 
-        ttk.Label(sequence, text="Generator-Adresse").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 4))
+        ttk.Label(sequence, text="Quellgerät").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 4))
+        sequence_source_type_combo = ttk.Combobox(sequence, textvariable=self.sequence_source_type_var, values=("Signalgenerator", "Netzgerät"), width=16, state="readonly")
+        sequence_source_type_combo.grid(row=0, column=1, sticky="ew", padx=8, pady=(8, 4))
+        ttk.Label(sequence, text="Quell-Adresse").grid(row=0, column=2, sticky="w", padx=8, pady=(8, 4))
         sequence_generator_entry = ttk.Entry(sequence, textvariable=self.sequence_generator_address_var)
-        sequence_generator_entry.grid(row=0, column=1, columnspan=3, sticky="ew", padx=8, pady=(8, 4))
+        sequence_generator_entry.grid(row=0, column=3, sticky="ew", padx=8, pady=(8, 4))
         sequence_generator_current_button = ttk.Button(sequence, text="aktuelle Adresse", command=self.use_current_address_as_sequence_generator)
         sequence_generator_current_button.grid(row=0, column=4, sticky="ew", padx=8, pady=(8, 4))
 
@@ -382,7 +415,7 @@ class InstrumentVisaApp(tk.Tk):
         sequence_measurement_current_button = ttk.Button(sequence, text="aktuelle Adresse", command=self.use_current_address_as_sequence_measurement)
         sequence_measurement_current_button.grid(row=1, column=4, sticky="ew", padx=8, pady=4)
 
-        ttk.Label(sequence, text="Start").grid(row=2, column=0, sticky="w", padx=8, pady=4)
+        ttk.Label(sequence, text="Generator Start").grid(row=2, column=0, sticky="w", padx=8, pady=4)
         sequence_start_entry = ttk.Entry(sequence, textvariable=self.sequence_start_frequency_var, width=12)
         sequence_start_entry.grid(row=2, column=1, sticky="ew", padx=8, pady=4)
         ttk.Label(sequence, text="Stop").grid(row=2, column=2, sticky="w", padx=8, pady=4)
@@ -392,22 +425,78 @@ class InstrumentVisaApp(tk.Tk):
         sequence_step_entry = ttk.Entry(sequence, textvariable=self.sequence_step_frequency_var, width=12)
         sequence_step_entry.grid(row=2, column=5, sticky="ew", padx=8, pady=4)
 
-        ttk.Label(sequence, text="Pegel").grid(row=3, column=0, sticky="w", padx=8, pady=4)
+        ttk.Label(sequence, text="Generator Pegel").grid(row=3, column=0, sticky="w", padx=8, pady=4)
         sequence_power_entry = ttk.Entry(sequence, textvariable=self.sequence_power_var, width=12)
         sequence_power_entry.grid(row=3, column=1, sticky="ew", padx=8, pady=4)
-        ttk.Label(sequence, text="Wartezeit [s]").grid(row=3, column=2, sticky="w", padx=8, pady=4)
+        ttk.Label(sequence, text="Netzteil Kanal").grid(row=3, column=2, sticky="w", padx=8, pady=4)
+        sequence_supply_channel_spinbox = ttk.Spinbox(sequence, from_=1, to=4, textvariable=self.sequence_supply_channel_var, width=4)
+        sequence_supply_channel_spinbox.grid(row=3, column=3, sticky="ew", padx=8, pady=4)
+
+        ttk.Label(sequence, text="Netzteil Start").grid(row=4, column=0, sticky="w", padx=8, pady=4)
+        sequence_voltage_start_entry = ttk.Entry(sequence, textvariable=self.sequence_start_voltage_var, width=12)
+        sequence_voltage_start_entry.grid(row=4, column=1, sticky="ew", padx=8, pady=4)
+        ttk.Label(sequence, text="Stop").grid(row=4, column=2, sticky="w", padx=8, pady=4)
+        sequence_voltage_stop_entry = ttk.Entry(sequence, textvariable=self.sequence_stop_voltage_var, width=12)
+        sequence_voltage_stop_entry.grid(row=4, column=3, sticky="ew", padx=8, pady=4)
+        ttk.Label(sequence, text="Schritt").grid(row=4, column=4, sticky="w", padx=8, pady=4)
+        sequence_voltage_step_entry = ttk.Entry(sequence, textvariable=self.sequence_step_voltage_var, width=12)
+        sequence_voltage_step_entry.grid(row=4, column=5, sticky="ew", padx=8, pady=4)
+
+        ttk.Label(sequence, text="Stromlimit").grid(row=5, column=0, sticky="w", padx=8, pady=4)
+        sequence_current_limit_entry = ttk.Entry(sequence, textvariable=self.sequence_current_limit_var, width=12)
+        sequence_current_limit_entry.grid(row=5, column=1, sticky="ew", padx=8, pady=4)
+        ttk.Label(sequence, text="Wartezeit [s]").grid(row=5, column=2, sticky="w", padx=8, pady=4)
         sequence_settle_entry = ttk.Entry(sequence, textvariable=self.sequence_settle_var, width=8)
-        sequence_settle_entry.grid(row=3, column=3, sticky="ew", padx=8, pady=4)
-        ttk.Label(sequence, text="Messart").grid(row=3, column=4, sticky="w", padx=8, pady=4)
+        sequence_settle_entry.grid(row=5, column=3, sticky="ew", padx=8, pady=4)
+        ttk.Label(sequence, text="Messart").grid(row=5, column=4, sticky="w", padx=8, pady=4)
         sequence_mode_combo = ttk.Combobox(sequence, textvariable=self.sequence_measurement_mode_var, values=("DMM", "Scope"), width=8, state="readonly")
-        sequence_mode_combo.grid(row=3, column=5, sticky="ew", padx=8, pady=4)
+        sequence_mode_combo.grid(row=5, column=5, sticky="ew", padx=8, pady=4)
 
         sequence_rf_off_check = ttk.Checkbutton(sequence, text="RF am Ende aus", variable=self.sequence_rf_off_at_end_var)
-        sequence_rf_off_check.grid(row=4, column=0, columnspan=2, sticky="w", padx=8, pady=(4, 8))
+        sequence_rf_off_check.grid(row=6, column=0, columnspan=2, sticky="w", padx=8, pady=(4, 8))
+        sequence_preview_button = ttk.Button(sequence, text="Vorschau", command=self.preview_sequence)
+        sequence_preview_button.grid(row=6, column=3, sticky="ew", padx=8, pady=(4, 8))
         sequence_start_button = ttk.Button(sequence, text="Ablauf starten", command=self.start_sequence)
-        sequence_start_button.grid(row=4, column=4, sticky="ew", padx=8, pady=(4, 8))
+        sequence_start_button.grid(row=6, column=4, sticky="ew", padx=8, pady=(4, 8))
         sequence_stop_button = ttk.Button(sequence, text="Stop", command=self.stop_sequence)
-        sequence_stop_button.grid(row=4, column=5, sticky="ew", padx=8, pady=(4, 8))
+        sequence_stop_button.grid(row=6, column=5, sticky="ew", padx=8, pady=(4, 8))
+
+        timed_switch = ttk.LabelFrame(controls_frame, text="Getimtes Schalten")
+        timed_switch.grid(row=5, column=0, sticky="ew", padx=12, pady=6)
+        timed_switch.columnconfigure(1, weight=1)
+        timed_switch.columnconfigure(3, weight=1)
+        ttk.Label(timed_switch, text="Quellgerät").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 4))
+        switch_source_combo = ttk.Combobox(timed_switch, textvariable=self.switch_source_type_var, values=("Signalgenerator", "Netzgerät"), width=16, state="readonly")
+        switch_source_combo.grid(row=0, column=1, sticky="ew", padx=8, pady=(8, 4))
+        ttk.Label(timed_switch, text="Adresse").grid(row=0, column=2, sticky="w", padx=8, pady=(8, 4))
+        switch_address_entry = ttk.Entry(timed_switch, textvariable=self.switch_address_var)
+        switch_address_entry.grid(row=0, column=3, sticky="ew", padx=8, pady=(8, 4))
+        switch_current_button = ttk.Button(timed_switch, text="aktuelle Adresse", command=self.use_current_address_as_switch_source)
+        switch_current_button.grid(row=0, column=4, sticky="ew", padx=8, pady=(8, 4))
+
+        ttk.Label(timed_switch, text="ON-Dauer [s]").grid(row=1, column=0, sticky="w", padx=8, pady=4)
+        switch_on_entry = ttk.Entry(timed_switch, textvariable=self.switch_on_s_var, width=8)
+        switch_on_entry.grid(row=1, column=1, sticky="ew", padx=8, pady=4)
+        ttk.Label(timed_switch, text="OFF-Dauer [s]").grid(row=1, column=2, sticky="w", padx=8, pady=4)
+        switch_off_entry = ttk.Entry(timed_switch, textvariable=self.switch_off_s_var, width=8)
+        switch_off_entry.grid(row=1, column=3, sticky="ew", padx=8, pady=4)
+        ttk.Label(timed_switch, text="Wiederholungen").grid(row=1, column=4, sticky="w", padx=8, pady=4)
+        switch_repetitions_entry = ttk.Entry(timed_switch, textvariable=self.switch_repetitions_var, width=8)
+        switch_repetitions_entry.grid(row=1, column=5, sticky="ew", padx=8, pady=4)
+
+        switch_setup_check = ttk.Checkbutton(timed_switch, text="Vorher setzen", variable=self.switch_setup_before_var)
+        switch_setup_check.grid(row=2, column=0, sticky="w", padx=8, pady=4)
+        switch_end_off_check = ttk.Checkbutton(timed_switch, text="Am Ende aus", variable=self.switch_end_off_var)
+        switch_end_off_check.grid(row=2, column=1, sticky="w", padx=8, pady=4)
+        ttk.Label(timed_switch, text="Netzgerät-Modus").grid(row=2, column=2, sticky="w", padx=8, pady=4)
+        switch_power_mode_combo = ttk.Combobox(timed_switch, textvariable=self.switch_power_mode_var, values=("Master", "Kanal"), width=8, state="readonly")
+        switch_power_mode_combo.grid(row=2, column=3, sticky="ew", padx=8, pady=4)
+        switch_preview_button = ttk.Button(timed_switch, text="Vorschau", command=self.preview_timed_switch)
+        switch_preview_button.grid(row=2, column=4, sticky="ew", padx=8, pady=(4, 8))
+        switch_start_button = ttk.Button(timed_switch, text="Schalten starten", command=self.start_timed_switch)
+        switch_start_button.grid(row=3, column=4, sticky="ew", padx=8, pady=(4, 8))
+        switch_stop_button = ttk.Button(timed_switch, text="Stop", command=self.stop_timed_switch)
+        switch_stop_button.grid(row=3, column=5, sticky="ew", padx=8, pady=(4, 8))
 
         self._scope_widgets = [scope_value_button, measurement_combo, channel_spinbox, waveform_button, *waveform_checkbuttons, all_button, none_button, point_mode_combo]
         self._connection_widgets = [self.resource_combo, search_button, idn_button, address_entry]
@@ -450,6 +539,7 @@ class InstrumentVisaApp(tk.Tk):
             "power_supply": power_supply,
         }
         self._sequence_widgets = [
+            sequence_source_type_combo,
             sequence_generator_entry,
             sequence_generator_current_button,
             sequence_measurement_entry,
@@ -458,12 +548,32 @@ class InstrumentVisaApp(tk.Tk):
             sequence_stop_entry,
             sequence_step_entry,
             sequence_power_entry,
+            sequence_supply_channel_spinbox,
+            sequence_voltage_start_entry,
+            sequence_voltage_stop_entry,
+            sequence_voltage_step_entry,
+            sequence_current_limit_entry,
             sequence_settle_entry,
             sequence_mode_combo,
             sequence_rf_off_check,
+            sequence_preview_button,
             sequence_start_button,
         ]
         self._sequence_stop_widgets = [sequence_stop_button]
+        self._switch_widgets = [
+            switch_source_combo,
+            switch_address_entry,
+            switch_current_button,
+            switch_on_entry,
+            switch_off_entry,
+            switch_repetitions_entry,
+            switch_setup_check,
+            switch_end_off_check,
+            switch_power_mode_combo,
+            switch_preview_button,
+            switch_start_button,
+        ]
+        self._switch_stop_widgets = [switch_stop_button]
         self._refresh_resource_combo()
         self._apply_saved_profile_for_address()
 
@@ -549,6 +659,35 @@ class InstrumentVisaApp(tk.Tk):
     def use_current_address_as_sequence_measurement(self) -> None:
         self.sequence_measurement_address_var.set(self.address_var.get().strip())
 
+    def use_current_address_as_switch_source(self) -> None:
+        self.switch_address_var.set(self.address_var.get().strip())
+
+    def preview_sequence(self) -> None:
+        try:
+            config = self._sequence_config()
+            message = self._sequence_preview_text(config)
+        except ValueError as exc:
+            messagebox.showerror("Ablauf-Vorschau", str(exc))
+            return
+        messagebox.showinfo("Ablauf-Vorschau", message)
+
+    def preview_timed_switch(self) -> None:
+        try:
+            config = self._timed_switch_config()
+            duration = config.repetitions * (config.on_s + config.off_s)
+            message = (
+                f"Quellgerät: {config.source_type}\n"
+                f"Ereignisse: {config.repetitions * 2}\n"
+                f"Geschätzte Dauer: {duration:.1f} s\n"
+                f"ON/OFF: {config.on_s:.3f} s / {config.off_s:.3f} s\n"
+                f"Vorher setzen: {'Ja' if config.setup_before_start else 'Nein'}\n"
+                f"Am Ende aus: {'Ja' if config.end_off else 'Nein'}"
+            )
+        except ValueError as exc:
+            messagebox.showerror("Schalt-Vorschau", str(exc))
+            return
+        messagebox.showinfo("Schalt-Vorschau", message)
+
     def start_sequence(self) -> None:
         if self.sequence_running:
             messagebox.showwarning("Automatischer Ablauf", "Es läuft bereits ein Ablauf.")
@@ -556,12 +695,15 @@ class InstrumentVisaApp(tk.Tk):
         if self.timed_running:
             messagebox.showwarning("Automatischer Ablauf", "Bitte zuerst das getimte Messen stoppen.")
             return
+        if self.switch_running:
+            messagebox.showwarning("Automatischer Ablauf", "Bitte zuerst getimtes Schalten stoppen.")
+            return
         try:
             config = self._sequence_config()
         except ValueError as exc:
             messagebox.showerror("Automatischer Ablauf", str(exc))
             return
-        generator_address = self.sequence_generator_address_var.get().strip()
+        source_address = self.sequence_generator_address_var.get().strip()
         measurement_address = self.sequence_measurement_address_var.get().strip()
         self.sequence_stop_event.clear()
         self.sequence_running = True
@@ -569,12 +711,38 @@ class InstrumentVisaApp(tk.Tk):
         self.status_var.set("Automatischer Ablauf läuft...")
         self._append_log("Automatischer Ablauf läuft...")
         self.logger.info("Automatischer Ablauf läuft...")
-        thread = threading.Thread(target=self._worker_target, args=(lambda: self._run_sequence(config, generator_address, measurement_address),), daemon=True)
+        thread = threading.Thread(target=self._worker_target, args=(lambda: self._run_sequence(config, source_address, measurement_address),), daemon=True)
         thread.start()
 
     def stop_sequence(self) -> None:
         self.sequence_stop_event.set()
         self.status_var.set("Automatischer Ablauf wird gestoppt...")
+
+    def start_timed_switch(self) -> None:
+        if self.switch_running:
+            messagebox.showwarning("Getimtes Schalten", "Es läuft bereits ein Schaltablauf.")
+            return
+        if self.sequence_running or self.timed_running:
+            messagebox.showwarning("Getimtes Schalten", "Bitte zuerst laufende Abläufe stoppen.")
+            return
+        try:
+            config = self._timed_switch_config()
+        except ValueError as exc:
+            messagebox.showerror("Getimtes Schalten", str(exc))
+            return
+        address = self.switch_address_var.get().strip()
+        self.switch_stop_event.clear()
+        self.switch_running = True
+        self._set_switch_running(True)
+        self.status_var.set("Getimtes Schalten läuft...")
+        self._append_log("Getimtes Schalten läuft...")
+        self.logger.info("Getimtes Schalten läuft...")
+        thread = threading.Thread(target=self._worker_target, args=(lambda: self._run_timed_switch(config, address),), daemon=True)
+        thread.start()
+
+    def stop_timed_switch(self) -> None:
+        self.switch_stop_event.set()
+        self.status_var.set("Getimtes Schalten wird gestoppt...")
 
     def toggle_log(self) -> None:
         expanding = not self._log_visible
@@ -600,6 +768,9 @@ class InstrumentVisaApp(tk.Tk):
     def _start_timed_measurement(self, mode: str) -> None:
         if self.timed_running:
             messagebox.showwarning("Getimtes Messen", "Es läuft bereits eine Messreihe.")
+            return
+        if self.sequence_running or self.switch_running:
+            messagebox.showwarning("Getimtes Messen", "Bitte zuerst laufende Abläufe stoppen.")
             return
         try:
             self._timed_interval()
@@ -811,33 +982,72 @@ class InstrumentVisaApp(tk.Tk):
         self.logger.info("Power supply all outputs off exported workbook=%s sheet=%s", export.workbook_path, export.sheet_name)
         return f"Alle Netzgerät-Ausgänge ausgeschaltet: {export.workbook_path}"
 
-    def _run_sequence(self, config: FrequencySweepConfig, generator_address: str, measurement_address: str) -> str:
+    def _run_sequence(self, config: FrequencySweepConfig | VoltageSweepConfig, source_address: str, measurement_address: str) -> str:
         try:
-            with VisaInstrument(generator_address, timeout_ms=10000) as generator, VisaInstrument(measurement_address, timeout_ms=10000) as measurement_instrument:
-                sweep = run_frequency_sweep(
-                    generator,
-                    measurement_instrument,
-                    config,
-                    stop_requested=self.sequence_stop_event.is_set,
-                    progress=lambda message: self._messages.put(("progress", message)),
-                )
-            result = AcquisitionResult(kind="frequency sweep", file_type="csv", content=sweep.csv_content)
-            export = append_result(self._output_path(), generator_address, sweep.generator_info.idn, result)
+            with VisaInstrument(source_address, timeout_ms=10000) as source, VisaInstrument(measurement_address, timeout_ms=10000) as measurement_instrument:
+                if isinstance(config, VoltageSweepConfig):
+                    sweep = run_voltage_sweep(
+                        source,
+                        measurement_instrument,
+                        config,
+                        stop_requested=self.sequence_stop_event.is_set,
+                        progress=lambda message: self._messages.put(("progress", message)),
+                    )
+                    result = AcquisitionResult(kind="voltage sweep", file_type="csv", content=sweep.csv_content)
+                    source_idn = sweep.power_supply_info.idn
+                else:
+                    sweep = run_frequency_sweep(
+                        source,
+                        measurement_instrument,
+                        config,
+                        stop_requested=self.sequence_stop_event.is_set,
+                        progress=lambda message: self._messages.put(("progress", message)),
+                    )
+                    result = AcquisitionResult(kind="frequency sweep", file_type="csv", content=sweep.csv_content)
+                    source_idn = sweep.generator_info.idn
+            export = append_result(self._output_path(), source_address, source_idn, result)
             stopped_text = " gestoppt" if sweep.stopped else " abgeschlossen"
             self.logger.info(
-                "Frequency sweep exported workbook=%s sheet=%s points=%s ok=%s errors=%s generator=%s measurement=%s",
+                "Automatic sweep exported workbook=%s sheet=%s kind=%s points=%s ok=%s errors=%s source=%s measurement=%s",
                 export.workbook_path,
                 export.sheet_name,
+                result.kind,
                 sweep.actual_count,
                 sweep.ok_count,
                 sweep.error_count,
-                generator_address,
+                source_address,
                 measurement_address,
             )
             return f"Automatischer Ablauf{stopped_text}: {export.workbook_path}\nTabellenblatt: {export.sheet_name}\nMesspunkte: {sweep.actual_count}\nOK: {sweep.ok_count}, Fehler: {sweep.error_count}"
         finally:
             self.sequence_running = False
             self._messages.put(("sequence_done", ""))
+
+    def _run_timed_switch(self, config: TimedSwitchConfig, address: str) -> str:
+        try:
+            with VisaInstrument(address, timeout_ms=10000) as source:
+                result_data = run_timed_switch(
+                    source,
+                    config,
+                    stop_requested=self.switch_stop_event.is_set,
+                    progress=lambda message: self._messages.put(("progress", message)),
+                )
+            result = AcquisitionResult(kind="timed switch", file_type="csv", content=result_data.csv_content)
+            export = append_result(self._output_path(), address, result_data.source_info.idn, result)
+            stopped_text = " gestoppt" if result_data.stopped else " abgeschlossen"
+            self.logger.info(
+                "Timed switch exported workbook=%s sheet=%s events=%s ok=%s errors=%s source=%s",
+                export.workbook_path,
+                export.sheet_name,
+                result_data.actual_count,
+                result_data.ok_count,
+                result_data.error_count,
+                address,
+            )
+            return f"Getimtes Schalten{stopped_text}: {export.workbook_path}\nTabellenblatt: {export.sheet_name}\nEreignisse: {result_data.actual_count}\nOK: {result_data.ok_count}, Fehler: {result_data.error_count}"
+        finally:
+            self.switch_running = False
+            self._messages.put(("switch_done", ""))
 
     def _timed_measurement(self, mode: str) -> str:
         interval_s = self._timed_interval()
@@ -962,11 +1172,11 @@ class InstrumentVisaApp(tk.Tk):
             raise ValueError(f"Netzgerät-Kanal muss zwischen 1 und {max_channel} liegen.")
         return channel
 
-    def _sequence_config(self) -> FrequencySweepConfig:
-        generator_address = self.sequence_generator_address_var.get().strip()
+    def _sequence_config(self) -> FrequencySweepConfig | VoltageSweepConfig:
+        source_address = self.sequence_generator_address_var.get().strip()
         measurement_address = self.sequence_measurement_address_var.get().strip()
-        if not generator_address:
-            raise ValueError("Bitte Generator-Adresse eintragen.")
+        if not source_address:
+            raise ValueError("Bitte Quellgerät-Adresse eintragen.")
         if not measurement_address:
             raise ValueError("Bitte Messgerät-Adresse eintragen.")
         try:
@@ -975,6 +1185,32 @@ class InstrumentVisaApp(tk.Tk):
             raise ValueError("Wartezeit muss eine Zahl in Sekunden sein.") from exc
         if settle_s < 0:
             raise ValueError("Wartezeit darf nicht negativ sein.")
+        measurement_mode = "scope" if self.sequence_measurement_mode_var.get().strip().lower() == "scope" else "dmm"
+
+        if self.sequence_source_type_var.get().strip().lower() == "netzgerät":
+            voltage_points(self.sequence_start_voltage_var.get(), self.sequence_stop_voltage_var.get(), self.sequence_step_voltage_var.get())
+            stop_voltage = parse_voltage(self.sequence_stop_voltage_var.get())
+            current_limit = parse_ampere(self.sequence_current_limit_var.get())
+            max_voltage, max_current = self._power_supply_limits()
+            if stop_voltage > max_voltage:
+                raise ValueError(f"Stopspannung {stop_voltage:g} V überschreitet Max. V {max_voltage:g} V.")
+            if current_limit > max_current:
+                raise ValueError(f"Stromlimit {current_limit:g} A überschreitet Max. A {max_current:g} A.")
+            return VoltageSweepConfig(
+                start_voltage=self.sequence_start_voltage_var.get().strip(),
+                stop_voltage=self.sequence_stop_voltage_var.get().strip(),
+                step_voltage=self.sequence_step_voltage_var.get().strip(),
+                current_limit=self.sequence_current_limit_var.get().strip(),
+                channel=self._sequence_supply_channel(),
+                max_voltage=max_voltage,
+                max_current=max_current,
+                settle_s=settle_s,
+                measurement_mode=measurement_mode,
+                scope_measurement=self.measurement_var.get(),
+                scope_channel=self.channel_var.get(),
+                output_off_at_end=self.sequence_rf_off_at_end_var.get(),
+            )
+
         frequency_points(self.sequence_start_frequency_var.get(), self.sequence_stop_frequency_var.get(), self.sequence_step_frequency_var.get())
         power_dbm = parse_dbm(self.sequence_power_var.get())
         max_power_dbm = self._generator_max_power()
@@ -987,11 +1223,82 @@ class InstrumentVisaApp(tk.Tk):
             power=self.sequence_power_var.get().strip(),
             max_power_dbm=max_power_dbm,
             settle_s=settle_s,
-            measurement_mode="scope" if self.sequence_measurement_mode_var.get().strip().lower() == "scope" else "dmm",
+            measurement_mode=measurement_mode,
             scope_measurement=self.measurement_var.get(),
             scope_channel=self.channel_var.get(),
             rf_off_before_change=self.generator_rf_off_before_change_var.get(),
             rf_off_at_end=self.sequence_rf_off_at_end_var.get(),
+        )
+
+    def _sequence_supply_channel(self) -> int:
+        try:
+            channel = int(self.sequence_supply_channel_var.get())
+        except (ValueError, tk.TclError) as exc:
+            raise ValueError("Ablauf-Netzteil-Kanal muss eine ganze Zahl sein.") from exc
+        if channel < 1 or channel > 4:
+            raise ValueError("Ablauf-Netzteil-Kanal muss zwischen 1 und 4 liegen.")
+        return channel
+
+    def _sequence_preview_text(self, config: FrequencySweepConfig | VoltageSweepConfig) -> str:
+        if isinstance(config, VoltageSweepConfig):
+            points = voltage_points(config.start_voltage, config.stop_voltage, config.step_voltage)
+            duration = len(points) * config.settle_s
+            return (
+                "Typ: Netzgerät-Spannungs-Sweep\n"
+                f"Punkte: {len(points)}\n"
+                f"Geschätzte Mindestdauer: {duration:.1f} s\n"
+                f"Start/Stop/Schritt: {config.start_voltage} / {config.stop_voltage} / {config.step_voltage}\n"
+                f"Kanal: {config.channel}\n"
+                f"Stromlimit: {config.current_limit}\n"
+                f"Ende aus: {'Ja' if config.output_off_at_end else 'Nein'}"
+            )
+        points = frequency_points(config.start_frequency, config.stop_frequency, config.step_frequency)
+        duration = len(points) * config.settle_s
+        return (
+            "Typ: Signalgenerator-Frequenz-Sweep\n"
+            f"Punkte: {len(points)}\n"
+            f"Geschätzte Mindestdauer: {duration:.1f} s\n"
+            f"Start/Stop/Schritt: {config.start_frequency} / {config.stop_frequency} / {config.step_frequency}\n"
+            f"Pegel: {config.power}\n"
+            f"Ende aus: {'Ja' if config.rf_off_at_end else 'Nein'}"
+        )
+
+    def _timed_switch_config(self) -> TimedSwitchConfig:
+        if not self.switch_address_var.get().strip():
+            raise ValueError("Bitte Schalt-Quelladresse eintragen.")
+        try:
+            on_s = float(self.switch_on_s_var.get().replace(",", "."))
+            off_s = float(self.switch_off_s_var.get().replace(",", "."))
+            repetitions = int(self.switch_repetitions_var.get())
+        except ValueError as exc:
+            raise ValueError("ON/OFF-Dauer müssen Zahlen und Wiederholungen eine ganze Zahl sein.") from exc
+        source_type = "power_supply" if self.switch_source_type_var.get().strip().lower() == "netzgerät" else "generator"
+        if source_type == "generator":
+            return TimedSwitchConfig(
+                source_type=source_type,
+                on_s=on_s,
+                off_s=off_s,
+                repetitions=repetitions,
+                end_off=self.switch_end_off_var.get(),
+                setup_before_start=self.switch_setup_before_var.get(),
+                generator_frequency=self.generator_frequency_var.get().strip(),
+                generator_power=self.generator_power_var.get().strip(),
+                generator_max_power_dbm=self._generator_max_power(),
+            )
+        max_voltage, max_current = self._power_supply_limits()
+        return TimedSwitchConfig(
+            source_type=source_type,
+            on_s=on_s,
+            off_s=off_s,
+            repetitions=repetitions,
+            end_off=self.switch_end_off_var.get(),
+            setup_before_start=self.switch_setup_before_var.get(),
+            power_supply_channel=self._power_supply_channel() if self.current_profile.supports_power_supply else self._safe_power_supply_channel_setting(),
+            power_supply_voltage=self.power_supply_voltage_var.get().strip(),
+            power_supply_current=self.power_supply_current_var.get().strip(),
+            power_supply_max_voltage=max_voltage,
+            power_supply_max_current=max_current,
+            power_supply_switch_mode="channel" if self.switch_power_mode_var.get().strip().lower() == "kanal" else "master",
         )
 
     def _open_instrument(self) -> VisaInstrument:
@@ -1055,6 +1362,8 @@ class InstrumentVisaApp(tk.Tk):
                 self._set_timed_running(False)
             elif kind == "sequence_done":
                 self._set_sequence_running(False)
+            elif kind == "switch_done":
+                self._set_switch_running(False)
             elif kind == "error":
                 self.status_var.set("Fehler")
                 error_message = str(message)
@@ -1244,6 +1553,8 @@ class InstrumentVisaApp(tk.Tk):
         self._set_widgets_enabled(self._power_supply_widgets, power_supply_enabled)
         if self.sequence_running:
             self._set_sequence_running(True)
+        if self.switch_running:
+            self._set_switch_running(True)
 
     def _apply_profile_message(self, message: object) -> None:
         if isinstance(message, tuple) and len(message) == 3:
@@ -1311,11 +1622,17 @@ class InstrumentVisaApp(tk.Tk):
         self._set_widgets_enabled(self._timed_dmm_widgets, dmm_enabled and not running)
         self._set_widgets_enabled(self._timed_scope_widgets, scope_enabled and not running)
         self._set_widgets_enabled(self._timed_stop_widgets, running)
+        self._set_widgets_enabled(self._sequence_widgets, not running and not self.sequence_running and not self.switch_running)
+        self._set_widgets_enabled(self._sequence_stop_widgets, False)
+        self._set_widgets_enabled(self._switch_widgets, not running and not self.sequence_running and not self.switch_running)
+        self._set_widgets_enabled(self._switch_stop_widgets, False)
 
     def _set_sequence_running(self, running: bool) -> None:
         self.sequence_running = running
         self._set_widgets_enabled(self._sequence_widgets, not running)
         self._set_widgets_enabled(self._sequence_stop_widgets, running)
+        self._set_widgets_enabled(self._switch_widgets, not running)
+        self._set_widgets_enabled(self._switch_stop_widgets, False)
         self._set_widgets_enabled(self._connection_widgets, not running)
         if running:
             self._set_widgets_enabled(self._scope_widgets, False)
@@ -1329,6 +1646,32 @@ class InstrumentVisaApp(tk.Tk):
             self._set_widgets_enabled(self._power_supply_widgets, False)
         else:
             self._apply_profile(self.current_profile)
+            self._set_widgets_enabled(self._sequence_widgets, True)
+            self._set_widgets_enabled(self._sequence_stop_widgets, False)
+            self._set_widgets_enabled(self._switch_widgets, True)
+            self._set_widgets_enabled(self._switch_stop_widgets, False)
+
+    def _set_switch_running(self, running: bool) -> None:
+        self.switch_running = running
+        self._set_widgets_enabled(self._switch_widgets, not running)
+        self._set_widgets_enabled(self._switch_stop_widgets, running)
+        self._set_widgets_enabled(self._sequence_widgets, not running)
+        self._set_widgets_enabled(self._sequence_stop_widgets, False)
+        self._set_widgets_enabled(self._connection_widgets, not running)
+        if running:
+            self._set_widgets_enabled(self._scope_widgets, False)
+            self._set_widgets_enabled(self._dmm_widgets, False)
+            self._set_widgets_enabled(self._timed_widgets, False)
+            self._set_widgets_enabled(self._timed_dmm_widgets, False)
+            self._set_widgets_enabled(self._timed_scope_widgets, False)
+            self._set_widgets_enabled(self._vna_widgets, False)
+            self._set_widgets_enabled(self._screenshot_widgets, False)
+            self._set_widgets_enabled(self._generator_widgets, False)
+            self._set_widgets_enabled(self._power_supply_widgets, False)
+        else:
+            self._apply_profile(self.current_profile)
+            self._set_widgets_enabled(self._switch_widgets, True)
+            self._set_widgets_enabled(self._switch_stop_widgets, False)
             self._set_widgets_enabled(self._sequence_widgets, True)
             self._set_widgets_enabled(self._sequence_stop_widgets, False)
 
@@ -1392,15 +1735,29 @@ class InstrumentVisaApp(tk.Tk):
             "power_supply_output": self.power_supply_output_var.get(),
             "power_supply_max_voltage": self.power_supply_max_voltage_var.get(),
             "power_supply_max_current": self.power_supply_max_current_var.get(),
+            "sequence_source_type": self.sequence_source_type_var.get(),
             "sequence_generator_address": self.sequence_generator_address_var.get().strip(),
             "sequence_measurement_address": self.sequence_measurement_address_var.get().strip(),
             "sequence_start_frequency": self.sequence_start_frequency_var.get(),
             "sequence_stop_frequency": self.sequence_stop_frequency_var.get(),
             "sequence_step_frequency": self.sequence_step_frequency_var.get(),
             "sequence_power": self.sequence_power_var.get(),
+            "sequence_supply_channel": self._safe_sequence_supply_channel_setting(),
+            "sequence_start_voltage": self.sequence_start_voltage_var.get(),
+            "sequence_stop_voltage": self.sequence_stop_voltage_var.get(),
+            "sequence_step_voltage": self.sequence_step_voltage_var.get(),
+            "sequence_current_limit": self.sequence_current_limit_var.get(),
             "sequence_settle": self.sequence_settle_var.get(),
             "sequence_measurement_mode": self.sequence_measurement_mode_var.get(),
             "sequence_rf_off_at_end": self.sequence_rf_off_at_end_var.get(),
+            "switch_source_type": self.switch_source_type_var.get(),
+            "switch_address": self.switch_address_var.get().strip(),
+            "switch_on_s": self.switch_on_s_var.get(),
+            "switch_off_s": self.switch_off_s_var.get(),
+            "switch_repetitions": self.switch_repetitions_var.get(),
+            "switch_setup_before": self.switch_setup_before_var.get(),
+            "switch_end_off": self.switch_end_off_var.get(),
+            "switch_power_mode": self.switch_power_mode_var.get(),
             "devices": self.saved_devices,
         }
         SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
@@ -1408,6 +1765,12 @@ class InstrumentVisaApp(tk.Tk):
     def _safe_power_supply_channel_setting(self) -> int:
         try:
             return int(self.power_supply_channel_var.get())
+        except (ValueError, tk.TclError):
+            return 1
+
+    def _safe_sequence_supply_channel_setting(self) -> int:
+        try:
+            return int(self.sequence_supply_channel_var.get())
         except (ValueError, tk.TclError):
             return 1
 

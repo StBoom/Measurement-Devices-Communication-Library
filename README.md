@@ -107,7 +107,7 @@ Der Signalgenerator-Bereich kann Frequenz, Pegel und RF-Ausgang lesen bzw. setze
 
 Der Netzgerät-Bereich unterstützt R&S/Hameg HMP-Geräte wie HMP4030. Pro Kanal können Spannung und Stromlimit gesetzt, Soll-/Istwerte gelesen und der ausgewählte Ausgang aktiviert oder deaktiviert werden. Als Sicherheitsgrenzen werden Maximalspannung und Maximalstrom lokal geprüft, bevor Befehle gesendet werden. Die Implementierung nutzt `INST:NSEL`, `VOLT`, `CURR`, `MEAS:VOLT?`, `MEAS:CURR?`, `OUTP:SEL` und `OUTP:GEN`.
 
-Der Bereich `Automatischer Ablauf` führt einen Frequenz-Sweep mit einem Signalgenerator und einem separaten Messgerät aus. Pro Frequenzpunkt wird der Generator auf Frequenz und Pegel gesetzt, optional gewartet und danach ein DMM-Wert oder Scope-Messwert gelesen. Die Ergebnisse werden mit Sollfrequenz, Pegel, Messgerät, Messwert, Status und Zusammenfassung in ein eigenes Excel-Tabellenblatt geschrieben. Standardmäßig wird RF am Ende ausgeschaltet; der Stop-Button beendet den Ablauf kontrolliert.
+Der Bereich `Automatischer Ablauf` führt wahlweise einen Frequenz-Sweep mit einem Signalgenerator oder einen Spannungs-Sweep mit einem Netzgerät und einem separaten Messgerät aus. Pro Sweep-Punkt wird die Quelle gesetzt, optional gewartet und danach ein DMM-Wert oder Scope-Messwert gelesen. Die Ergebnisse werden mit Sollwert, Quellgerät, Messgerät, Messwert, Status und Zusammenfassung in ein eigenes Excel-Tabellenblatt geschrieben. Standardmäßig wird die Quelle am Ende ausgeschaltet; der Stop-Button beendet den Ablauf kontrolliert.
 
 Beim getimten Messen kann eine DMM- oder Scope-Messreihe mit Intervall in Sekunden und Anzahl Messpunkte gestartet werden. Die Messpunkte werden auf feste Sollzeitpunkte geplant, damit die Messdauer das Intervall nicht dauerhaft verschiebt. Die Messreihe kann über `Stop` abgebrochen werden. Die Ergebnisse werden mit Index, Zeitstempel, verstrichener Zeit, Delta zum vorherigen Messpunkt, Abweichung vom Sollzeitpunkt, Messart, Kanal, Wert und Status in ein eigenes Tabellenblatt geschrieben. Zusätzlich enthält das Tabellenblatt eine Zusammenfassung mit Start-/Endzeit, Soll-Intervall, angeforderter und tatsächlicher Anzahl sowie OK- und Fehlerzähler.
 
@@ -152,6 +152,315 @@ Die folgenden Geräteprofile sind als best-effort implementiert, aber noch nicht
 - Teledyne LeCroy WavePro/WaveRunner/SDA/Zi: Scope-Messwert, Screenshot und Waveform-Export mit X-Stream/WaveRunner-Remote-Control-SCPI (`PAVA?`, `SCREEN_DUMP`, `INSPECT? "SIMPLE"`)
 
 PicoScope-Geräte wie PicoScope 2206BMSO oder 2406B sind bewusst nicht integriert, da sie typischerweise nicht per VISA/SCPI angesprochen werden, sondern über PicoSDK.
+
+## Geräte-Testabläufe
+
+Diese Abläufe sind für den ersten Labortest gedacht. Für neue oder noch ungetestete Geräte immer zuerst `IDN testen` ausführen, danach nur die im automatisch eingeblendeten Gerätebereich angebotenen Funktionen verwenden. Bei Generatoren und Netzgeräten mit niedrigem Pegel bzw. kleinen Grenzwerten starten. Fehler und gesendete Aktionen stehen im Log `logs/instrument_visa.log`.
+
+### Allgemeiner Gerätetest
+
+1. Gerät per USB, LAN oder GPIB/VISA verbinden.
+2. In der GUI `Geräte suchen` ausführen.
+3. VISA-Adresse auswählen.
+4. `IDN testen` ausführen.
+5. Erwartetes Profil und eingeblendete Bedienbereiche prüfen.
+6. Zuerst eine ungefährliche Leseaktion ausführen, z. B. `DMM Messwert`, `Scope Messwert`, `Generator lesen` oder `Netzgerät lesen`.
+7. Erst danach Schreibaktionen mit sicheren Defaults testen.
+
+### R&S SME/SMT/SMIQ Signalgeneratoren
+
+Erwartetes Profil: `rs_sme_smt_smiq`
+
+GUI-Test:
+
+1. `IDN testen` ausführen.
+2. Bereich `Signalgenerator` muss sichtbar sein.
+3. `Generator lesen` ausführen.
+4. Für den ersten Schreibtest setzen:
+   - Frequenz: `100 MHz`
+   - Pegel: `-30 dBm`
+   - RF: `OFF`
+   - Max. Pegel: `0`
+   - `RF vor Änderung aus`: aktiv
+5. `Generator setzen` ausführen.
+6. Wenn das erfolgreich ist, RF nur mit angeschlossenem geeigneten Abschluss oder Prüfling aktivieren.
+
+Verwendete Befehle:
+
+```text
+:SOUR:FREQ:CW?
+:SOUR:POW?
+:OUTP?
+:OUTP OFF
+:SOUR:FREQ:CW <freq>
+:SOUR:POW <level>
+:OUTP ON|OFF
+```
+
+Erwartete Ausgabe: Excel-Tabellenblatt `SignalGenerator...` mit Frequenz, Pegel und RF-Status.
+
+### R&S SMGU/SMHU Legacy-Signalgeneratoren
+
+Erwartetes Profil: `rs_smg_legacy`
+
+GUI-Test:
+
+1. `IDN testen` ausführen.
+2. Bereich `Signalgenerator` muss sichtbar sein.
+3. Zuerst `Generator lesen` testen.
+4. Für den ersten Schreibtest setzen:
+   - Frequenz: `100 MHz`
+   - Pegel: `-30DBM`
+   - RF: `OFF`
+   - Max. Pegel: `0`
+5. `Generator setzen` ausführen.
+6. Log prüfen, da ältere Geräte bei Antwortformaten variieren können.
+
+Verwendete Befehle:
+
+```text
+RF?
+LEVEL:RF?
+LEVEL:RF:OFF
+RF <freq>
+LEVEL:RF <level>
+LEVEL:RF:ON|OFF
+```
+
+Erwartete Ausgabe: Excel-Tabellenblatt `SignalGenerator...`. Rückmeldungen können je nach Firmware leicht anders formatiert sein.
+
+### HP 8591A Spektrumanalysator
+
+Erwartetes Profil: `hp_8591a`
+
+GUI-Test:
+
+1. `IDN testen` ausführen.
+2. Bereich `Allgemein` mit `Screenshot` und, falls sichtbar, `Oszilloskop/Waveform` für Trace verwenden.
+3. Zuerst `Waveform` testen. Das liest Trace A.
+4. Danach `Screenshot` testen. Die Ausgabe ist HP-GL, kein Bitmap.
+
+Verwendete Befehle:
+
+```text
+TRA?
+GETPLOT
+```
+
+Erwartete Ausgabe:
+
+- Trace: CSV-Daten in Excel mit `Point,TraceA`
+- Screenshot/Hardcopy: zusätzliche `.hpgl`-Datei neben der Excel-Datei
+
+Hinweis: `GETPLOT` liefert voraussichtlich Plotterdaten. Zum Anzeigen wird ein HP-GL-Viewer oder später ein Konverter nach SVG/PNG benötigt.
+
+### Agilent E4402B ESA Spektrumanalysator
+
+Erwartetes Profil: `hp_agilent_e4402b`
+
+GUI-Test:
+
+1. `IDN testen` ausführen.
+2. `Waveform` testen, um Trace 1 als CSV zu exportieren.
+3. `Screenshot` testen, um eine WMF-Datei zu exportieren.
+4. Excel-Datei öffnen und prüfen, ob Trace und Artefaktlink angelegt wurden.
+
+Verwendete Befehle:
+
+```text
+:SYST:TIME ...
+:SYST:DATE ...
+:DISP:MENU:STATE 0
+:MMEM:STOR:TRAC TRACE1,"R:INTUI.CSV"
+:MMEM:DATA? 'R:INTUI.CSV'
+:MMEM:DEL 'R:INTUI.CSV'
+:MMEM:STOR:SCR 'R:INTUI.WMF'
+:MMEM:DATA? 'R:INTUI.WMF'
+:MMEM:DEL 'R:INTUI.WMF'
+```
+
+Erwartete Ausgabe:
+
+- Trace: CSV in Excel
+- Screenshot: `.wmf`-Datei neben der Excel-Datei
+
+### R&S/Hameg HMP4030/HMP4040/HMP2000 Netzgeräte
+
+Erwartetes Profil: `rs_hmp_power_supply`
+
+GUI-Test:
+
+1. `IDN testen` ausführen.
+2. Bereich `Netzgerät` muss sichtbar sein.
+3. Kanal auswählen. HMP4030 hat 3 Kanäle, HMP4040 hat 4 Kanäle, HMP2020 hat 2 Kanäle.
+4. `Netzgerät lesen` ausführen.
+5. Für den ersten Schreibtest setzen:
+   - Kanal: `1`
+   - Spannung: `1 V`
+   - Stromlimit: `0.1 A`
+   - Ausgang: `OFF`
+   - Max. V: passend zum Aufbau, z. B. `5`
+   - Max. A: passend zum Aufbau, z. B. `0.5`
+6. `Netzgerät setzen` ausführen.
+7. `Kanal Aus` testet `OUTP:SEL 0` für den gewählten Kanal.
+8. `Alle Aus` testet `OUTP:GEN 0` für den Master-Ausgang.
+
+Verwendete Befehle:
+
+```text
+INST:NSEL <channel>
+VOLT <voltage>
+CURR <current>
+VOLT?
+CURR?
+MEAS:VOLT?
+MEAS:CURR?
+OUTP:SEL 0|1
+OUTP:SEL?
+OUTP:GEN 0|1
+OUTP:GEN?
+```
+
+Erwartete Ausgabe: Excel-Tabellenblatt `PowerSupply...` mit Sollspannung, Sollstrom, Istspannung, Iststrom, Kanalstatus und Masterstatus.
+
+Sicherheit: Das Tool prüft Maximalspannung und Maximalstrom lokal, bevor Setzbefehle gesendet werden. Trotzdem sollten die Grenzwerte im Gerät und am Prüfling passend gesetzt sein.
+
+### Automatischer Ablauf Mit Signalgenerator
+
+Der Ablauf ist für Tests wie `Generator einstellen -> Messgerät messen -> nächsten Frequenzpunkt` gedacht.
+
+GUI-Test:
+
+1. Generator und Messgerät separat mit `IDN testen` prüfen.
+2. Im Bereich `Automatischer Ablauf` als Quellgerät `Signalgenerator` auswählen.
+3. Quell-Adresse und Messgerät-Adresse eintragen oder über `aktuelle Adresse` übernehmen.
+4. Für den ersten Test kleine Punktzahl wählen:
+   - Start: `100 MHz`
+   - Stop: `102 MHz`
+   - Schritt: `1 MHz`
+   - Pegel: `-30 dBm`
+   - Wartezeit: `0.5`
+   - Messart: `DMM` oder `Scope`
+   - `RF am Ende aus`: aktiv
+5. `Ablauf starten` ausführen.
+6. Bei Bedarf `Stop` drücken. RF wird bei Stop oder Fehler sicherheitshalber ausgeschaltet.
+
+Erwartete Ausgabe: Excel-Tabellenblatt `FrequencySweep...` mit Sollfrequenz, Pegel, Generator-IDN, Messgerät-IDN, Messwert, Status und Zusammenfassung.
+
+Grenzen:
+
+- Maximal `10000` Sweep-Punkte pro Ablauf.
+- Große Diagramme werden für Excel gesampelt; die vollständigen Messdaten bleiben erhalten.
+- Generatorfehler brechen den Ablauf ab und schalten RF aus.
+
+### Automatischer Ablauf Mit Netzgerät
+
+Der Ablauf ist für Tests wie `Netzteilspannung einstellen -> Messgerät messen -> nächsten Spannungspunkt` gedacht, z. B. Last-/Kennlinienmessungen oder DUT-Verhalten über Versorgungsspannung.
+
+GUI-Test:
+
+1. Netzgerät und Messgerät separat mit `IDN testen` prüfen.
+2. Im Bereich `Automatischer Ablauf` als Quellgerät `Netzgerät` auswählen.
+3. Quell-Adresse und Messgerät-Adresse eintragen oder über `aktuelle Adresse` übernehmen.
+4. Für den ersten Test kleine Punktzahl und sichere Grenzen wählen:
+   - Netzteil Kanal: `1`
+   - Netzteil Start: `0 V`
+   - Stop: `2 V`
+   - Schritt: `1 V`
+   - Stromlimit: `0.1 A`
+   - Max. V im Netzgerät-Bereich: z. B. `5`
+   - Max. A im Netzgerät-Bereich: z. B. `0.5`
+   - Wartezeit: `0.5`
+   - Messart: `DMM` oder `Scope`
+   - `RF am Ende aus`: aktiv. Beim Netzgerät bedeutet diese Option: Master-Ausgang am Ende aus.
+5. `Ablauf starten` ausführen.
+6. Bei Bedarf `Stop` drücken. Das Netzgerät wird bei Stop oder Fehler sicherheitshalber über `OUTP:GEN 0` ausgeschaltet.
+
+Verwendete Befehle je Spannungspunkt:
+
+```text
+INST:NSEL <channel>
+VOLT <voltage>
+CURR <current>
+OUTP:SEL 1
+OUTP:GEN 1
+```
+
+Am Ende bzw. bei Stop/Fehler:
+
+```text
+OUTP:GEN 0
+```
+
+Erwartete Ausgabe: Excel-Tabellenblatt `VoltageSweep...` mit Sollspannung, Stromlimit, Netzgerät-IDN, Messgerät-IDN, Messwert, Status und Zusammenfassung.
+
+Grenzen:
+
+- Maximal `10000` Sweep-Punkte pro Ablauf.
+- Die Werte `Max. V` und `Max. A` aus dem Netzgerät-Bereich werden vor dem Start geprüft.
+- Große Diagramme werden für Excel gesampelt; die vollständigen Messdaten bleiben erhalten.
+- Netzgerätfehler brechen den Ablauf ab und schalten den Master-Ausgang aus.
+
+### Oszilloskope
+
+Erwartete Profile je nach Gerät: `keysight_infinivision_x`, `keysight_infinivision_6000`, `keysight_infinivision_7000`, `agilent_54600`, `tektronix_tds400`, `tektronix_tds30`, `tektronix_mdo`, `rs_rt_scope`, `lecroy_xstream`
+
+GUI-Test:
+
+1. `IDN testen` ausführen.
+2. Bereich `Oszilloskop` muss sichtbar sein.
+3. `Scope Messwert` mit `Vpp` und `CH1` testen.
+4. `Waveform` mit einem Kanal testen.
+5. `Screenshot` testen, wenn der Button sichtbar ist.
+6. Optional `Getimtes Messen` mit kleiner Anzahl, z. B. Intervall `1`, Anzahl `3`, testen.
+
+Typische Befehle je nach Profil:
+
+```text
+:MEASure...?
+:WAVeform...?
+:DISPlay:DATA?
+MEASUrement:IMMed...
+CURVe?
+HARDCopy START
+HCOPy:DATA?
+SCREEN_DUMP
+```
+
+Erwartete Ausgabe: Messwerte in Excel, Waveform-CSV mit Diagramm, Screenshot-Artefakt neben der Excel-Datei.
+
+### Multimeter
+
+Erwartete Profile: `keysight_344_l44`, `keithley_2000`
+
+GUI-Test:
+
+1. `IDN testen` ausführen.
+2. Bereich `Multimeter` muss sichtbar sein.
+3. `DMM Messwert` ausführen.
+4. Optional `Getimtes Messen` mit Intervall `1` und Anzahl `3` testen.
+
+Verwendete Befehle:
+
+```text
+:READ?
+```
+
+Erwartete Ausgabe: Messwert bzw. Messreihe in Excel.
+
+### Netzwerkanalysatoren E5071C/ZNB
+
+Erwartete Profile: `keysight_e5071c`, `rs_znb`
+
+GUI-Test:
+
+1. `IDN testen` ausführen.
+2. Bereich `Netzwerkanalysator` muss sichtbar sein.
+3. S-Parameter-Ports und Format auswählen.
+4. `S-Parameter exportieren` ausführen.
+5. Optional `Screenshot` testen.
+
+Erwartete Ausgabe: Touchstone-/S-Parameter-Artefakt und Excel-Metadaten.
 
 ## Geräte-Testmatrix
 

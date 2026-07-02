@@ -23,7 +23,18 @@ from instrument_visa.acquisition import (  # noqa: E402
 )
 from instrument_visa.excel_export import append_result  # noqa: E402
 from instrument_visa.profiles import detect_profile  # noqa: E402
-from instrument_visa.sequence import MAX_SWEEP_POINTS, FrequencySweepConfig, frequency_points, parse_frequency_hz, run_frequency_sweep  # noqa: E402
+from instrument_visa.sequence import (  # noqa: E402
+    MAX_SWEEP_POINTS,
+    FrequencySweepConfig,
+    TimedSwitchConfig,
+    VoltageSweepConfig,
+    frequency_points,
+    parse_frequency_hz,
+    run_frequency_sweep,
+    run_timed_switch,
+    run_voltage_sweep,
+    voltage_points,
+)
 
 
 class FakeInstrument:
@@ -376,6 +387,9 @@ class AcquisitionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             frequency_points("1 Hz", f"{MAX_SWEEP_POINTS + 1} Hz", "1 Hz")
 
+    def test_voltage_points(self) -> None:
+        self.assertEqual(voltage_points("0 V", "2 V", "1 V"), [0.0, 1.0, 2.0])
+
     def test_frequency_sweep_sets_generator_and_reads_dmm(self) -> None:
         generator = FakeInstrument(query_responses={
             "*IDN?": "Rohde&Schwarz,SMIQ03B,123,1.0",
@@ -493,6 +507,152 @@ class AcquisitionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             workbook_path = Path(temp_dir) / "results.xlsx"
             export = append_result(workbook_path, "GPIB0::1::INSTR", "Rohde&Schwarz,SMIQ03B,123,1.0", AcquisitionResult("frequency sweep", "csv", content))
+            workbook = load_workbook(workbook_path)
+            sheet = workbook[export.sheet_name]
+
+            self.assertEqual(len(sheet._charts), 1)
+            self.assertEqual(len(sheet._charts[0].series), 1)
+
+    def test_voltage_sweep_sets_power_supply_and_reads_dmm(self) -> None:
+        supply = FakeInstrument(
+            query_responses={
+                "*IDN?": "HAMEG,HMP4030,123,1.0",
+                "VOLT?": "1.000",
+                "CURR?": "0.100",
+                "MEAS:VOLT?": "1.000",
+                "MEAS:CURR?": "0.010",
+                "OUTP:SEL?": "1",
+                "OUTP:GEN?": "1",
+            }
+        )
+        supply.address = "GPIB0::3::INSTR"
+        measurement = FakeInstrument(query_responses={"*IDN?": "KEITHLEY INSTRUMENTS INC.,MODEL 2000,123,1.0", ":READ?": "0.5"})
+        measurement.address = "GPIB0::2::INSTR"
+
+        result = run_voltage_sweep(
+            supply,  # type: ignore[arg-type]
+            measurement,  # type: ignore[arg-type]
+            VoltageSweepConfig(
+                start_voltage="0 V",
+                stop_voltage="1 V",
+                step_voltage="1 V",
+                current_limit="0.1 A",
+                channel=1,
+                max_voltage=5,
+                max_current=1,
+                settle_s=0,
+                measurement_mode="dmm",
+            ),
+        )
+
+        self.assertEqual(result.actual_count, 2)
+        self.assertEqual(result.ok_count, 2)
+        self.assertIn("SetVoltageV,Index", result.csv_content)
+        self.assertIn("SupplyVoltageMeasured", result.csv_content)
+        self.assertIn("SupplyCurrentMeasured", result.csv_content)
+        self.assertIn("0.000000", result.csv_content)
+        self.assertIn("1.000000", result.csv_content)
+        self.assertEqual(supply.writes[-2:], ["OUTP:GEN 0", "INST:NSEL 1"])
+        self.assertEqual(measurement.queries, ["*IDN?", ":READ?", ":READ?"])
+
+    def test_timed_switch_generator_toggles_rf_and_ends_off(self) -> None:
+        generator = FakeInstrument(query_responses={"*IDN?": "Rohde&Schwarz,SMIQ03B,123,1.0", ":SOUR:FREQ:CW?": "100000000", ":SOUR:POW?": "-30", ":OUTP?": "0"})
+        generator.address = "GPIB0::1::INSTR"
+
+        result = run_timed_switch(
+            generator,  # type: ignore[arg-type]
+            TimedSwitchConfig(source_type="generator", on_s=0.001, off_s=0, repetitions=2, end_off=True),
+        )
+
+        self.assertEqual(result.actual_count, 4)
+        self.assertEqual(result.ok_count, 4)
+        self.assertEqual(generator.writes, [":OUTP ON", ":OUTP OFF", ":OUTP ON", ":OUTP OFF", ":OUTP OFF"])
+        self.assertIn("SourceType", result.csv_content)
+
+    def test_timed_switch_power_supply_channel_mode(self) -> None:
+        supply = FakeInstrument(
+            query_responses={
+                "*IDN?": "HAMEG,HMP4030,123,1.0",
+                "VOLT?": "1.000",
+                "CURR?": "0.100",
+                "MEAS:VOLT?": "1.000",
+                "MEAS:CURR?": "0.010",
+                "OUTP:SEL?": "0",
+                "OUTP:GEN?": "1",
+            }
+        )
+
+        result = run_timed_switch(
+            supply,  # type: ignore[arg-type]
+            TimedSwitchConfig(source_type="power_supply", on_s=0.001, off_s=0, repetitions=1, power_supply_channel=2, power_supply_switch_mode="channel"),
+        )
+
+        self.assertEqual(result.actual_count, 2)
+        self.assertEqual(supply.writes[:3], ["INST:NSEL 2", "INST:NSEL 2", "OUTP:SEL 1"])
+        self.assertIn("OUTP:SEL 0", supply.writes)
+
+    def test_timed_switch_rejects_generator_power_above_limit_before_writes(self) -> None:
+        generator = FakeInstrument(query_responses={"*IDN?": "Rohde&Schwarz,SMIQ03B,123,1.0"})
+
+        with self.assertRaises(ValueError):
+            run_timed_switch(
+                generator,  # type: ignore[arg-type]
+                TimedSwitchConfig(source_type="generator", on_s=1, off_s=1, repetitions=1, generator_power="10 dBm", generator_max_power_dbm=0),
+            )
+
+        self.assertEqual(generator.writes, [])
+
+    def test_timed_switch_rejects_current_generator_power_without_setup(self) -> None:
+        generator = FakeInstrument(query_responses={"*IDN?": "Rohde&Schwarz,SMIQ03B,123,1.0", ":SOUR:FREQ:CW?": "100000000", ":SOUR:POW?": "10", ":OUTP?": "0"})
+
+        with self.assertRaises(ValueError):
+            run_timed_switch(
+                generator,  # type: ignore[arg-type]
+                TimedSwitchConfig(source_type="generator", on_s=1, off_s=1, repetitions=1, generator_power="-30 dBm", generator_max_power_dbm=0, setup_before_start=False),
+            )
+
+        self.assertEqual(generator.writes, [":OUTP OFF"])
+
+    def test_frequency_sweep_records_final_off_failure(self) -> None:
+        generator = FakeInstrument(query_responses={"*IDN?": "Rohde&Schwarz,SMIQ03B,123,1.0", ":SOUR:FREQ:CW?": "100000000", ":SOUR:POW?": "-30", ":OUTP?": "1"})
+        measurement = FakeInstrument(query_responses={"*IDN?": "KEITHLEY INSTRUMENTS INC.,MODEL 2000,123,1.0"})
+
+        def failing_write(command: str) -> None:
+            if command == ":OUTP OFF":
+                raise RuntimeError("off failed")
+            generator.writes.append(command)
+
+        generator.write = failing_write  # type: ignore[method-assign]
+        result = run_frequency_sweep(
+            generator,  # type: ignore[arg-type]
+            measurement,  # type: ignore[arg-type]
+            FrequencySweepConfig("100 MHz", "100 MHz", "1 MHz", "-30 dBm", 0, 0, "dmm"),
+            stop_requested=lambda: True,
+        )
+
+        self.assertEqual(result.error_count, 1)
+        self.assertIn("FINAL_OFF_ERROR", result.csv_content)
+
+    def test_voltage_sweep_rejects_voltage_above_limit_before_writes(self) -> None:
+        supply = FakeInstrument(query_responses={"*IDN?": "HAMEG,HMP4030,123,1.0"})
+        measurement = FakeInstrument(query_responses={"*IDN?": "KEITHLEY INSTRUMENTS INC.,MODEL 2000,123,1.0"})
+
+        with self.assertRaises(ValueError):
+            run_voltage_sweep(
+                supply,  # type: ignore[arg-type]
+                measurement,  # type: ignore[arg-type]
+                VoltageSweepConfig("0 V", "10 V", "1 V", "0.1 A", 1, 5, 1, 0, "dmm"),
+            )
+
+        self.assertEqual(supply.writes, [])
+
+    def test_voltage_sweep_export_charts_only_value(self) -> None:
+        from openpyxl import load_workbook
+
+        content = "SetVoltageV,Index,ElapsedSeconds,Value,Status\n0,1,0.1,4.2,OK\n1,2,0.2,4.4,OK\n"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "results.xlsx"
+            export = append_result(workbook_path, "GPIB0::3::INSTR", "HAMEG,HMP4030,123,1.0", AcquisitionResult("voltage sweep", "csv", content))
             workbook = load_workbook(workbook_path)
             sheet = workbook[export.sheet_name]
 

@@ -73,8 +73,8 @@ def append_result(workbook_path: Path, address: str, idn: str, result: Acquisiti
         _append_csv(data_sheet, result.content)
         if result.kind == "waveform":
             _add_waveform_chart(data_sheet)
-        elif result.kind == "frequency sweep":
-            _add_frequency_sweep_chart(data_sheet)
+        elif result.kind in {"frequency sweep", "voltage sweep"}:
+            _add_sweep_chart(data_sheet, result.kind)
         _format_sheet(data_sheet)
     elif result.file_type.startswith("s") and result.file_type.endswith("p"):
         artifact = _artifact_path(workbook_path, result.file_type)
@@ -158,12 +158,13 @@ def _add_waveform_chart(sheet) -> None:
         _add_line_waveform_chart(sheet, header_row, max_row, numeric_columns, anchor)
 
 
-def _add_frequency_sweep_chart(sheet) -> None:
-    header_row = _find_frequency_sweep_header_row(sheet)
+def _add_sweep_chart(sheet, kind: str) -> None:
+    x_header = "setfrequencyhz" if kind == "frequency sweep" else "setvoltagev"
+    header_row = _find_sweep_header_row(sheet, x_header)
     if header_row is None:
         return
     headers = {str(sheet.cell(header_row, column).value or "").strip().lower(): column for column in range(1, sheet.max_column + 1)}
-    x_column = headers.get("setfrequencyhz")
+    x_column = headers.get(x_header)
     y_column = headers.get("value")
     if x_column is None or y_column is None:
         return
@@ -173,11 +174,11 @@ def _add_frequency_sweep_chart(sheet) -> None:
     if not any(isinstance(sheet.cell(row, y_column).value, (int, float)) for row in range(header_row + 1, max_row + 1)):
         return
 
-    x_column, y_column, header_row, max_row = _frequency_sweep_chart_columns(sheet, header_row, max_row, x_column, y_column)
+    x_column, y_column, header_row, max_row = _sweep_chart_columns(sheet, header_row, max_row, x_column, y_column, x_header)
 
     chart = ScatterChart()
-    chart.title = "Frequency Sweep"
-    chart.x_axis.title = "Frequency [Hz]"
+    chart.title = "Frequency Sweep" if kind == "frequency sweep" else "Voltage Sweep"
+    chart.x_axis.title = "Frequency [Hz]" if kind == "frequency sweep" else "Voltage [V]"
     chart.y_axis.title = "Value"
     chart.legend = None
     chart.width = CHART_WIDTH
@@ -188,7 +189,7 @@ def _add_frequency_sweep_chart(sheet) -> None:
     sheet.add_chart(chart, _chart_anchor(sheet))
 
 
-def _frequency_sweep_chart_columns(sheet, header_row: int, max_row: int, x_column: int, y_column: int) -> tuple[int, int, int, int]:
+def _sweep_chart_columns(sheet, header_row: int, max_row: int, x_column: int, y_column: int, x_header: str) -> tuple[int, int, int, int]:
     source_rows = [row for row in range(header_row + 1, max_row + 1) if isinstance(sheet.cell(row, y_column).value, (int, float))]
     if len(source_rows) <= MAX_CHART_POINTS:
         return x_column, y_column, header_row, max_row
@@ -201,7 +202,7 @@ def _frequency_sweep_chart_columns(sheet, header_row: int, max_row: int, x_colum
     target_x_column = sheet.max_column + 2
     target_y_column = target_x_column + 1
     target_header_row = header_row
-    sheet.cell(target_header_row, target_x_column).value = "SetFrequencyHz"
+    sheet.cell(target_header_row, target_x_column).value = "SetFrequencyHz" if x_header == "setfrequencyhz" else "SetVoltageV"
     sheet.cell(target_header_row, target_y_column).value = "Value"
     for cell in (sheet.cell(target_header_row, target_x_column), sheet.cell(target_header_row, target_y_column)):
         cell.font = Font(bold=True)
@@ -231,11 +232,11 @@ def _find_waveform_header_row(sheet) -> int | None:
     return None
 
 
-def _find_frequency_sweep_header_row(sheet) -> int | None:
+def _find_sweep_header_row(sheet, x_header: str) -> int | None:
     for row in range(1, sheet.max_row + 1):
         values = [sheet.cell(row, column).value for column in range(1, sheet.max_column + 1)]
         normalized = {str(value).strip().lower() for value in values if value is not None}
-        if {"setfrequencyhz", "value"}.issubset(normalized):
+        if {x_header, "value"}.issubset(normalized):
             return row
     return None
 
