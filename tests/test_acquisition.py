@@ -126,6 +126,30 @@ class AcquisitionTests(unittest.TestCase):
             self.assertEqual(sheet["A7"].value, "Time")
             self.assertEqual(sheet["B8"].value, 1.0)
             self.assertEqual(len(sheet._charts), 1)
+            self.assertEqual(sheet.freeze_panes, "A8")
+
+    def test_large_waveform_export_adds_min_max_extract_for_chart(self) -> None:
+        from openpyxl import load_workbook
+
+        rows = ["Time,CH1"]
+        for index in range(2500):
+            value = 100 if index == 1999 else index % 10
+            rows.append(f"{index},{value}")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "results.xlsx"
+            result = AcquisitionResult(kind="waveform", file_type="csv", content="\n".join(rows))
+
+            export = append_result(workbook_path, "USB::TEST", "TEST,DSOX2024A,1,1", result)
+            workbook = load_workbook(export.workbook_path)
+            sheet = workbook[export.sheet_name]
+
+            self.assertIn("Diagramm-Extrakt: Min/Max", str(sheet["D6"].value))
+            self.assertEqual(sheet["D7"].value, "Time")
+            self.assertEqual(sheet["E7"].value, "CH1")
+            self.assertEqual(sheet["E5"].value, True)
+            self.assertTrue(any("B2007" in str(sheet.cell(row, 5).value) for row in range(8, sheet.max_row + 1)))
+            self.assertEqual(len(sheet._charts), 1)
 
 
 if __name__ == "__main__":

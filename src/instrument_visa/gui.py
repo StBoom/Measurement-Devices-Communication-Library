@@ -72,9 +72,20 @@ class InstrumentVisaApp(tk.Tk):
 
     def _build_ui(self) -> None:
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(4, weight=1)
+        self.rowconfigure(0, weight=1)
 
-        connection = ttk.LabelFrame(self, text="Verbindung")
+        main_pane = ttk.PanedWindow(self, orient="vertical")
+        main_pane.grid(row=0, column=0, sticky="nsew")
+
+        controls_frame = ttk.Frame(main_pane)
+        controls_frame.columnconfigure(0, weight=1)
+        log_frame = ttk.LabelFrame(main_pane, text="Protokoll")
+        log_frame.columnconfigure(0, weight=1)
+        log_frame.rowconfigure(0, weight=1)
+        main_pane.add(controls_frame, weight=3)
+        main_pane.add(log_frame, weight=1)
+
+        connection = ttk.LabelFrame(controls_frame, text="Verbindung")
         connection.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
         connection.columnconfigure(1, weight=1)
 
@@ -93,7 +104,7 @@ class InstrumentVisaApp(tk.Tk):
         ttk.Label(connection, textvariable=self.device_type_var).grid(row=2, column=1, sticky="w", padx=8, pady=(0, 8))
         ttk.Label(connection, textvariable=self.profile_var).grid(row=2, column=2, columnspan=2, sticky="w", padx=8, pady=(0, 8))
 
-        export = ttk.LabelFrame(self, text="Export")
+        export = ttk.LabelFrame(controls_frame, text="Export")
         export.grid(row=1, column=0, sticky="ew", padx=12, pady=6)
         export.columnconfigure(1, weight=1)
 
@@ -103,7 +114,7 @@ class InstrumentVisaApp(tk.Tk):
         ttk.Button(export, text="Excel öffnen", command=self.open_excel).grid(row=0, column=3, padx=8, pady=8)
         ttk.Button(export, text="Ordner öffnen", command=self.open_output_folder).grid(row=0, column=4, padx=8, pady=8)
 
-        measurement_area = ttk.Frame(self)
+        measurement_area = ttk.Frame(controls_frame)
         measurement_area.grid(row=2, column=0, sticky="ew", padx=12, pady=6)
         measurement_area.columnconfigure(0, weight=1)
         measurement_area.columnconfigure(1, weight=1)
@@ -202,7 +213,7 @@ class InstrumentVisaApp(tk.Tk):
             checkbutton.pack(side="left", padx=(0, 8))
             sparameter_checkbuttons.append(checkbutton)
 
-        common = ttk.LabelFrame(self, text="Allgemein")
+        common = ttk.LabelFrame(controls_frame, text="Allgemein")
         common.grid(row=3, column=0, sticky="ew", padx=12, pady=6)
         screenshot_button = ttk.Button(common, text="Screenshot", command=self.capture_screenshot)
         screenshot_button.pack(side="left", padx=8, pady=8)
@@ -218,11 +229,6 @@ class InstrumentVisaApp(tk.Tk):
         self._refresh_resource_combo()
         self._apply_saved_profile_for_address()
 
-        log_frame = ttk.LabelFrame(self, text="Protokoll")
-        log_frame.grid(row=4, column=0, sticky="nsew", padx=12, pady=6)
-        log_frame.columnconfigure(0, weight=1)
-        log_frame.rowconfigure(0, weight=1)
-
         self.log = tk.Text(log_frame, height=14, wrap="word", state="disabled")
         self.log.grid(row=0, column=0, sticky="nsew", padx=(8, 0), pady=8)
         scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.log.yview)
@@ -230,7 +236,7 @@ class InstrumentVisaApp(tk.Tk):
         self.log.configure(yscrollcommand=scrollbar.set)
 
         status = ttk.Label(self, textvariable=self.status_var, anchor="w")
-        status.grid(row=5, column=0, sticky="ew", padx=12, pady=(0, 12))
+        status.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 12))
 
     def search_devices(self) -> None:
         self._run_worker("Gerätesuche läuft...", self._search_devices)

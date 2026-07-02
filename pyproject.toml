@@ -10,6 +10,11 @@ dependencies = [
     "pyvisa-py>=0.7.0",
 ]
 
+[project.optional-dependencies]
+build = [
+    "pyinstaller>=6.0.0",
+]
+
 [project.scripts]
 instrument-visa = "instrument_visa.cli:main"
 instrument-visa-gui = "instrument_visa.gui:main"

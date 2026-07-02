@@ -9,7 +9,7 @@ Das Projekt kommuniziert per VISA/SCPI mit Messgeräten, liest Messwerte, Screen
 ## Installation
 
 1. Python 3.10 oder neuer installieren.
-2. Eine VISA-Runtime installieren, falls USB/GPIB/TCPIP-Geräte darüber angebunden sind. Empfohlen ist die schlanke R&S VISA Runtime: [R&S VISA Downloadseite](https://www.rohde-schwarz.com/us/applications/rs-visa_56280-148812.html), Windows-Installer: [RS_VISA_Setup_Win_7_2_6.exe](https://scdn.rohde-schwarz.com/ur/pws/dl_downloads/dl_application/application_notes/1dc02___rs_v/RS_VISA_Setup_Win_7_2_6.exe). Alternativ funktionieren auch NI-VISA oder Keysight VISA.
+2. Eine VISA-Runtime installieren, falls USB/GPIB/TCPIP-Geräte darüber angebunden sind. Empfohlen ist die schlanke R&S VISA Runtime: [R&S VISA und Tools](https://www.rohde-schwarz.com/de/driver-pages/fernsteuerung/3-visa-und-tools_231388.html). Alternativ funktionieren auch NI-VISA oder Keysight VISA.
 3. Abhängigkeiten installieren:
 
 ```powershell

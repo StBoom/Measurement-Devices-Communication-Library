@@ -12,13 +12,16 @@ from zipfile import BadZipFile
 from openpyxl import Workbook, load_workbook
 from openpyxl.chart import LineChart, Reference, ScatterChart, Series
 from openpyxl.drawing.image import Image as ExcelImage
-from openpyxl.styles import Font
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.datavalidation import DataValidation
 
 from .acquisition import AcquisitionResult
 
 
 MAX_CHART_POINTS = 2000
+CHART_WIDTH = 30
+CHART_HEIGHT = 15
 
 
 @dataclass(frozen=True)
@@ -144,9 +147,8 @@ def _add_waveform_chart(sheet) -> None:
     if max_row <= header_row:
         return
 
-    anchor = _chart_anchor(sheet)
-    if max_row - header_row > MAX_CHART_POINTS:
-        header_row, max_row, numeric_columns, anchor = _add_sampled_chart_table(sheet, header_row, max_row, numeric_columns, has_x_axis)
+    header_row, max_row, numeric_columns, anchor = _add_chart_data_table(sheet, header_row, max_row, numeric_columns, has_x_axis)
+    _force_excel_recalculation(sheet)
 
     if has_x_axis and len(numeric_columns) > 1:
         _add_scatter_waveform_chart(sheet, header_row, max_row, numeric_columns, anchor)
@@ -178,29 +180,46 @@ def _numeric_columns(sheet, header_row: int, max_row: int) -> list[int]:
     return columns
 
 
-def _add_sampled_chart_table(sheet, source_header_row: int, source_max_row: int, source_numeric_columns: list[int], has_x_axis: bool) -> tuple[int, int, list[int], str]:
+def _add_chart_data_table(sheet, source_header_row: int, source_max_row: int, source_numeric_columns: list[int], has_x_axis: bool) -> tuple[int, int, list[int], str]:
     source_columns = [1, *[column for column in source_numeric_columns if column != 1]] if has_x_axis else source_numeric_columns
+    value_columns = [column for column in source_numeric_columns if not (has_x_axis and column == 1)]
     start_column = sheet.max_column + 2
+    toggle_row = max(1, source_header_row - 2)
     note_row = max(1, source_header_row - 1)
     sample_header_row = source_header_row if source_header_row > 1 else 2
     sample_data_row = sample_header_row + 1
-    step = max(1, ceil((source_max_row - source_header_row) / MAX_CHART_POINTS))
+    source_data_rows = source_max_row - source_header_row
+    is_sampled = source_data_rows > MAX_CHART_POINTS
+    rows_per_bucket = _chart_bucket_size(source_data_rows, len(value_columns)) if is_sampled else 1
 
-    sheet.cell(note_row, start_column).value = f"Diagramm-Extrakt: jeder {step}. Punkt plus letzter Punkt; vollständige Daten links."
+    _add_channel_toggles(sheet, toggle_row, start_column, source_columns, has_x_axis)
+
+    note = sheet.cell(note_row, start_column)
+    note.value = (
+        f"Diagramm-Extrakt: Min/Max je {rows_per_bucket} Punkte plus letzter Punkt; vollständige Daten links."
+        if is_sampled
+        else "Diagramm-Daten: vollständiger Datenbereich; Kanäle über TRUE/FALSE-Schalter ein-/ausblendbar."
+    )
+    note.font = Font(bold=True)
+    note.fill = PatternFill(fill_type="solid", fgColor="FFF2CC")
+    note.alignment = Alignment(wrap_text=True)
 
     for offset, source_column in enumerate(source_columns):
-        sheet.cell(sample_header_row, start_column + offset).value = sheet.cell(source_header_row, source_column).value or f"Column {source_column}"
+        cell = sheet.cell(sample_header_row, start_column + offset)
+        cell.value = sheet.cell(source_header_row, source_column).value or f"Column {source_column}"
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill(fill_type="solid", fgColor="D9EAD3")
 
-    last_copied_source_row = 0
-    for source_row in range(source_header_row + 1, source_max_row + 1, step):
-        if not any(isinstance(sheet.cell(source_row, column).value, (int, float)) for column in source_numeric_columns):
+    copied_rows: set[int] = set()
+    for source_row in _chart_source_rows(sheet, source_header_row, source_max_row, rows_per_bucket, value_columns or source_numeric_columns, is_sampled):
+        if source_row in copied_rows:
             continue
-        _copy_sampled_row(sheet, source_row, sample_data_row, source_columns, start_column)
-        last_copied_source_row = source_row
+        _copy_chart_row(sheet, source_row, sample_data_row, source_columns, start_column, toggle_row, has_x_axis)
+        copied_rows.add(source_row)
         sample_data_row += 1
 
-    if last_copied_source_row != source_max_row:
-        _copy_sampled_row(sheet, source_max_row, sample_data_row, source_columns, start_column)
+    if source_max_row not in copied_rows:
+        _copy_chart_row(sheet, source_max_row, sample_data_row, source_columns, start_column, toggle_row, has_x_axis)
         sample_data_row += 1
 
     sample_columns = list(range(start_column, start_column + len(source_columns)))
@@ -208,18 +227,82 @@ def _add_sampled_chart_table(sheet, source_header_row: int, source_max_row: int,
     return sample_header_row, sample_data_row - 1, sample_columns, anchor
 
 
-def _copy_sampled_row(sheet, source_row: int, sample_row: int, source_columns: list[int], start_column: int) -> None:
+def _add_channel_toggles(sheet, toggle_row: int, start_column: int, source_columns: list[int], has_x_axis: bool) -> None:
+    label = sheet.cell(toggle_row, start_column)
+    label.value = "Diagramm-Kanäle"
+    label.font = Font(bold=True)
+    label.fill = PatternFill(fill_type="solid", fgColor="D9EAD3")
+
+    validation = DataValidation(type="list", formula1='"TRUE,FALSE"', allow_blank=False)
+    sheet.add_data_validation(validation)
     for offset, source_column in enumerate(source_columns):
-        sheet.cell(sample_row, start_column + offset).value = sheet.cell(source_row, source_column).value
+        target_column = start_column + offset
+        toggle = sheet.cell(toggle_row, target_column)
+        if has_x_axis and offset == 0:
+            toggle.value = "X-Achse"
+        else:
+            toggle.value = True
+            validation.add(toggle)
+        toggle.font = Font(bold=True)
+        toggle.fill = PatternFill(fill_type="solid", fgColor="D9EAD3")
+
+
+def _chart_source_rows(sheet, source_header_row: int, source_max_row: int, rows_per_bucket: int, value_columns: list[int], is_sampled: bool) -> list[int]:
+    if not is_sampled:
+        return [
+            row
+            for row in range(source_header_row + 1, source_max_row + 1)
+            if any(isinstance(sheet.cell(row, column).value, (int, float)) for column in value_columns)
+        ]
+
+    rows: list[int] = []
+    for bucket_start in range(source_header_row + 1, source_max_row + 1, rows_per_bucket):
+        bucket_end = min(bucket_start + rows_per_bucket - 1, source_max_row)
+        rows.extend(_bucket_extreme_rows(sheet, bucket_start, bucket_end, value_columns))
+    return rows
+
+
+def _copy_chart_row(sheet, source_row: int, sample_row: int, source_columns: list[int], start_column: int, toggle_row: int, has_x_axis: bool) -> None:
+    for offset, source_column in enumerate(source_columns):
+        target_column = start_column + offset
+        source_ref = f"{get_column_letter(source_column)}{source_row}"
+        if has_x_axis and offset == 0:
+            sheet.cell(sample_row, target_column).value = f"={source_ref}"
+        else:
+            toggle_ref = f"{get_column_letter(target_column)}${toggle_row}"
+            sheet.cell(sample_row, target_column).value = f"=IF({toggle_ref},{source_ref},NA())"
+
+
+def _chart_bucket_size(source_data_rows: int, value_column_count: int) -> int:
+    rows_per_bucket_output = max(2, value_column_count * 2 + 2)
+    bucket_count = max(1, MAX_CHART_POINTS // rows_per_bucket_output)
+    return max(1, ceil(source_data_rows / bucket_count))
+
+
+def _bucket_extreme_rows(sheet, start_row: int, end_row: int, value_columns: list[int]) -> list[int]:
+    rows: set[int] = {start_row, end_row}
+    for column in value_columns:
+        numeric_values = [
+            (row, sheet.cell(row, column).value)
+            for row in range(start_row, end_row + 1)
+            if isinstance(sheet.cell(row, column).value, (int, float))
+        ]
+        if not numeric_values:
+            continue
+        rows.add(min(numeric_values, key=lambda item: item[1])[0])
+        rows.add(max(numeric_values, key=lambda item: item[1])[0])
+    return sorted(rows)
 
 
 def _add_scatter_waveform_chart(sheet, header_row: int, max_row: int, numeric_columns: list[int], anchor: str) -> None:
     chart = ScatterChart()
     chart.title = "Waveform"
     x_column = numeric_columns[0]
-    chart.x_axis.title = str(sheet.cell(header_row, x_column).value or "X")
-    chart.y_axis.title = "Value"
+    chart.x_axis.title = _axis_title(str(sheet.cell(header_row, x_column).value or "X"), axis="x")
+    chart.y_axis.title = _waveform_y_axis_title(sheet, header_row, numeric_columns[1:])
     chart.legend.position = "r"
+    chart.width = CHART_WIDTH
+    chart.height = CHART_HEIGHT
 
     x_values = Reference(sheet, min_col=x_column, min_row=header_row + 1, max_row=max_row)
     for column in numeric_columns:
@@ -237,8 +320,10 @@ def _add_line_waveform_chart(sheet, header_row: int, max_row: int, numeric_colum
     chart = LineChart()
     chart.title = "Waveform"
     chart.x_axis.title = "Point"
-    chart.y_axis.title = "Value"
+    chart.y_axis.title = _waveform_y_axis_title(sheet, header_row, numeric_columns)
     chart.legend.position = "r"
+    chart.width = CHART_WIDTH
+    chart.height = CHART_HEIGHT
 
     data = Reference(sheet, min_col=min(numeric_columns), max_col=max(numeric_columns), min_row=header_row, max_row=max_row)
     chart.add_data(data, titles_from_data=True)
@@ -247,6 +332,33 @@ def _add_line_waveform_chart(sheet, header_row: int, max_row: int, numeric_colum
 
 def _chart_anchor(sheet) -> str:
     return f"{get_column_letter(min(sheet.max_column + 2, 12))}7"
+
+
+def _axis_title(header: str, axis: str) -> str:
+    normalized = header.strip().lower()
+    if axis == "x" and normalized == "time":
+        return "Time [s]"
+    if axis == "x" and normalized in {"frequency", "freq", "[hz]", "hz"}:
+        return "Frequency [Hz]"
+    return header or axis.upper()
+
+
+def _waveform_y_axis_title(sheet, header_row: int, value_columns: list[int]) -> str:
+    headers = [str(sheet.cell(header_row, column).value or "").strip().lower() for column in value_columns]
+    if any("dbm" in header for header in headers):
+        return "Level [dBm]"
+    if any(header.startswith("ch") for header in headers):
+        return "Amplitude"
+    return "Value"
+
+
+def _force_excel_recalculation(sheet) -> None:
+    try:
+        sheet.parent.calculation.fullCalcOnLoad = True
+        sheet.parent.calculation.forceFullCalc = True
+        sheet.parent.calculation.calcMode = "auto"
+    except AttributeError:
+        pass
 
 
 def _unique_sheet_name(workbook, kind: str) -> str:
@@ -270,7 +382,12 @@ def _backup_corrupt_workbook(workbook_path: Path) -> Path:
 
 
 def _format_sheet(sheet) -> None:
-    sheet.freeze_panes = "A2"
+    waveform_header_row = _find_waveform_header_row(sheet)
+    sheet.freeze_panes = f"A{waveform_header_row + 1}" if waveform_header_row else "A2"
+    if waveform_header_row:
+        original_max_column = _original_data_max_column(sheet, waveform_header_row)
+        if original_max_column > 0:
+            sheet.auto_filter.ref = f"A{waveform_header_row}:{get_column_letter(original_max_column)}{sheet.max_row}"
     for cell in sheet[1]:
         cell.font = Font(bold=True)
 
@@ -282,3 +399,13 @@ def _format_sheet(sheet) -> None:
                 continue
             max_length = max(max_length, len(str(cell.value)))
         sheet.column_dimensions[column_letter].width = min(max(max_length + 2, 10), 60)
+
+
+def _original_data_max_column(sheet, header_row: int) -> int:
+    max_column = 0
+    for column in range(1, sheet.max_column + 1):
+        value = sheet.cell(header_row, column).value
+        if value is None or str(value).strip() == "":
+            break
+        max_column = column
+    return max_column
