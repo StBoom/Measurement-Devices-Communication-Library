@@ -17,16 +17,21 @@ from .acquisition import (
     capture_screenshot,
     capture_sparameters,
     capture_waveform,
+    read_power_supply_settings,
     read_scope_measurement,
     read_signal_generator_settings,
     read_value,
+    set_power_supply,
+    set_power_supply_master_output,
+    set_power_supply_output,
     set_signal_generator,
     set_signal_generator_rf_output,
 )
 from .config import SParameterConfig
 from .excel_export import append_result
 from .logging_utils import setup_logging
-from .profiles import UNKNOWN_PROFILE, DeviceProfile, detect_profile
+from .profiles import UNKNOWN_PROFILE, DeviceProfile, detect_profile, hmp_channel_count
+from .sequence import FrequencySweepConfig, frequency_points, parse_dbm, run_frequency_sweep
 from .visa_client import VisaInstrument, list_resources
 
 
@@ -40,8 +45,8 @@ class InstrumentVisaApp(tk.Tk):
         self.title("Measurement Devices Communication Library")
 
         self.settings = self._load_settings()
-        self.geometry(self.settings.get("window_geometry", "1040x820"))
-        self.minsize(940, 760)
+        self.geometry(self.settings.get("window_geometry", "1280x760"))
+        self.minsize(900, 680)
         self.saved_devices = self._load_saved_devices()
         self.last_found_resources: list[str] = []
         self.resource_display_map: dict[str, str] = {}
@@ -67,6 +72,21 @@ class InstrumentVisaApp(tk.Tk):
         self.generator_rf_var = tk.StringVar(value=self.settings.get("generator_rf", "OFF"))
         self.generator_max_power_var = tk.StringVar(value=str(self.settings.get("generator_max_power", "0")))
         self.generator_rf_off_before_change_var = tk.BooleanVar(value=bool(self.settings.get("generator_rf_off_before_change", True)))
+        self.power_supply_channel_var = tk.IntVar(value=int(self.settings.get("power_supply_channel", 1)))
+        self.power_supply_voltage_var = tk.StringVar(value=self.settings.get("power_supply_voltage", "5 V"))
+        self.power_supply_current_var = tk.StringVar(value=self.settings.get("power_supply_current", "0.5 A"))
+        self.power_supply_output_var = tk.StringVar(value=self.settings.get("power_supply_output", "OFF"))
+        self.power_supply_max_voltage_var = tk.StringVar(value=str(self.settings.get("power_supply_max_voltage", "32")))
+        self.power_supply_max_current_var = tk.StringVar(value=str(self.settings.get("power_supply_max_current", "10")))
+        self.sequence_generator_address_var = tk.StringVar(value=self.settings.get("sequence_generator_address", self.address_var.get()))
+        self.sequence_measurement_address_var = tk.StringVar(value=self.settings.get("sequence_measurement_address", self.address_var.get()))
+        self.sequence_start_frequency_var = tk.StringVar(value=self.settings.get("sequence_start_frequency", "100 MHz"))
+        self.sequence_stop_frequency_var = tk.StringVar(value=self.settings.get("sequence_stop_frequency", "110 MHz"))
+        self.sequence_step_frequency_var = tk.StringVar(value=self.settings.get("sequence_step_frequency", "1 MHz"))
+        self.sequence_power_var = tk.StringVar(value=self.settings.get("sequence_power", "-30 dBm"))
+        self.sequence_settle_var = tk.StringVar(value=str(self.settings.get("sequence_settle", "0.5")))
+        self.sequence_measurement_mode_var = tk.StringVar(value=self.settings.get("sequence_measurement_mode", "DMM"))
+        self.sequence_rf_off_at_end_var = tk.BooleanVar(value=bool(self.settings.get("sequence_rf_off_at_end", True)))
         self.status_var = tk.StringVar(value="Bereit")
         self._scope_widgets: list[tk.Widget] = []
         self._dmm_widgets: list[tk.Widget] = []
@@ -77,10 +97,25 @@ class InstrumentVisaApp(tk.Tk):
         self._timed_scope_widgets: list[tk.Widget] = []
         self._timed_stop_widgets: list[tk.Widget] = []
         self._generator_widgets: list[tk.Widget] = []
+        self._power_supply_widgets: list[tk.Widget] = []
+        self._sequence_widgets: list[tk.Widget] = []
+        self._sequence_stop_widgets: list[tk.Widget] = []
+        self._device_sections: dict[str, tk.Widget] = {}
+        self._power_supply_channel_spinbox: ttk.Spinbox | None = None
         self.timed_stop_event = threading.Event()
+        self.sequence_stop_event = threading.Event()
         self.timed_running = False
+        self.sequence_running = False
         self.current_profile: DeviceProfile = UNKNOWN_PROFILE
         self._messages: queue.Queue[tuple[str, object]] = queue.Queue()
+        self._log_visible = bool(self.settings.get("log_visible", True))
+        self._main_pane: ttk.Frame | None = None
+        self._controls_container: ttk.Frame | None = None
+        self._log_pane: ttk.Frame | None = None
+        self._log_frame: ttk.LabelFrame | None = None
+        self._collapsed_log_button: ttk.Button | None = None
+        self._last_controls_width: int | None = None
+        self._log_toggle_var = tk.StringVar()
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self.close)
@@ -88,19 +123,45 @@ class InstrumentVisaApp(tk.Tk):
 
     def _build_ui(self) -> None:
         self.columnconfigure(0, weight=1)
+        self.columnconfigure(1, weight=0)
         self.rowconfigure(0, weight=1)
 
-        main_pane = ttk.PanedWindow(self, orient="vertical")
+        main_pane = ttk.Frame(self)
         main_pane.grid(row=0, column=0, sticky="nsew")
+        main_pane.columnconfigure(0, weight=1)
+        main_pane.columnconfigure(1, weight=0)
+        main_pane.rowconfigure(0, weight=1)
+        self._main_pane = main_pane
+        collapsed_log_button = ttk.Button(self, text="‹", width=3, command=self.toggle_log)
+        self._collapsed_log_button = collapsed_log_button
 
-        controls_frame = ttk.Frame(main_pane)
+        controls_container = ttk.Frame(main_pane)
+        self._controls_container = controls_container
+        controls_container.grid(row=0, column=0, sticky="nsew")
+        controls_container.columnconfigure(0, weight=1)
+        controls_container.rowconfigure(0, weight=1)
+        controls_canvas = tk.Canvas(controls_container, highlightthickness=0)
+        controls_scrollbar = ttk.Scrollbar(controls_container, orient="vertical", command=controls_canvas.yview)
+        controls_canvas.grid(row=0, column=0, sticky="nsew")
+        controls_scrollbar.grid(row=0, column=1, sticky="ns")
+        controls_frame = ttk.Frame(controls_canvas)
         controls_frame.columnconfigure(0, weight=1)
-        log_frame = ttk.LabelFrame(main_pane, text="Protokoll")
+        controls_window = controls_canvas.create_window((0, 0), window=controls_frame, anchor="nw")
+        controls_canvas.configure(yscrollcommand=controls_scrollbar.set)
+        controls_frame.bind("<Configure>", lambda event: controls_canvas.configure(scrollregion=controls_canvas.bbox("all")))
+        controls_canvas.bind("<Configure>", lambda event: controls_canvas.itemconfigure(controls_window, width=event.width))
+        controls_container.bind("<Enter>", lambda event: controls_canvas.bind_all("<MouseWheel>", lambda wheel_event: self._scroll_controls_if_needed(controls_canvas, wheel_event)))
+        controls_container.bind("<Leave>", lambda event: controls_canvas.unbind_all("<MouseWheel>"))
+        log_pane = ttk.Frame(main_pane)
+        self._log_pane = log_pane
+        log_pane.columnconfigure(1, weight=1)
+        log_pane.rowconfigure(0, weight=1)
+        log_toggle_button = ttk.Button(log_pane, textvariable=self._log_toggle_var, width=3, command=self.toggle_log)
+        log_toggle_button.grid(row=0, column=0, sticky="ns", padx=(4, 2), pady=4)
+        log_frame = ttk.LabelFrame(log_pane, text="Protokoll")
+        self._log_frame = log_frame
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
-        main_pane.add(controls_frame, weight=3)
-        main_pane.add(log_frame, weight=1)
-
         connection = ttk.LabelFrame(controls_frame, text="Verbindung")
         connection.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
         connection.columnconfigure(1, weight=1)
@@ -109,8 +170,10 @@ class InstrumentVisaApp(tk.Tk):
         self.resource_combo = ttk.Combobox(connection, textvariable=self.resource_var, state="readonly")
         self.resource_combo.grid(row=0, column=1, sticky="ew", padx=8, pady=8)
         self.resource_combo.bind("<<ComboboxSelected>>", self.select_device)
-        ttk.Button(connection, text="Geräte suchen", command=self.search_devices).grid(row=0, column=2, padx=8, pady=8)
-        ttk.Button(connection, text="IDN testen", command=self.test_idn).grid(row=0, column=3, padx=8, pady=8)
+        search_button = ttk.Button(connection, text="Geräte suchen", command=self.search_devices)
+        search_button.grid(row=0, column=2, padx=8, pady=8)
+        idn_button = ttk.Button(connection, text="IDN testen", command=self.test_idn)
+        idn_button.grid(row=0, column=3, padx=8, pady=8)
         ttk.Label(connection, text="VISA-Adresse").grid(row=1, column=0, sticky="w", padx=8, pady=(0, 8))
         address_entry = ttk.Entry(connection, textvariable=self.address_var)
         address_entry.grid(row=1, column=1, sticky="ew", padx=8, pady=(0, 8))
@@ -231,6 +294,7 @@ class InstrumentVisaApp(tk.Tk):
 
         generator = ttk.LabelFrame(measurement_area, text="Signalgenerator")
         generator.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        generator.columnconfigure(0, weight=1)
 
         generator_controls = ttk.Frame(generator)
         generator_controls.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
@@ -243,27 +307,110 @@ class InstrumentVisaApp(tk.Tk):
 
         generator_settings = ttk.Frame(generator)
         generator_settings.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
-        ttk.Label(generator_settings, text="Frequenz").pack(side="left", padx=(0, 4))
+        generator_settings.columnconfigure(1, weight=1)
+        generator_settings.columnconfigure(3, weight=1)
+        ttk.Label(generator_settings, text="Frequenz").grid(row=0, column=0, sticky="w", padx=(0, 4), pady=(0, 6))
         generator_frequency_entry = ttk.Entry(generator_settings, textvariable=self.generator_frequency_var, width=14)
-        generator_frequency_entry.pack(side="left", padx=(0, 8))
-        ttk.Label(generator_settings, text="Pegel").pack(side="left", padx=(0, 4))
+        generator_frequency_entry.grid(row=0, column=1, sticky="ew", padx=(0, 12), pady=(0, 6))
+        ttk.Label(generator_settings, text="Pegel").grid(row=0, column=2, sticky="w", padx=(0, 4), pady=(0, 6))
         generator_power_entry = ttk.Entry(generator_settings, textvariable=self.generator_power_var, width=12)
-        generator_power_entry.pack(side="left", padx=(0, 8))
-        ttk.Label(generator_settings, text="RF").pack(side="left", padx=(0, 4))
+        generator_power_entry.grid(row=0, column=3, sticky="ew", padx=(0, 12), pady=(0, 6))
+        ttk.Label(generator_settings, text="RF").grid(row=0, column=4, sticky="w", padx=(0, 4), pady=(0, 6))
         generator_rf_combo = ttk.Combobox(generator_settings, textvariable=self.generator_rf_var, values=("OFF", "ON"), width=5, state="readonly")
-        generator_rf_combo.pack(side="left", padx=(0, 8))
-        ttk.Label(generator_settings, text="Max. Pegel [dBm]").pack(side="left", padx=(0, 4))
+        generator_rf_combo.grid(row=0, column=5, sticky="w", padx=(0, 12), pady=(0, 6))
+        ttk.Label(generator_settings, text="Max. Pegel [dBm]").grid(row=1, column=0, sticky="w", padx=(0, 4))
         generator_max_power_entry = ttk.Entry(generator_settings, textvariable=self.generator_max_power_var, width=7)
-        generator_max_power_entry.pack(side="left", padx=(0, 8))
+        generator_max_power_entry.grid(row=1, column=1, sticky="w", padx=(0, 12))
         generator_rf_off_check = ttk.Checkbutton(generator_settings, text="RF vor Änderung aus", variable=self.generator_rf_off_before_change_var)
-        generator_rf_off_check.pack(side="left", padx=(0, 8))
+        generator_rf_off_check.grid(row=1, column=2, columnspan=4, sticky="w")
+
+        power_supply = ttk.LabelFrame(measurement_area, text="Netzgerät")
+        power_supply.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        power_supply.columnconfigure(0, weight=1)
+        power_supply_controls = ttk.Frame(power_supply)
+        power_supply_controls.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
+        power_supply_read_button = ttk.Button(power_supply_controls, text="Netzgerät lesen", command=self.read_power_supply)
+        power_supply_read_button.pack(side="left", padx=(0, 8))
+        power_supply_set_button = ttk.Button(power_supply_controls, text="Netzgerät setzen", command=self.set_power_supply)
+        power_supply_set_button.pack(side="left", padx=(0, 8))
+        power_supply_output_off_button = ttk.Button(power_supply_controls, text="Kanal Aus", command=self.power_supply_output_off)
+        power_supply_output_off_button.pack(side="left", padx=(0, 12))
+        power_supply_all_off_button = ttk.Button(power_supply_controls, text="Alle Aus", command=self.power_supply_all_outputs_off)
+        power_supply_all_off_button.pack(side="left", padx=(0, 12))
+
+        power_supply_settings = ttk.Frame(power_supply)
+        power_supply_settings.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
+        power_supply_settings.columnconfigure(3, weight=1)
+        ttk.Label(power_supply_settings, text="Kanal").grid(row=0, column=0, sticky="w", padx=(0, 4), pady=(0, 6))
+        power_supply_channel_spinbox = ttk.Spinbox(power_supply_settings, from_=1, to=4, textvariable=self.power_supply_channel_var, width=4)
+        power_supply_channel_spinbox.grid(row=0, column=1, sticky="w", padx=(0, 12), pady=(0, 6))
+        ttk.Label(power_supply_settings, text="Spannung").grid(row=0, column=2, sticky="w", padx=(0, 4), pady=(0, 6))
+        power_supply_voltage_entry = ttk.Entry(power_supply_settings, textvariable=self.power_supply_voltage_var, width=10)
+        power_supply_voltage_entry.grid(row=0, column=3, sticky="ew", padx=(0, 12), pady=(0, 6))
+        ttk.Label(power_supply_settings, text="Stromlimit").grid(row=0, column=4, sticky="w", padx=(0, 4), pady=(0, 6))
+        power_supply_current_entry = ttk.Entry(power_supply_settings, textvariable=self.power_supply_current_var, width=10)
+        power_supply_current_entry.grid(row=0, column=5, sticky="w", padx=(0, 12), pady=(0, 6))
+        ttk.Label(power_supply_settings, text="Ausgang").grid(row=0, column=6, sticky="w", padx=(0, 4), pady=(0, 6))
+        power_supply_output_combo = ttk.Combobox(power_supply_settings, textvariable=self.power_supply_output_var, values=("OFF", "ON"), width=5, state="readonly")
+        power_supply_output_combo.grid(row=0, column=7, sticky="w", padx=(0, 8), pady=(0, 6))
+        ttk.Label(power_supply_settings, text="Max. V").grid(row=1, column=0, sticky="w", padx=(0, 4))
+        power_supply_max_voltage_entry = ttk.Entry(power_supply_settings, textvariable=self.power_supply_max_voltage_var, width=7)
+        power_supply_max_voltage_entry.grid(row=1, column=1, sticky="w", padx=(0, 12))
+        ttk.Label(power_supply_settings, text="Max. A").grid(row=1, column=2, sticky="w", padx=(0, 4))
+        power_supply_max_current_entry = ttk.Entry(power_supply_settings, textvariable=self.power_supply_max_current_var, width=7)
+        power_supply_max_current_entry.grid(row=1, column=3, sticky="w", padx=(0, 12))
 
         common = ttk.LabelFrame(controls_frame, text="Allgemein")
         common.grid(row=3, column=0, sticky="ew", padx=12, pady=6)
         screenshot_button = ttk.Button(common, text="Screenshot", command=self.capture_screenshot)
         screenshot_button.pack(side="left", padx=8, pady=8)
 
+        sequence = ttk.LabelFrame(controls_frame, text="Automatischer Ablauf")
+        sequence.grid(row=4, column=0, sticky="ew", padx=12, pady=6)
+        sequence.columnconfigure(1, weight=1)
+        sequence.columnconfigure(3, weight=1)
+
+        ttk.Label(sequence, text="Generator-Adresse").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 4))
+        sequence_generator_entry = ttk.Entry(sequence, textvariable=self.sequence_generator_address_var)
+        sequence_generator_entry.grid(row=0, column=1, columnspan=3, sticky="ew", padx=8, pady=(8, 4))
+        sequence_generator_current_button = ttk.Button(sequence, text="aktuelle Adresse", command=self.use_current_address_as_sequence_generator)
+        sequence_generator_current_button.grid(row=0, column=4, sticky="ew", padx=8, pady=(8, 4))
+
+        ttk.Label(sequence, text="Messgerät-Adresse").grid(row=1, column=0, sticky="w", padx=8, pady=4)
+        sequence_measurement_entry = ttk.Entry(sequence, textvariable=self.sequence_measurement_address_var)
+        sequence_measurement_entry.grid(row=1, column=1, columnspan=3, sticky="ew", padx=8, pady=4)
+        sequence_measurement_current_button = ttk.Button(sequence, text="aktuelle Adresse", command=self.use_current_address_as_sequence_measurement)
+        sequence_measurement_current_button.grid(row=1, column=4, sticky="ew", padx=8, pady=4)
+
+        ttk.Label(sequence, text="Start").grid(row=2, column=0, sticky="w", padx=8, pady=4)
+        sequence_start_entry = ttk.Entry(sequence, textvariable=self.sequence_start_frequency_var, width=12)
+        sequence_start_entry.grid(row=2, column=1, sticky="ew", padx=8, pady=4)
+        ttk.Label(sequence, text="Stop").grid(row=2, column=2, sticky="w", padx=8, pady=4)
+        sequence_stop_entry = ttk.Entry(sequence, textvariable=self.sequence_stop_frequency_var, width=12)
+        sequence_stop_entry.grid(row=2, column=3, sticky="ew", padx=8, pady=4)
+        ttk.Label(sequence, text="Schritt").grid(row=2, column=4, sticky="w", padx=8, pady=4)
+        sequence_step_entry = ttk.Entry(sequence, textvariable=self.sequence_step_frequency_var, width=12)
+        sequence_step_entry.grid(row=2, column=5, sticky="ew", padx=8, pady=4)
+
+        ttk.Label(sequence, text="Pegel").grid(row=3, column=0, sticky="w", padx=8, pady=4)
+        sequence_power_entry = ttk.Entry(sequence, textvariable=self.sequence_power_var, width=12)
+        sequence_power_entry.grid(row=3, column=1, sticky="ew", padx=8, pady=4)
+        ttk.Label(sequence, text="Wartezeit [s]").grid(row=3, column=2, sticky="w", padx=8, pady=4)
+        sequence_settle_entry = ttk.Entry(sequence, textvariable=self.sequence_settle_var, width=8)
+        sequence_settle_entry.grid(row=3, column=3, sticky="ew", padx=8, pady=4)
+        ttk.Label(sequence, text="Messart").grid(row=3, column=4, sticky="w", padx=8, pady=4)
+        sequence_mode_combo = ttk.Combobox(sequence, textvariable=self.sequence_measurement_mode_var, values=("DMM", "Scope"), width=8, state="readonly")
+        sequence_mode_combo.grid(row=3, column=5, sticky="ew", padx=8, pady=4)
+
+        sequence_rf_off_check = ttk.Checkbutton(sequence, text="RF am Ende aus", variable=self.sequence_rf_off_at_end_var)
+        sequence_rf_off_check.grid(row=4, column=0, columnspan=2, sticky="w", padx=8, pady=(4, 8))
+        sequence_start_button = ttk.Button(sequence, text="Ablauf starten", command=self.start_sequence)
+        sequence_start_button.grid(row=4, column=4, sticky="ew", padx=8, pady=(4, 8))
+        sequence_stop_button = ttk.Button(sequence, text="Stop", command=self.stop_sequence)
+        sequence_stop_button.grid(row=4, column=5, sticky="ew", padx=8, pady=(4, 8))
+
         self._scope_widgets = [scope_value_button, measurement_combo, channel_spinbox, waveform_button, *waveform_checkbuttons, all_button, none_button, point_mode_combo]
+        self._connection_widgets = [self.resource_combo, search_button, idn_button, address_entry]
         self._dmm_widgets = [dmm_value_button]
         self._vna_widgets = [sparameter_button, sparameter_format_combo, *sparameter_checkbuttons]
         self._screenshot_widgets = [screenshot_button]
@@ -281,17 +428,54 @@ class InstrumentVisaApp(tk.Tk):
             generator_max_power_entry,
             generator_rf_off_check,
         ]
+        self._power_supply_widgets = [
+            power_supply_read_button,
+            power_supply_set_button,
+            power_supply_output_off_button,
+            power_supply_all_off_button,
+            power_supply_channel_spinbox,
+            power_supply_voltage_entry,
+            power_supply_current_entry,
+            power_supply_output_combo,
+            power_supply_max_voltage_entry,
+            power_supply_max_current_entry,
+        ]
+        self._power_supply_channel_spinbox = power_supply_channel_spinbox
+        self._device_sections = {
+            "scope": scope,
+            "dmm": dmm,
+            "timed": timed,
+            "vna": vna,
+            "generator": generator,
+            "power_supply": power_supply,
+        }
+        self._sequence_widgets = [
+            sequence_generator_entry,
+            sequence_generator_current_button,
+            sequence_measurement_entry,
+            sequence_measurement_current_button,
+            sequence_start_entry,
+            sequence_stop_entry,
+            sequence_step_entry,
+            sequence_power_entry,
+            sequence_settle_entry,
+            sequence_mode_combo,
+            sequence_rf_off_check,
+            sequence_start_button,
+        ]
+        self._sequence_stop_widgets = [sequence_stop_button]
         self._refresh_resource_combo()
         self._apply_saved_profile_for_address()
 
-        self.log = tk.Text(log_frame, height=14, wrap="word", state="disabled")
+        self.log = tk.Text(log_frame, width=44, wrap="word", state="disabled")
         self.log.grid(row=0, column=0, sticky="nsew", padx=(8, 0), pady=8)
         scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.log.yview)
         scrollbar.grid(row=0, column=1, sticky="ns", padx=(0, 8), pady=8)
         self.log.configure(yscrollcommand=scrollbar.set)
 
         status = ttk.Label(self, textvariable=self.status_var, anchor="w")
-        status.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 12))
+        status.grid(row=1, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 12))
+        self._apply_log_visibility()
 
     def search_devices(self) -> None:
         self._run_worker("Gerätesuche läuft...", self._search_devices)
@@ -341,6 +525,67 @@ class InstrumentVisaApp(tk.Tk):
 
     def signal_generator_rf_off(self) -> None:
         self._run_worker("RF-Ausgang wird ausgeschaltet...", self._signal_generator_rf_off)
+
+    def read_power_supply(self) -> None:
+        self._run_worker("Netzgerät-Einstellungen werden gelesen...", self._read_power_supply)
+
+    def set_power_supply(self) -> None:
+        try:
+            self._power_supply_limits()
+        except ValueError as exc:
+            messagebox.showerror("Netzgerät", str(exc))
+            return
+        self._run_worker("Netzgerät wird gesetzt...", self._set_power_supply)
+
+    def power_supply_output_off(self) -> None:
+        self._run_worker("Netzgerät-Kanal wird ausgeschaltet...", self._power_supply_output_off)
+
+    def power_supply_all_outputs_off(self) -> None:
+        self._run_worker("Alle Netzgerät-Ausgänge werden ausgeschaltet...", self._power_supply_all_outputs_off)
+
+    def use_current_address_as_sequence_generator(self) -> None:
+        self.sequence_generator_address_var.set(self.address_var.get().strip())
+
+    def use_current_address_as_sequence_measurement(self) -> None:
+        self.sequence_measurement_address_var.set(self.address_var.get().strip())
+
+    def start_sequence(self) -> None:
+        if self.sequence_running:
+            messagebox.showwarning("Automatischer Ablauf", "Es läuft bereits ein Ablauf.")
+            return
+        if self.timed_running:
+            messagebox.showwarning("Automatischer Ablauf", "Bitte zuerst das getimte Messen stoppen.")
+            return
+        try:
+            config = self._sequence_config()
+        except ValueError as exc:
+            messagebox.showerror("Automatischer Ablauf", str(exc))
+            return
+        generator_address = self.sequence_generator_address_var.get().strip()
+        measurement_address = self.sequence_measurement_address_var.get().strip()
+        self.sequence_stop_event.clear()
+        self.sequence_running = True
+        self._set_sequence_running(True)
+        self.status_var.set("Automatischer Ablauf läuft...")
+        self._append_log("Automatischer Ablauf läuft...")
+        self.logger.info("Automatischer Ablauf läuft...")
+        thread = threading.Thread(target=self._worker_target, args=(lambda: self._run_sequence(config, generator_address, measurement_address),), daemon=True)
+        thread.start()
+
+    def stop_sequence(self) -> None:
+        self.sequence_stop_event.set()
+        self.status_var.set("Automatischer Ablauf wird gestoppt...")
+
+    def toggle_log(self) -> None:
+        expanding = not self._log_visible
+        self._last_controls_width = self._current_controls_width()
+        if expanding:
+            self._resize_window_for_log(expand=True, controls_width=self._last_controls_width)
+        self._log_visible = not self._log_visible
+        self._apply_log_visibility()
+        if not expanding:
+            self.after_idle(lambda: self._resize_window_for_log(expand=False, controls_width=self._last_controls_width))
+        self.after_idle(self._restore_controls_width)
 
     def start_timed_dmm(self) -> None:
         self._start_timed_measurement("dmm")
@@ -519,6 +764,81 @@ class InstrumentVisaApp(tk.Tk):
         self.logger.info("Signal generator RF off exported workbook=%s sheet=%s", export.workbook_path, export.sheet_name)
         return f"RF-Ausgang ausgeschaltet: {export.workbook_path}"
 
+    def _read_power_supply(self) -> str:
+        channel = self._power_supply_channel()
+        with self._open_instrument() as instrument:
+            info = instrument.info()
+            settings = read_power_supply_settings(instrument, info.idn, channel)
+        self._messages.put(("power_supply_settings", (settings.voltage_set, settings.current_set, settings.output_selected)))
+        result = AcquisitionResult(kind="power_supply", file_type="csv", content=_power_supply_settings_csv(settings))
+        export = append_result(self._output_path(), self.address_var.get().strip(), info.idn, result)
+        self.logger.info("Power supply settings exported workbook=%s sheet=%s", export.workbook_path, export.sheet_name)
+        return (
+            f"Netzgerät gelesen: {export.workbook_path}\nKanal: {settings.channel}\n"
+            f"U set/ist: {settings.voltage_set} / {settings.voltage_measured}\nI set/ist: {settings.current_set} / {settings.current_measured}\nAusgang: {settings.output_selected}"
+        )
+
+    def _set_power_supply(self) -> str:
+        channel = self._power_supply_channel()
+        voltage = self.power_supply_voltage_var.get().strip()
+        current = self.power_supply_current_var.get().strip()
+        output_enabled = self.power_supply_output_var.get().strip().upper() == "ON"
+        max_voltage, max_current = self._power_supply_limits()
+        with self._open_instrument() as instrument:
+            info = instrument.info()
+            result = set_power_supply(instrument, info.idn, channel, voltage, current, output_enabled, max_voltage, max_current)
+        export = append_result(self._output_path(), self.address_var.get().strip(), info.idn, result)
+        self.logger.info("Power supply set exported workbook=%s sheet=%s channel=%s voltage=%s current=%s output=%s", export.workbook_path, export.sheet_name, channel, voltage, current, output_enabled)
+        return f"Netzgerät gesetzt: {export.workbook_path}\nKanal: {channel}\nSpannung: {voltage}\nStromlimit: {current}\nAusgang: {'ON' if output_enabled else 'OFF'}"
+
+    def _power_supply_output_off(self) -> str:
+        channel = self._power_supply_channel()
+        with self._open_instrument() as instrument:
+            info = instrument.info()
+            result = set_power_supply_output(instrument, info.idn, channel, False)
+        self._messages.put(("power_supply_settings", (self.power_supply_voltage_var.get(), self.power_supply_current_var.get(), "OFF")))
+        export = append_result(self._output_path(), self.address_var.get().strip(), info.idn, result)
+        self.logger.info("Power supply output off exported workbook=%s sheet=%s channel=%s", export.workbook_path, export.sheet_name, channel)
+        return f"Netzgerät-Kanal ausgeschaltet: {export.workbook_path}\nKanal: {channel}"
+
+    def _power_supply_all_outputs_off(self) -> str:
+        channel = self._power_supply_channel()
+        with self._open_instrument() as instrument:
+            info = instrument.info()
+            result = set_power_supply_master_output(instrument, info.idn, False, channel)
+        self._messages.put(("power_supply_settings", (self.power_supply_voltage_var.get(), self.power_supply_current_var.get(), "OFF")))
+        export = append_result(self._output_path(), self.address_var.get().strip(), info.idn, result)
+        self.logger.info("Power supply all outputs off exported workbook=%s sheet=%s", export.workbook_path, export.sheet_name)
+        return f"Alle Netzgerät-Ausgänge ausgeschaltet: {export.workbook_path}"
+
+    def _run_sequence(self, config: FrequencySweepConfig, generator_address: str, measurement_address: str) -> str:
+        try:
+            with VisaInstrument(generator_address, timeout_ms=10000) as generator, VisaInstrument(measurement_address, timeout_ms=10000) as measurement_instrument:
+                sweep = run_frequency_sweep(
+                    generator,
+                    measurement_instrument,
+                    config,
+                    stop_requested=self.sequence_stop_event.is_set,
+                    progress=lambda message: self._messages.put(("progress", message)),
+                )
+            result = AcquisitionResult(kind="frequency sweep", file_type="csv", content=sweep.csv_content)
+            export = append_result(self._output_path(), generator_address, sweep.generator_info.idn, result)
+            stopped_text = " gestoppt" if sweep.stopped else " abgeschlossen"
+            self.logger.info(
+                "Frequency sweep exported workbook=%s sheet=%s points=%s ok=%s errors=%s generator=%s measurement=%s",
+                export.workbook_path,
+                export.sheet_name,
+                sweep.actual_count,
+                sweep.ok_count,
+                sweep.error_count,
+                generator_address,
+                measurement_address,
+            )
+            return f"Automatischer Ablauf{stopped_text}: {export.workbook_path}\nTabellenblatt: {export.sheet_name}\nMesspunkte: {sweep.actual_count}\nOK: {sweep.ok_count}, Fehler: {sweep.error_count}"
+        finally:
+            self.sequence_running = False
+            self._messages.put(("sequence_done", ""))
+
     def _timed_measurement(self, mode: str) -> str:
         interval_s = self._timed_interval()
         count = self._timed_count()
@@ -622,6 +942,58 @@ class InstrumentVisaApp(tk.Tk):
         except ValueError as exc:
             raise ValueError("Max. Pegel muss eine Zahl in dBm sein.") from exc
 
+    def _power_supply_limits(self) -> tuple[float, float]:
+        try:
+            max_voltage = float(self.power_supply_max_voltage_var.get().replace(",", "."))
+            max_current = float(self.power_supply_max_current_var.get().replace(",", "."))
+        except ValueError as exc:
+            raise ValueError("Max. V und Max. A müssen Zahlen sein.") from exc
+        if max_voltage <= 0 or max_current <= 0:
+            raise ValueError("Max. V und Max. A müssen größer als 0 sein.")
+        return max_voltage, max_current
+
+    def _power_supply_channel(self) -> int:
+        try:
+            channel = int(self.power_supply_channel_var.get())
+        except (ValueError, tk.TclError) as exc:
+            raise ValueError("Netzgerät-Kanal muss eine ganze Zahl sein.") from exc
+        max_channel = hmp_channel_count(self.current_profile.model_family if self.current_profile.supports_power_supply else "")
+        if channel < 1 or channel > max_channel:
+            raise ValueError(f"Netzgerät-Kanal muss zwischen 1 und {max_channel} liegen.")
+        return channel
+
+    def _sequence_config(self) -> FrequencySweepConfig:
+        generator_address = self.sequence_generator_address_var.get().strip()
+        measurement_address = self.sequence_measurement_address_var.get().strip()
+        if not generator_address:
+            raise ValueError("Bitte Generator-Adresse eintragen.")
+        if not measurement_address:
+            raise ValueError("Bitte Messgerät-Adresse eintragen.")
+        try:
+            settle_s = float(self.sequence_settle_var.get().replace(",", "."))
+        except ValueError as exc:
+            raise ValueError("Wartezeit muss eine Zahl in Sekunden sein.") from exc
+        if settle_s < 0:
+            raise ValueError("Wartezeit darf nicht negativ sein.")
+        frequency_points(self.sequence_start_frequency_var.get(), self.sequence_stop_frequency_var.get(), self.sequence_step_frequency_var.get())
+        power_dbm = parse_dbm(self.sequence_power_var.get())
+        max_power_dbm = self._generator_max_power()
+        if power_dbm > max_power_dbm:
+            raise ValueError(f"Pegel {power_dbm:g} dBm überschreitet Max. Pegel {max_power_dbm:g} dBm.")
+        return FrequencySweepConfig(
+            start_frequency=self.sequence_start_frequency_var.get().strip(),
+            stop_frequency=self.sequence_stop_frequency_var.get().strip(),
+            step_frequency=self.sequence_step_frequency_var.get().strip(),
+            power=self.sequence_power_var.get().strip(),
+            max_power_dbm=max_power_dbm,
+            settle_s=settle_s,
+            measurement_mode="scope" if self.sequence_measurement_mode_var.get().strip().lower() == "scope" else "dmm",
+            scope_measurement=self.measurement_var.get(),
+            scope_channel=self.channel_var.get(),
+            rf_off_before_change=self.generator_rf_off_before_change_var.get(),
+            rf_off_at_end=self.sequence_rf_off_at_end_var.get(),
+        )
+
     def _open_instrument(self) -> VisaInstrument:
         address = self.address_var.get().strip()
         if not address:
@@ -669,12 +1041,20 @@ class InstrumentVisaApp(tk.Tk):
                     self.generator_frequency_var.set(str(frequency))
                     self.generator_power_var.set(str(power))
                     self.generator_rf_var.set(str(rf_output) if str(rf_output) in {"ON", "OFF"} else "OFF")
+            elif kind == "power_supply_settings":
+                if isinstance(message, tuple) and len(message) == 3:
+                    voltage, current, output = message
+                    self.power_supply_voltage_var.set(str(voltage))
+                    self.power_supply_current_var.set(str(current))
+                    self.power_supply_output_var.set(str(output) if str(output) in {"ON", "OFF"} else "OFF")
             elif kind == "progress":
                 if isinstance(message, str):
                     self.status_var.set(message)
                     self._append_log(message)
             elif kind == "timed_done":
                 self._set_timed_running(False)
+            elif kind == "sequence_done":
+                self._set_sequence_running(False)
             elif kind == "error":
                 self.status_var.set("Fehler")
                 error_message = str(message)
@@ -690,6 +1070,54 @@ class InstrumentVisaApp(tk.Tk):
         self.log.insert("end", message + "\n\n")
         self.log.see("end")
         self.log.configure(state="disabled")
+
+    def _scroll_controls_if_needed(self, canvas: tk.Canvas, event: tk.Event) -> None:
+        scrollregion = canvas.bbox("all")
+        if scrollregion is None:
+            return
+        content_height = scrollregion[3] - scrollregion[1]
+        if content_height <= canvas.winfo_height():
+            canvas.yview_moveto(0)
+            return
+        canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _apply_log_visibility(self) -> None:
+        if self._main_pane is None or self._log_frame is None or self._log_pane is None:
+            return
+        if self._log_visible:
+            if self._collapsed_log_button is not None:
+                self._collapsed_log_button.grid_remove()
+            self._log_pane.grid(row=0, column=1, sticky="nsew")
+            self._log_frame.grid(row=0, column=1, sticky="nsew", padx=(2, 8), pady=4)
+            self._log_toggle_var.set("›")
+        else:
+            self._log_pane.grid_remove()
+            if self._collapsed_log_button is not None:
+                self._collapsed_log_button.grid(row=0, column=1, sticky="ns", padx=(2, 4), pady=4)
+            self._log_toggle_var.set("‹")
+
+    def _resize_window_for_log(self, expand: bool, controls_width: int | None) -> None:
+        try:
+            geometry = self.geometry()
+            size, *position = geometry.split("+")
+            width_text, height_text = size.split("x", 1)
+            height = int(height_text)
+        except ValueError:
+            return
+        controls_width = controls_width or self._current_controls_width()
+        side_width = 430 if expand else 42
+        target_width = max(self.minsize()[0], controls_width + side_width)
+        suffix = "+" + "+".join(position) if position else ""
+        self.geometry(f"{target_width}x{height}{suffix}")
+
+    def _current_controls_width(self) -> int:
+        if self._controls_container is None:
+            return max(1, self.winfo_width() - 430)
+        width = self._controls_container.winfo_width()
+        return width if width > 1 else max(1, self.winfo_width() - 430)
+
+    def _restore_controls_width(self) -> None:
+        return
 
     def _apply_resources(self, resources: list[str]) -> None:
         self.last_found_resources = list(dict.fromkeys(resources))
@@ -785,6 +1213,25 @@ class InstrumentVisaApp(tk.Tk):
         vna_enabled = profile.supports_sparameters
         screenshot_enabled = profile.supports_screenshot
         generator_enabled = profile.supports_signal_generator
+        power_supply_enabled = profile.supports_power_supply
+        if power_supply_enabled:
+            max_channel = hmp_channel_count(profile.model_family)
+            if self._power_supply_channel_spinbox is not None:
+                self._power_supply_channel_spinbox.configure(to=max_channel)
+            try:
+                current_channel = int(self.power_supply_channel_var.get())
+            except (ValueError, tk.TclError):
+                current_channel = 1
+            if current_channel > max_channel:
+                self.power_supply_channel_var.set(max_channel)
+            elif current_channel < 1:
+                self.power_supply_channel_var.set(1)
+        self._set_section_visible("scope", scope_enabled)
+        self._set_section_visible("dmm", dmm_enabled)
+        self._set_section_visible("timed", timed_enabled)
+        self._set_section_visible("vna", vna_enabled)
+        self._set_section_visible("generator", generator_enabled)
+        self._set_section_visible("power_supply", power_supply_enabled)
         self._set_widgets_enabled(self._scope_widgets, scope_enabled)
         self._set_widgets_enabled(self._dmm_widgets, dmm_enabled)
         self._set_widgets_enabled(self._timed_widgets, timed_enabled and not self.timed_running)
@@ -794,6 +1241,9 @@ class InstrumentVisaApp(tk.Tk):
         self._set_widgets_enabled(self._vna_widgets, vna_enabled)
         self._set_widgets_enabled(self._screenshot_widgets, screenshot_enabled)
         self._set_widgets_enabled(self._generator_widgets, generator_enabled)
+        self._set_widgets_enabled(self._power_supply_widgets, power_supply_enabled)
+        if self.sequence_running:
+            self._set_sequence_running(True)
 
     def _apply_profile_message(self, message: object) -> None:
         if isinstance(message, tuple) and len(message) == 3:
@@ -833,6 +1283,7 @@ class InstrumentVisaApp(tk.Tk):
             "supports_screenshot": profile.supports_screenshot,
             "supports_sparameters": profile.supports_sparameters,
             "supports_signal_generator": profile.supports_signal_generator,
+            "supports_power_supply": profile.supports_power_supply,
         }
         self._refresh_resource_combo(self.last_found_resources)
         self._save_settings()
@@ -849,6 +1300,7 @@ class InstrumentVisaApp(tk.Tk):
             supports_screenshot=bool(saved.get("supports_screenshot", False)),
             supports_sparameters=bool(saved.get("supports_sparameters", False)),
             supports_signal_generator=bool(saved.get("supports_signal_generator", False)),
+            supports_power_supply=bool(saved.get("supports_power_supply", False)),
         )
 
     def _set_timed_running(self, running: bool) -> None:
@@ -860,6 +1312,26 @@ class InstrumentVisaApp(tk.Tk):
         self._set_widgets_enabled(self._timed_scope_widgets, scope_enabled and not running)
         self._set_widgets_enabled(self._timed_stop_widgets, running)
 
+    def _set_sequence_running(self, running: bool) -> None:
+        self.sequence_running = running
+        self._set_widgets_enabled(self._sequence_widgets, not running)
+        self._set_widgets_enabled(self._sequence_stop_widgets, running)
+        self._set_widgets_enabled(self._connection_widgets, not running)
+        if running:
+            self._set_widgets_enabled(self._scope_widgets, False)
+            self._set_widgets_enabled(self._dmm_widgets, False)
+            self._set_widgets_enabled(self._timed_widgets, False)
+            self._set_widgets_enabled(self._timed_dmm_widgets, False)
+            self._set_widgets_enabled(self._timed_scope_widgets, False)
+            self._set_widgets_enabled(self._vna_widgets, False)
+            self._set_widgets_enabled(self._screenshot_widgets, False)
+            self._set_widgets_enabled(self._generator_widgets, False)
+            self._set_widgets_enabled(self._power_supply_widgets, False)
+        else:
+            self._apply_profile(self.current_profile)
+            self._set_widgets_enabled(self._sequence_widgets, True)
+            self._set_widgets_enabled(self._sequence_stop_widgets, False)
+
     def _set_widgets_enabled(self, widgets: list[tk.Widget], enabled: bool) -> None:
         for widget in widgets:
             state = "readonly" if enabled and widget.winfo_class() == "TCombobox" else "normal" if enabled else "disabled"
@@ -867,6 +1339,15 @@ class InstrumentVisaApp(tk.Tk):
                 widget.configure(state=state)
             except tk.TclError:
                 pass
+
+    def _set_section_visible(self, section: str, visible: bool) -> None:
+        widget = self._device_sections.get(section)
+        if widget is None:
+            return
+        if visible:
+            widget.grid()
+        else:
+            widget.grid_remove()
 
     def close(self) -> None:
         self._save_settings()
@@ -889,6 +1370,7 @@ class InstrumentVisaApp(tk.Tk):
     def _save_settings(self) -> None:
         settings = {
             "window_geometry": self.geometry(),
+            "log_visible": self._log_visible,
             "address": self.address_var.get().strip(),
             "output": self.output_var.get().strip(),
             "measurement": self.measurement_var.get(),
@@ -904,9 +1386,30 @@ class InstrumentVisaApp(tk.Tk):
             "generator_rf": self.generator_rf_var.get(),
             "generator_max_power": self.generator_max_power_var.get(),
             "generator_rf_off_before_change": self.generator_rf_off_before_change_var.get(),
+            "power_supply_channel": self._safe_power_supply_channel_setting(),
+            "power_supply_voltage": self.power_supply_voltage_var.get(),
+            "power_supply_current": self.power_supply_current_var.get(),
+            "power_supply_output": self.power_supply_output_var.get(),
+            "power_supply_max_voltage": self.power_supply_max_voltage_var.get(),
+            "power_supply_max_current": self.power_supply_max_current_var.get(),
+            "sequence_generator_address": self.sequence_generator_address_var.get().strip(),
+            "sequence_measurement_address": self.sequence_measurement_address_var.get().strip(),
+            "sequence_start_frequency": self.sequence_start_frequency_var.get(),
+            "sequence_stop_frequency": self.sequence_stop_frequency_var.get(),
+            "sequence_step_frequency": self.sequence_step_frequency_var.get(),
+            "sequence_power": self.sequence_power_var.get(),
+            "sequence_settle": self.sequence_settle_var.get(),
+            "sequence_measurement_mode": self.sequence_measurement_mode_var.get(),
+            "sequence_rf_off_at_end": self.sequence_rf_off_at_end_var.get(),
             "devices": self.saved_devices,
         }
         SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+
+    def _safe_power_supply_channel_setting(self) -> int:
+        try:
+            return int(self.power_supply_channel_var.get())
+        except (ValueError, tk.TclError):
+            return 1
 
     def _format_error(self, exc: Exception) -> str:
         text = str(exc)
@@ -937,6 +1440,23 @@ def _csv_rows(rows: list[list[object]]) -> str:
 
 def _generator_settings_csv(frequency: str, power: str, rf_output: str) -> str:
     return _csv_rows([["Setting", "Value"], ["Frequency", frequency], ["Power", power], ["RFOutput", rf_output]])
+
+
+def _power_supply_settings_csv(settings) -> str:
+    return _csv_rows(
+        [
+            ["Setting", "Value"],
+            ["Channel", settings.channel],
+            ["VoltageSet", settings.voltage_set],
+            ["CurrentSet", settings.current_set],
+            ["VoltageMeasured", settings.voltage_measured],
+            ["CurrentMeasured", settings.current_measured],
+            ["OutputSelected", settings.output_selected],
+            ["OutputGeneral", settings.output_general],
+        ]
+    )
+
+
 
 
 if __name__ == "__main__":

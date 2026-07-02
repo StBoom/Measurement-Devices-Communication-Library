@@ -6,7 +6,7 @@ from datetime import datetime
 from time import sleep
 
 from .config import SParameterConfig
-from .profiles import detect_profile
+from .profiles import detect_profile, hmp_channel_count
 from .visa_client import VisaInstrument
 
 
@@ -37,9 +37,101 @@ class SignalGeneratorSettings:
     rf_output: str
 
 
+@dataclass(frozen=True)
+class PowerSupplySettings:
+    channel: int
+    voltage_set: str
+    current_set: str
+    voltage_measured: str
+    current_measured: str
+    output_selected: str
+    output_general: str
+
+
 def read_value(instrument: VisaInstrument) -> AcquisitionResult:
     LOGGER.info("SCPI action=dmm_value command=%s", ":READ?")
     return AcquisitionResult(kind="value", file_type="value", content=instrument.query(":READ?").strip())
+
+
+def read_power_supply_settings(instrument: VisaInstrument, idn: str, channel: int) -> PowerSupplySettings:
+    profile = detect_profile(idn)
+    if not profile.supports_power_supply:
+        raise NotImplementedError(f"Unsupported power supply device: {idn}")
+    _validate_power_supply_channel(channel, idn)
+    LOGGER.info("SCPI action=power_supply_read profile=%s channel=%s", profile.key, channel)
+    instrument.write(f"INST:NSEL {channel}")
+    return PowerSupplySettings(
+        channel=channel,
+        voltage_set=instrument.query("VOLT?").strip(),
+        current_set=instrument.query("CURR?").strip(),
+        voltage_measured=instrument.query("MEAS:VOLT?").strip(),
+        current_measured=instrument.query("MEAS:CURR?").strip(),
+        output_selected=_normalize_rf_state(instrument.query("OUTP:SEL?").strip()),
+        output_general=_normalize_rf_state(instrument.query("OUTP:GEN?").strip()),
+    )
+
+
+def set_power_supply(
+    instrument: VisaInstrument,
+    idn: str,
+    channel: int,
+    voltage: str,
+    current: str,
+    output_enabled: bool,
+    max_voltage: float = 32.0,
+    max_current: float = 10.0,
+) -> AcquisitionResult:
+    profile = detect_profile(idn)
+    if not profile.supports_power_supply:
+        raise NotImplementedError(f"Unsupported power supply device: {idn}")
+    _validate_power_supply_channel(channel, idn)
+    voltage = voltage.strip()
+    current = current.strip()
+    voltage_value = _parse_float_with_suffix(voltage, ("V",))
+    current_value = _parse_float_with_suffix(current, ("A",))
+    if voltage_value < 0:
+        raise ValueError("Requested voltage must not be negative")
+    if current_value < 0:
+        raise ValueError("Requested current must not be negative")
+    if voltage_value > max_voltage:
+        raise ValueError(f"Requested voltage {voltage_value:g} V exceeds max voltage {max_voltage:g} V")
+    if current_value > max_current:
+        raise ValueError(f"Requested current {current_value:g} A exceeds max current {max_current:g} A")
+
+    LOGGER.info("SCPI action=power_supply_set profile=%s channel=%s voltage=%s current=%s output=%s", profile.key, channel, voltage, current, output_enabled)
+    instrument.write(f"INST:NSEL {channel}")
+    instrument.write(f"VOLT {voltage}")
+    instrument.write(f"CURR {current}")
+    instrument.write(f"OUTP:SEL {'1' if output_enabled else '0'}")
+    if output_enabled:
+        instrument.write("OUTP:GEN 1")
+    settings = read_power_supply_settings(instrument, idn, channel)
+    return AcquisitionResult(kind="power_supply", file_type="csv", content=_format_power_supply_settings(settings))
+
+
+def set_power_supply_output(instrument: VisaInstrument, idn: str, channel: int, enabled: bool) -> AcquisitionResult:
+    profile = detect_profile(idn)
+    if not profile.supports_power_supply:
+        raise NotImplementedError(f"Unsupported power supply device: {idn}")
+    _validate_power_supply_channel(channel, idn)
+    LOGGER.info("SCPI action=power_supply_output profile=%s channel=%s enabled=%s", profile.key, channel, enabled)
+    instrument.write(f"INST:NSEL {channel}")
+    instrument.write(f"OUTP:SEL {'1' if enabled else '0'}")
+    if enabled:
+        instrument.write("OUTP:GEN 1")
+    settings = read_power_supply_settings(instrument, idn, channel)
+    return AcquisitionResult(kind="power_supply", file_type="csv", content=_format_power_supply_settings(settings))
+
+
+def set_power_supply_master_output(instrument: VisaInstrument, idn: str, enabled: bool, channel: int = 1) -> AcquisitionResult:
+    profile = detect_profile(idn)
+    if not profile.supports_power_supply:
+        raise NotImplementedError(f"Unsupported power supply device: {idn}")
+    _validate_power_supply_channel(channel, idn)
+    LOGGER.info("SCPI action=power_supply_master_output profile=%s enabled=%s", profile.key, enabled)
+    instrument.write(f"OUTP:GEN {'1' if enabled else '0'}")
+    settings = read_power_supply_settings(instrument, idn, channel)
+    return AcquisitionResult(kind="power_supply", file_type="csv", content=_format_power_supply_settings(settings))
 
 
 def read_signal_generator_settings(instrument: VisaInstrument, idn: str) -> SignalGeneratorSettings:
@@ -623,12 +715,45 @@ def _parse_dbm(value: str) -> float:
         raise ValueError("Power must be a dBm value, for example -30 dBm") from exc
 
 
+def _parse_float_with_suffix(value: str, suffixes: tuple[str, ...]) -> float:
+    normalized = value.strip().upper().replace(" ", "")
+    for suffix in suffixes:
+        if normalized.endswith(suffix):
+            normalized = normalized[: -len(suffix)]
+            break
+    try:
+        return float(normalized.replace(",", "."))
+    except ValueError as exc:
+        suffix_text = "/".join(suffixes)
+        raise ValueError(f"Value must be numeric with optional {suffix_text} suffix") from exc
+
+
+def _validate_power_supply_channel(channel: int, idn: str = "") -> None:
+    max_channel = hmp_channel_count(idn)
+    if channel < 1 or channel > max_channel:
+        raise ValueError(f"Power supply channel must be between 1 and {max_channel}")
+
+
 def _format_signal_generator_settings(settings: SignalGeneratorSettings) -> str:
     rows = [
         ["Setting", "Value"],
         ["Frequency", settings.frequency],
         ["Power", settings.power],
         ["RFOutput", settings.rf_output],
+    ]
+    return "\n".join(",".join(row) for row in rows)
+
+
+def _format_power_supply_settings(settings: PowerSupplySettings) -> str:
+    rows = [
+        ["Setting", "Value"],
+        ["Channel", str(settings.channel)],
+        ["VoltageSet", settings.voltage_set],
+        ["CurrentSet", settings.current_set],
+        ["VoltageMeasured", settings.voltage_measured],
+        ["CurrentMeasured", settings.current_measured],
+        ["OutputSelected", settings.output_selected],
+        ["OutputGeneral", settings.output_general],
     ]
     return "\n".join(",".join(row) for row in rows)
 

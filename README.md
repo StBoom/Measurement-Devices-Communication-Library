@@ -101,9 +101,13 @@ measurement-devices
 measurement-devices-gui
 ```
 
-Die Oberfläche bietet Geräte-Suche, IDN-Test, DMM-Messwert, Scope-Messwert, getimtes Messen, Screenshot, Waveform-Export, S-Parameter-Export und Signalgenerator-Basisbedienung in eine auswählbare Excel-Datei. Nach `IDN testen` wird ein Geräteprofil erkannt und die passenden Bereiche werden aktiviert. Für Oszilloskope sollte `Scope Messwert` genutzt werden, da `DMM Messwert` den Multimeter-Befehl `:READ?` sendet. Beim Waveform-Export können `CH1` bis `CH4` beliebig kombiniert werden. Zusätzlich ist der Punktmodus `RAW`, `NORMAL` oder `MAXIMUM` auswählbar. Jede Waveform-Messung wird zur besseren Übersicht in ein eigenes Tabellenblatt geschrieben.
+Die Oberfläche bietet Geräte-Suche, IDN-Test, DMM-Messwert, Scope-Messwert, getimtes Messen, Screenshot, Waveform-Export, S-Parameter-Export, Signalgenerator-Basisbedienung, Netzgerät-Basisbedienung und automatische Abläufe in eine auswählbare Excel-Datei. Nach `IDN testen` wird ein Geräteprofil erkannt und die passenden Bereiche werden aktiviert. Für Oszilloskope sollte `Scope Messwert` genutzt werden, da `DMM Messwert` den Multimeter-Befehl `:READ?` sendet. Beim Waveform-Export können `CH1` bis `CH4` beliebig kombiniert werden. Zusätzlich ist der Punktmodus `RAW`, `NORMAL` oder `MAXIMUM` auswählbar. Jede Waveform-Messung wird zur besseren Übersicht in ein eigenes Tabellenblatt geschrieben.
 
 Der Signalgenerator-Bereich kann Frequenz, Pegel und RF-Ausgang lesen bzw. setzen. Als Sicherheitsvorgabe ist der RF-Ausgang vor Änderungen abschaltbar und der Maximalpegel wird lokal geprüft, bevor Befehle gesendet werden. `RF Aus` sendet nur den Ausgang-Aus-Befehl und liest anschließend die aktuellen Einstellungen zurück. SME/SMT/SMIQ nutzen SCPI-Basisbefehle `:SOUR:FREQ:CW`, `:SOUR:POW` und `:OUTP`. SMGU/SMHU nutzen laut Programmierbeispielen die ältere IEC-Bus-Syntax `RF`, `LEVEL:RF`, `LEVEL:RF:ON` und `LEVEL:RF:OFF`.
+
+Der Netzgerät-Bereich unterstützt R&S/Hameg HMP-Geräte wie HMP4030. Pro Kanal können Spannung und Stromlimit gesetzt, Soll-/Istwerte gelesen und der ausgewählte Ausgang aktiviert oder deaktiviert werden. Als Sicherheitsgrenzen werden Maximalspannung und Maximalstrom lokal geprüft, bevor Befehle gesendet werden. Die Implementierung nutzt `INST:NSEL`, `VOLT`, `CURR`, `MEAS:VOLT?`, `MEAS:CURR?`, `OUTP:SEL` und `OUTP:GEN`.
+
+Der Bereich `Automatischer Ablauf` führt einen Frequenz-Sweep mit einem Signalgenerator und einem separaten Messgerät aus. Pro Frequenzpunkt wird der Generator auf Frequenz und Pegel gesetzt, optional gewartet und danach ein DMM-Wert oder Scope-Messwert gelesen. Die Ergebnisse werden mit Sollfrequenz, Pegel, Messgerät, Messwert, Status und Zusammenfassung in ein eigenes Excel-Tabellenblatt geschrieben. Standardmäßig wird RF am Ende ausgeschaltet; der Stop-Button beendet den Ablauf kontrolliert.
 
 Beim getimten Messen kann eine DMM- oder Scope-Messreihe mit Intervall in Sekunden und Anzahl Messpunkte gestartet werden. Die Messpunkte werden auf feste Sollzeitpunkte geplant, damit die Messdauer das Intervall nicht dauerhaft verschiebt. Die Messreihe kann über `Stop` abgebrochen werden. Die Ergebnisse werden mit Index, Zeitstempel, verstrichener Zeit, Delta zum vorherigen Messpunkt, Abweichung vom Sollzeitpunkt, Messart, Kanal, Wert und Status in ein eigenes Tabellenblatt geschrieben. Zusätzlich enthält das Tabellenblatt eine Zusammenfassung mit Start-/Endzeit, Soll-Intervall, angeforderter und tatsächlicher Anzahl sowie OK- und Fehlerzähler.
 
@@ -141,6 +145,7 @@ Die folgenden Geräteprofile sind als best-effort implementiert, aber noch nicht
 - Tektronix TDS400, darunter TDS420A: Scope-Messwert, Screenshot und Waveform-Export mit TDS-Family-Programmer-SCPI (`MEASUrement:IMMed...`, `DATa:SOUrce`, `DATa:ENCdg ASCii`, `CURVe?`, `HARDCopy START`). Screenshot nutzt TIFF, da PNG im TDS400A-Manual nicht als sicher unterstütztes Hardcopy-Format aufgeführt ist.
 - Tektronix TDS3000/MDO/MSO/DPO: Scope-Messwert und Waveform zusätzlich zu Screenshot best-effort aktiviert
 - Rohde & Schwarz / Hameg HMS-X: Screenshot und Trace-Export mit HMS-X-SCPI-Programmer-Manual gegengeprüft (`HCOPy:FORMat BMP`, `HCOPy:DATA?`, `TRACe:DATA:FORMat CSV`, `TRACe:DATA?`). Screenshot nutzt BMP, da das Manual nur BMP für `HCOPy:FORMat` aufführt.
+- Rohde & Schwarz / Hameg HMP4030/HMP4040/HMP2000: Netzgerät-Basisbedienung mit Kanalwahl, Spannung, Stromlimit, Ausgangsschaltung und Messwertabfrage über HMP-SCPI (`INST:NSEL`, `VOLT`, `CURR`, `MEAS:VOLT?`, `MEAS:CURR?`, `OUTP:SEL`, `OUTP:GEN`).
 - Rohde & Schwarz SME/SMT/SMIQ: IDN-/Profil-Erkennung als Signalgeneratoren sowie Basisbedienung für Frequenz, Pegel und RF-Ausgang über `:SOUR:FREQ:CW`, `:SOUR:POW` und `:OUTP`. Die Langformen sind laut Manuals `[:SOURce]:FREQuency[:CW|:FIXed]`, `[:SOURce]:POWer[:LEVel][:IMMediate][:AMPLitude]` und `:OUTPut[:STATe]`.
 - Rohde & Schwarz SMGU/SMHU: IDN-/Profil-Erkennung als Legacy-Signalgeneratoren sowie Basisbedienung über die im Manual gezeigte IEC-Bus-Syntax `RF`, `LEVEL:RF`, `LEVEL:RF:ON` und `LEVEL:RF:OFF`.
 - Rohde & Schwarz RT-Series-Oszilloskope, falls IDN `RTB`, `RTA`, `RTM`, `RTE`, `RTO` oder `RTP` enthält: Scope-Messwert, Screenshot und Waveform mit RTB2000-Manual-SCPI (`MEASurement...`, `HCOPy:DATA?`, `CHANnel:DATA?`)
@@ -307,6 +312,15 @@ Statuswerte:
     Nicht unterstützt: DMM/Messwert, Scope-Messwert, getimtes Messen, S-Parameter
     Status:            commands from manual, untested
     Notizen:           Gegen hochgeladenes HMS-X-SCPI-Manual geprüft; echten Gerätetest nachtragen
+
+#### Rohde & Schwarz / Hameg HMP4030/HMP4040/HMP2000
+
+    Profil-Key:        rs_hmp_power_supply
+    IDN-Erkennung:     HMP4030, HMP4040, HMP2020 oder HMP2030
+    Funktionen:        Kanal wählen, Spannung/Stromlimit lesen und setzen, Istspannung/Iststrom lesen, Ausgang je Kanal schalten
+    Nicht unterstützt: DMM/Messwert, Scope-Messwert, Screenshot, Waveform/Trace, S-Parameter
+    Status:            commands from manual, untested
+    Notizen:           Nutzt HMP-SCPI `INST:NSEL`, `VOLT`, `CURR`, `MEAS:VOLT?`, `MEAS:CURR?`, `OUTP:SEL`, `OUTP:GEN`; HMP4030 hat 3 Kanäle, GUI erlaubt wegen HMP4040 bis 4 Kanäle
 
 #### Rohde & Schwarz SMGU/SMHU
 

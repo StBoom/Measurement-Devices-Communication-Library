@@ -11,18 +11,24 @@ from instrument_visa.acquisition import (  # noqa: E402
     AcquisitionResult,
     capture_screenshot,
     capture_waveform,
+    read_power_supply_settings,
     read_signal_generator_settings,
     read_scope_measurement,
     read_value,
+    set_power_supply,
+    set_power_supply_master_output,
+    set_power_supply_output,
     set_signal_generator,
     set_signal_generator_rf_output,
 )
 from instrument_visa.excel_export import append_result  # noqa: E402
 from instrument_visa.profiles import detect_profile  # noqa: E402
+from instrument_visa.sequence import MAX_SWEEP_POINTS, FrequencySweepConfig, frequency_points, parse_frequency_hz, run_frequency_sweep  # noqa: E402
 
 
 class FakeInstrument:
     def __init__(self, query_responses: dict[str, str] | None = None, binary_responses: dict[str, bytes] | None = None) -> None:
+        self.address = "USB::TEST"
         self.query_responses = query_responses or {}
         self.binary_responses = binary_responses or {}
         self.raw_responses: dict[str, bytes] = {}
@@ -46,6 +52,11 @@ class FakeInstrument:
         self.raw_writes.append(command)
         return self.raw_responses.get(command, b"IN;SP1;PU0,0;PD100,100;")
 
+    def info(self):
+        from instrument_visa.visa_client import InstrumentInfo
+
+        return InstrumentInfo(address=self.address, idn=self.query("*IDN?").strip())
+
 
 class AcquisitionTests(unittest.TestCase):
     def test_profile_detection_for_new_manual_checked_devices(self) -> None:
@@ -62,6 +73,7 @@ class AcquisitionTests(unittest.TestCase):
             "AGILENT TECHNOLOGIES,E4402B,US123,1.0": "hp_agilent_e4402b",
             "Rohde&Schwarz,SMIQ03B,123,1.0": "rs_sme_smt_smiq",
             "Rohde&Schwarz,SMHU,123,1.0": "rs_smg_legacy",
+            "HAMEG,HMP4030,123,1.0": "rs_hmp_power_supply",
         }
 
         for idn, expected_key in cases.items():
@@ -174,6 +186,110 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(settings.power, "OFF")
         self.assertEqual(settings.rf_output, "OFF")
 
+    def test_hmp4030_power_supply_read_uses_selected_channel(self) -> None:
+        instrument = FakeInstrument(
+            query_responses={
+                "VOLT?": "5.000",
+                "CURR?": "0.500",
+                "MEAS:VOLT?": "4.998",
+                "MEAS:CURR?": "0.123",
+                "OUTP:SEL?": "1",
+                "OUTP:GEN?": "1",
+            }
+        )
+
+        settings = read_power_supply_settings(instrument, "HAMEG,HMP4030,123,1.0", 2)  # type: ignore[arg-type]
+
+        self.assertEqual(instrument.writes, ["INST:NSEL 2"])
+        self.assertEqual(instrument.queries, ["VOLT?", "CURR?", "MEAS:VOLT?", "MEAS:CURR?", "OUTP:SEL?", "OUTP:GEN?"])
+        self.assertEqual(settings.voltage_set, "5.000")
+        self.assertEqual(settings.output_selected, "ON")
+
+    def test_hmp4030_power_supply_set_uses_safe_channel_sequence(self) -> None:
+        instrument = FakeInstrument(
+            query_responses={
+                "VOLT?": "5.000",
+                "CURR?": "0.500",
+                "MEAS:VOLT?": "4.998",
+                "MEAS:CURR?": "0.123",
+                "OUTP:SEL?": "1",
+                "OUTP:GEN?": "1",
+            }
+        )
+
+        result = set_power_supply(instrument, "HAMEG,HMP4030,123,1.0", 1, "5 V", "0.5 A", True, 10, 1)  # type: ignore[arg-type]
+
+        self.assertEqual(instrument.writes[:5], ["INST:NSEL 1", "VOLT 5 V", "CURR 0.5 A", "OUTP:SEL 1", "OUTP:GEN 1"])
+        self.assertIn("VoltageMeasured,4.998", str(result.content))
+
+    def test_hmp4030_rejects_voltage_above_limit_before_writes(self) -> None:
+        instrument = FakeInstrument()
+
+        with self.assertRaises(ValueError):
+            set_power_supply(instrument, "HAMEG,HMP4030,123,1.0", 1, "20 V", "0.5 A", True, 10, 1)  # type: ignore[arg-type]
+
+        self.assertEqual(instrument.writes, [])
+
+    def test_hmp4030_rejects_invalid_channel_before_writes(self) -> None:
+        instrument = FakeInstrument()
+
+        with self.assertRaises(ValueError):
+            set_power_supply(instrument, "HAMEG,HMP4030,123,1.0", 4, "5 V", "0.5 A", True, 10, 1)  # type: ignore[arg-type]
+
+        self.assertEqual(instrument.writes, [])
+
+    def test_hmp2020_rejects_channel_three_before_writes(self) -> None:
+        instrument = FakeInstrument()
+
+        with self.assertRaises(ValueError):
+            read_power_supply_settings(instrument, "HAMEG,HMP2020,123,1.0", 3)  # type: ignore[arg-type]
+
+        self.assertEqual(instrument.writes, [])
+
+    def test_hmp4030_rejects_negative_voltage_and_current(self) -> None:
+        instrument = FakeInstrument()
+
+        with self.assertRaises(ValueError):
+            set_power_supply(instrument, "HAMEG,HMP4030,123,1.0", 1, "-1 V", "0.5 A", True, 10, 1)  # type: ignore[arg-type]
+        with self.assertRaises(ValueError):
+            set_power_supply(instrument, "HAMEG,HMP4030,123,1.0", 1, "5 V", "-0.5 A", True, 10, 1)  # type: ignore[arg-type]
+
+        self.assertEqual(instrument.writes, [])
+
+    def test_hmp4030_power_supply_output_off(self) -> None:
+        instrument = FakeInstrument(
+            query_responses={
+                "VOLT?": "5.000",
+                "CURR?": "0.500",
+                "MEAS:VOLT?": "0.000",
+                "MEAS:CURR?": "0.000",
+                "OUTP:SEL?": "0",
+                "OUTP:GEN?": "1",
+            }
+        )
+
+        result = set_power_supply_output(instrument, "HAMEG,HMP4030,123,1.0", 3, False)  # type: ignore[arg-type]
+
+        self.assertEqual(instrument.writes[:2], ["INST:NSEL 3", "OUTP:SEL 0"])
+        self.assertIn("OutputSelected,OFF", str(result.content))
+
+    def test_hmp4030_power_supply_master_output_off(self) -> None:
+        instrument = FakeInstrument(
+            query_responses={
+                "VOLT?": "5.000",
+                "CURR?": "0.500",
+                "MEAS:VOLT?": "0.000",
+                "MEAS:CURR?": "0.000",
+                "OUTP:SEL?": "0",
+                "OUTP:GEN?": "0",
+            }
+        )
+
+        result = set_power_supply_master_output(instrument, "HAMEG,HMP4030,123,1.0", False, 1)  # type: ignore[arg-type]
+
+        self.assertEqual(instrument.writes[:2], ["OUTP:GEN 0", "INST:NSEL 1"])
+        self.assertIn("OutputGeneral,OFF", str(result.content))
+
     def test_hms_x_screenshot_normalizes_ieee_bmp_block(self) -> None:
         payload = b"#6000010BM12345678"
         instrument = FakeInstrument(binary_responses={"HCOPy:DATA?": payload})
@@ -251,6 +367,137 @@ class AcquisitionTests(unittest.TestCase):
             self.assertEqual(sheet["E5"].value, True)
             self.assertTrue(any("B2007" in str(sheet.cell(row, 5).value) for row in range(8, sheet.max_row + 1)))
             self.assertEqual(len(sheet._charts), 1)
+
+    def test_frequency_parsing_and_points(self) -> None:
+        self.assertEqual(parse_frequency_hz("100 MHz"), 100_000_000.0)
+        self.assertEqual(frequency_points("100 MHz", "102 MHz", "1 MHz"), [100_000_000.0, 101_000_000.0, 102_000_000.0])
+
+    def test_frequency_points_rejects_unbounded_sweeps(self) -> None:
+        with self.assertRaises(ValueError):
+            frequency_points("1 Hz", f"{MAX_SWEEP_POINTS + 1} Hz", "1 Hz")
+
+    def test_frequency_sweep_sets_generator_and_reads_dmm(self) -> None:
+        generator = FakeInstrument(query_responses={
+            "*IDN?": "Rohde&Schwarz,SMIQ03B,123,1.0",
+            ":SOUR:FREQ:CW?": "100000000",
+            ":SOUR:POW?": "-30",
+            ":OUTP?": "1",
+        })
+        generator.address = "GPIB0::1::INSTR"
+        measurement = FakeInstrument(query_responses={"*IDN?": "KEITHLEY INSTRUMENTS INC.,MODEL 2000,123,1.0", ":READ?": "4.2"})
+        measurement.address = "GPIB0::2::INSTR"
+
+        result = run_frequency_sweep(
+            generator,  # type: ignore[arg-type]
+            measurement,  # type: ignore[arg-type]
+            FrequencySweepConfig(
+                start_frequency="100 MHz",
+                stop_frequency="101 MHz",
+                step_frequency="1 MHz",
+                power="-30 dBm",
+                max_power_dbm=0,
+                settle_s=0,
+                measurement_mode="dmm",
+            ),
+        )
+
+        self.assertEqual(result.actual_count, 2)
+        self.assertEqual(result.ok_count, 2)
+        self.assertIn("SetFrequencyHz,Index", result.csv_content)
+        self.assertIn("100000000.000000", result.csv_content)
+        self.assertIn("101000000.000000", result.csv_content)
+        self.assertEqual(generator.writes[-1], ":OUTP OFF")
+        self.assertEqual(measurement.queries, ["*IDN?", ":READ?", ":READ?"])
+
+    def test_frequency_sweep_rejects_power_above_limit_before_writes(self) -> None:
+        generator = FakeInstrument(query_responses={"*IDN?": "Rohde&Schwarz,SMIQ03B,123,1.0"})
+        measurement = FakeInstrument(query_responses={"*IDN?": "KEITHLEY INSTRUMENTS INC.,MODEL 2000,123,1.0"})
+
+        with self.assertRaises(ValueError):
+            run_frequency_sweep(
+                generator,  # type: ignore[arg-type]
+                measurement,  # type: ignore[arg-type]
+                FrequencySweepConfig(
+                    start_frequency="100 MHz",
+                    stop_frequency="101 MHz",
+                    step_frequency="1 MHz",
+                    power="10 dBm",
+                    max_power_dbm=0,
+                    settle_s=0,
+                    measurement_mode="dmm",
+                ),
+            )
+
+        self.assertEqual(generator.writes, [])
+
+    def test_frequency_sweep_can_stop_before_first_point(self) -> None:
+        generator = FakeInstrument(query_responses={"*IDN?": "Rohde&Schwarz,SMIQ03B,123,1.0", ":SOUR:FREQ:CW?": "100000000", ":SOUR:POW?": "-30", ":OUTP?": "0"})
+        measurement = FakeInstrument(query_responses={"*IDN?": "KEITHLEY INSTRUMENTS INC.,MODEL 2000,123,1.0"})
+
+        result = run_frequency_sweep(
+            generator,  # type: ignore[arg-type]
+            measurement,  # type: ignore[arg-type]
+            FrequencySweepConfig("100 MHz", "101 MHz", "1 MHz", "-30 dBm", 0, 0, "dmm"),
+            stop_requested=lambda: True,
+        )
+
+        self.assertEqual(result.actual_count, 0)
+        self.assertTrue(result.stopped)
+        self.assertIn("StoppedByUser,Yes", result.csv_content)
+
+    def test_frequency_sweep_stop_turns_rf_off_even_when_end_off_disabled(self) -> None:
+        generator = FakeInstrument(query_responses={"*IDN?": "Rohde&Schwarz,SMIQ03B,123,1.0", ":SOUR:FREQ:CW?": "100000000", ":SOUR:POW?": "-30", ":OUTP?": "1"})
+        measurement = FakeInstrument(query_responses={"*IDN?": "KEITHLEY INSTRUMENTS INC.,MODEL 2000,123,1.0"})
+        calls = {"count": 0}
+
+        def stop_after_generator_set() -> bool:
+            calls["count"] += 1
+            return calls["count"] >= 2
+
+        result = run_frequency_sweep(
+            generator,  # type: ignore[arg-type]
+            measurement,  # type: ignore[arg-type]
+            FrequencySweepConfig("100 MHz", "101 MHz", "1 MHz", "-30 dBm", 0, 0, "dmm", rf_off_at_end=False),
+            stop_requested=stop_after_generator_set,
+        )
+
+        self.assertTrue(result.stopped)
+        self.assertEqual(generator.writes[-1], ":OUTP OFF")
+
+    def test_frequency_sweep_aborts_on_generator_error_and_turns_rf_off(self) -> None:
+        generator = FakeInstrument(query_responses={"*IDN?": "Rohde&Schwarz,SMIQ03B,123,1.0", ":SOUR:FREQ:CW?": "100000000", ":SOUR:POW?": "-30", ":OUTP?": "1"})
+        measurement = FakeInstrument(query_responses={"*IDN?": "KEITHLEY INSTRUMENTS INC.,MODEL 2000,123,1.0", ":READ?": "4.2"})
+        original_write = generator.write
+
+        def failing_write(command: str) -> None:
+            if command == ":SOUR:FREQ:CW 100000000HZ":
+                raise RuntimeError("generator failed")
+            original_write(command)
+
+        generator.write = failing_write  # type: ignore[method-assign]
+        result = run_frequency_sweep(
+            generator,  # type: ignore[arg-type]
+            measurement,  # type: ignore[arg-type]
+            FrequencySweepConfig("100 MHz", "101 MHz", "1 MHz", "-30 dBm", 0, 0, "dmm"),
+        )
+
+        self.assertEqual(result.actual_count, 1)
+        self.assertEqual(result.error_count, 1)
+        self.assertEqual(measurement.queries, ["*IDN?"])
+        self.assertIn(":OUTP OFF", generator.writes)
+
+    def test_frequency_sweep_export_charts_only_value(self) -> None:
+        from openpyxl import load_workbook
+
+        content = "SetFrequencyHz,Index,ElapsedSeconds,Value,Status\n100000000,1,0.1,4.2,OK\n101000000,2,0.2,4.4,OK\n"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "results.xlsx"
+            export = append_result(workbook_path, "GPIB0::1::INSTR", "Rohde&Schwarz,SMIQ03B,123,1.0", AcquisitionResult("frequency sweep", "csv", content))
+            workbook = load_workbook(workbook_path)
+            sheet = workbook[export.sheet_name]
+
+            self.assertEqual(len(sheet._charts), 1)
+            self.assertEqual(len(sheet._charts[0].series), 1)
 
 
 if __name__ == "__main__":

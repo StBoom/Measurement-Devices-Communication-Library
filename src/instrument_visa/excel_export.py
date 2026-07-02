@@ -73,6 +73,8 @@ def append_result(workbook_path: Path, address: str, idn: str, result: Acquisiti
         _append_csv(data_sheet, result.content)
         if result.kind == "waveform":
             _add_waveform_chart(data_sheet)
+        elif result.kind == "frequency sweep":
+            _add_frequency_sweep_chart(data_sheet)
         _format_sheet(data_sheet)
     elif result.file_type.startswith("s") and result.file_type.endswith("p"):
         artifact = _artifact_path(workbook_path, result.file_type)
@@ -142,7 +144,7 @@ def _add_waveform_chart(sheet) -> None:
 
     header_values = [sheet.cell(header_row, column).value for column in range(1, sheet.max_column + 1)]
     first_header = str(header_values[0]).strip().lower() if header_values and header_values[0] is not None else ""
-    has_x_axis = 1 in numeric_columns and first_header in {"time", "frequency", "freq", "[hz]", "hz"}
+    has_x_axis = 1 in numeric_columns and first_header in {"time", "frequency", "freq", "setfrequencyhz", "[hz]", "hz"}
     max_row = _last_numeric_row(sheet, header_row + 1, numeric_columns)
     if max_row <= header_row:
         return
@@ -156,11 +158,84 @@ def _add_waveform_chart(sheet) -> None:
         _add_line_waveform_chart(sheet, header_row, max_row, numeric_columns, anchor)
 
 
+def _add_frequency_sweep_chart(sheet) -> None:
+    header_row = _find_frequency_sweep_header_row(sheet)
+    if header_row is None:
+        return
+    headers = {str(sheet.cell(header_row, column).value or "").strip().lower(): column for column in range(1, sheet.max_column + 1)}
+    x_column = headers.get("setfrequencyhz")
+    y_column = headers.get("value")
+    if x_column is None or y_column is None:
+        return
+    max_row = _last_numeric_row(sheet, header_row + 1, [y_column])
+    if max_row <= header_row:
+        return
+    if not any(isinstance(sheet.cell(row, y_column).value, (int, float)) for row in range(header_row + 1, max_row + 1)):
+        return
+
+    x_column, y_column, header_row, max_row = _frequency_sweep_chart_columns(sheet, header_row, max_row, x_column, y_column)
+
+    chart = ScatterChart()
+    chart.title = "Frequency Sweep"
+    chart.x_axis.title = "Frequency [Hz]"
+    chart.y_axis.title = "Value"
+    chart.legend = None
+    chart.width = CHART_WIDTH
+    chart.height = CHART_HEIGHT
+    x_values = Reference(sheet, min_col=x_column, min_row=header_row + 1, max_row=max_row)
+    y_values = Reference(sheet, min_col=y_column, min_row=header_row + 1, max_row=max_row)
+    chart.series.append(Series(y_values, x_values, title="Value"))
+    sheet.add_chart(chart, _chart_anchor(sheet))
+
+
+def _frequency_sweep_chart_columns(sheet, header_row: int, max_row: int, x_column: int, y_column: int) -> tuple[int, int, int, int]:
+    source_rows = [row for row in range(header_row + 1, max_row + 1) if isinstance(sheet.cell(row, y_column).value, (int, float))]
+    if len(source_rows) <= MAX_CHART_POINTS:
+        return x_column, y_column, header_row, max_row
+
+    rows_per_bucket = max(1, ceil(len(source_rows) / MAX_CHART_POINTS))
+    sampled_rows = source_rows[::rows_per_bucket]
+    if sampled_rows[-1] != source_rows[-1]:
+        sampled_rows.append(source_rows[-1])
+
+    target_x_column = sheet.max_column + 2
+    target_y_column = target_x_column + 1
+    target_header_row = header_row
+    sheet.cell(target_header_row, target_x_column).value = "SetFrequencyHz"
+    sheet.cell(target_header_row, target_y_column).value = "Value"
+    for cell in (sheet.cell(target_header_row, target_x_column), sheet.cell(target_header_row, target_y_column)):
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill(fill_type="solid", fgColor="D9EAD3")
+
+    note = sheet.cell(max(1, header_row - 1), target_x_column)
+    note.value = f"Diagramm-Extrakt: jeder {rows_per_bucket}. numerische Messpunkt plus letzter Punkt; vollständige Daten links."
+    note.font = Font(bold=True)
+    note.fill = PatternFill(fill_type="solid", fgColor="FFF2CC")
+    note.alignment = Alignment(wrap_text=True)
+
+    target_row = target_header_row + 1
+    for source_row in sampled_rows:
+        sheet.cell(target_row, target_x_column).value = f"={get_column_letter(x_column)}{source_row}"
+        sheet.cell(target_row, target_y_column).value = f"={get_column_letter(y_column)}{source_row}"
+        target_row += 1
+    _force_excel_recalculation(sheet)
+    return target_x_column, target_y_column, target_header_row, target_row - 1
+
+
 def _find_waveform_header_row(sheet) -> int | None:
     for row in range(1, sheet.max_row + 1):
         values = [sheet.cell(row, column).value for column in range(1, sheet.max_column + 1)]
         normalized = {str(value).strip().lower() for value in values if value is not None}
         if normalized & {"time", "frequency", "trace", "[hz]", "hz", "ch1", "channel1"}:
+            return row
+    return None
+
+
+def _find_frequency_sweep_header_row(sheet) -> int | None:
+    for row in range(1, sheet.max_row + 1):
+        values = [sheet.cell(row, column).value for column in range(1, sheet.max_column + 1)]
+        normalized = {str(value).strip().lower() for value in values if value is not None}
+        if {"setfrequencyhz", "value"}.issubset(normalized):
             return row
     return None
 
@@ -175,6 +250,9 @@ def _last_numeric_row(sheet, first_data_row: int, numeric_columns: list[int]) ->
 def _numeric_columns(sheet, header_row: int, max_row: int) -> list[int]:
     columns: list[int] = []
     for column in range(1, sheet.max_column + 1):
+        header = str(sheet.cell(header_row, column).value or "").strip().lower()
+        if header in {"index"}:
+            continue
         if any(isinstance(sheet.cell(row, column).value, (int, float)) for row in range(header_row + 1, max_row + 1)):
             columns.append(column)
     return columns
@@ -338,7 +416,7 @@ def _axis_title(header: str, axis: str) -> str:
     normalized = header.strip().lower()
     if axis == "x" and normalized == "time":
         return "Time [s]"
-    if axis == "x" and normalized in {"frequency", "freq", "[hz]", "hz"}:
+    if axis == "x" and normalized in {"frequency", "freq", "setfrequencyhz", "[hz]", "hz"}:
         return "Frequency [Hz]"
     return header or axis.upper()
 

@@ -22,6 +22,8 @@ logs/
 gui_settings.json
 config.ini
 results.xlsx
+results*.xlsx
+results*-*.png
 *.corrupt-*.xlsx
 startup_error.log
 
@@ -34,3 +36,4 @@ Manuals/
 Thumbs.db
 .vscode/
 .idea/
+*.code-workspace

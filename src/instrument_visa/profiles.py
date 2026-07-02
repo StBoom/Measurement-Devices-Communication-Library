@@ -15,6 +15,7 @@ class DeviceProfile:
     supports_screenshot: bool = False
     supports_sparameters: bool = False
     supports_signal_generator: bool = False
+    supports_power_supply: bool = False
 
 
 UNKNOWN_PROFILE = DeviceProfile(
@@ -215,6 +216,16 @@ def detect_profile(idn: str) -> DeviceProfile:
             supports_waveform=True,
         )
 
+    hmp_model = next((model for model in ("HMP4030", "HMP4040", "HMP2020", "HMP2030") if model in compact), None)
+    if hmp_model is not None:
+        return DeviceProfile(
+            manufacturer="Rohde & Schwarz / Hameg",
+            model_family=hmp_model,
+            device_type="Netzgerät",
+            key="rs_hmp_power_supply",
+            supports_power_supply=True,
+        )
+
     if ("LECROY" in compact or "TELEDYNELECROY" in compact) and any(model in compact for model in ("WAVEPRO", "WAVERUNNER", "SDA", "ZI")):
         return DeviceProfile(
             manufacturer="Teledyne LeCroy",
@@ -257,6 +268,15 @@ def detect_profile(idn: str) -> DeviceProfile:
         )
 
     return UNKNOWN_PROFILE
+
+
+def hmp_channel_count(model_or_idn: str) -> int:
+    compact = _compact_idn(model_or_idn)
+    if "HMP2020" in compact:
+        return 2
+    if "HMP2030" in compact or "HMP4030" in compact:
+        return 3
+    return 4
 
 
 def _compact_idn(idn: str) -> str:
