@@ -12,7 +12,17 @@ from pathlib import Path
 from time import monotonic
 from tkinter import filedialog, messagebox, ttk
 
-from .acquisition import AcquisitionResult, capture_screenshot, capture_sparameters, capture_waveform, read_scope_measurement, read_value
+from .acquisition import (
+    AcquisitionResult,
+    capture_screenshot,
+    capture_sparameters,
+    capture_waveform,
+    read_scope_measurement,
+    read_signal_generator_settings,
+    read_value,
+    set_signal_generator,
+    set_signal_generator_rf_output,
+)
 from .config import SParameterConfig
 from .excel_export import append_result
 from .logging_utils import setup_logging
@@ -52,6 +62,11 @@ class InstrumentVisaApp(tk.Tk):
         self.sparameter_format_var = tk.StringVar(value=self.settings.get("sparameter_format", "AUTO"))
         sparameter_ports = set(self.settings.get("sparameter_ports", [1, 2]))
         self.sparameter_port_vars = {port: tk.BooleanVar(value=port in sparameter_ports) for port in range(1, 5)}
+        self.generator_frequency_var = tk.StringVar(value=self.settings.get("generator_frequency", "100 MHz"))
+        self.generator_power_var = tk.StringVar(value=self.settings.get("generator_power", "-30 dBm"))
+        self.generator_rf_var = tk.StringVar(value=self.settings.get("generator_rf", "OFF"))
+        self.generator_max_power_var = tk.StringVar(value=str(self.settings.get("generator_max_power", "0")))
+        self.generator_rf_off_before_change_var = tk.BooleanVar(value=bool(self.settings.get("generator_rf_off_before_change", True)))
         self.status_var = tk.StringVar(value="Bereit")
         self._scope_widgets: list[tk.Widget] = []
         self._dmm_widgets: list[tk.Widget] = []
@@ -61,6 +76,7 @@ class InstrumentVisaApp(tk.Tk):
         self._timed_dmm_widgets: list[tk.Widget] = []
         self._timed_scope_widgets: list[tk.Widget] = []
         self._timed_stop_widgets: list[tk.Widget] = []
+        self._generator_widgets: list[tk.Widget] = []
         self.timed_stop_event = threading.Event()
         self.timed_running = False
         self.current_profile: DeviceProfile = UNKNOWN_PROFILE
@@ -213,6 +229,35 @@ class InstrumentVisaApp(tk.Tk):
             checkbutton.pack(side="left", padx=(0, 8))
             sparameter_checkbuttons.append(checkbutton)
 
+        generator = ttk.LabelFrame(measurement_area, text="Signalgenerator")
+        generator.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+
+        generator_controls = ttk.Frame(generator)
+        generator_controls.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
+        generator_read_button = ttk.Button(generator_controls, text="Generator lesen", command=self.read_signal_generator)
+        generator_read_button.pack(side="left", padx=(0, 8))
+        generator_set_button = ttk.Button(generator_controls, text="Generator setzen", command=self.set_signal_generator)
+        generator_set_button.pack(side="left", padx=(0, 8))
+        generator_rf_off_button = ttk.Button(generator_controls, text="RF Aus", command=self.signal_generator_rf_off)
+        generator_rf_off_button.pack(side="left", padx=(0, 12))
+
+        generator_settings = ttk.Frame(generator)
+        generator_settings.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
+        ttk.Label(generator_settings, text="Frequenz").pack(side="left", padx=(0, 4))
+        generator_frequency_entry = ttk.Entry(generator_settings, textvariable=self.generator_frequency_var, width=14)
+        generator_frequency_entry.pack(side="left", padx=(0, 8))
+        ttk.Label(generator_settings, text="Pegel").pack(side="left", padx=(0, 4))
+        generator_power_entry = ttk.Entry(generator_settings, textvariable=self.generator_power_var, width=12)
+        generator_power_entry.pack(side="left", padx=(0, 8))
+        ttk.Label(generator_settings, text="RF").pack(side="left", padx=(0, 4))
+        generator_rf_combo = ttk.Combobox(generator_settings, textvariable=self.generator_rf_var, values=("OFF", "ON"), width=5, state="readonly")
+        generator_rf_combo.pack(side="left", padx=(0, 8))
+        ttk.Label(generator_settings, text="Max. Pegel [dBm]").pack(side="left", padx=(0, 4))
+        generator_max_power_entry = ttk.Entry(generator_settings, textvariable=self.generator_max_power_var, width=7)
+        generator_max_power_entry.pack(side="left", padx=(0, 8))
+        generator_rf_off_check = ttk.Checkbutton(generator_settings, text="RF vor Änderung aus", variable=self.generator_rf_off_before_change_var)
+        generator_rf_off_check.pack(side="left", padx=(0, 8))
+
         common = ttk.LabelFrame(controls_frame, text="Allgemein")
         common.grid(row=3, column=0, sticky="ew", padx=12, pady=6)
         screenshot_button = ttk.Button(common, text="Screenshot", command=self.capture_screenshot)
@@ -226,6 +271,16 @@ class InstrumentVisaApp(tk.Tk):
         self._timed_dmm_widgets = [timed_dmm_button]
         self._timed_scope_widgets = [timed_scope_button]
         self._timed_stop_widgets = [timed_stop_button]
+        self._generator_widgets = [
+            generator_read_button,
+            generator_set_button,
+            generator_rf_off_button,
+            generator_frequency_entry,
+            generator_power_entry,
+            generator_rf_combo,
+            generator_max_power_entry,
+            generator_rf_off_check,
+        ]
         self._refresh_resource_combo()
         self._apply_saved_profile_for_address()
 
@@ -272,6 +327,20 @@ class InstrumentVisaApp(tk.Tk):
 
     def capture_sparameters(self) -> None:
         self._run_worker("S-Parameter werden exportiert...", self._capture_sparameters)
+
+    def read_signal_generator(self) -> None:
+        self._run_worker("Signalgenerator-Einstellungen werden gelesen...", self._read_signal_generator)
+
+    def set_signal_generator(self) -> None:
+        try:
+            self._generator_max_power()
+        except ValueError as exc:
+            messagebox.showerror("Signalgenerator", str(exc))
+            return
+        self._run_worker("Signalgenerator wird gesetzt...", self._set_signal_generator)
+
+    def signal_generator_rf_off(self) -> None:
+        self._run_worker("RF-Ausgang wird ausgeschaltet...", self._signal_generator_rf_off)
 
     def start_timed_dmm(self) -> None:
         self._start_timed_measurement("dmm")
@@ -412,6 +481,44 @@ class InstrumentVisaApp(tk.Tk):
         port_text = ", ".join(f"S{port}" for port in ports)
         return f"S-Parameter gespeichert: {export.workbook_path}{artifact_text}\nPorts: {port_text}\nFormat: {config.format}"
 
+    def _read_signal_generator(self) -> str:
+        with self._open_instrument() as instrument:
+            info = instrument.info()
+            settings = read_signal_generator_settings(instrument, info.idn)
+        self._messages.put(("generator_settings", (settings.frequency, settings.power, settings.rf_output)))
+        result = AcquisitionResult(kind="signal_generator", file_type="csv", content=_generator_settings_csv(settings.frequency, settings.power, settings.rf_output))
+        export = append_result(self._output_path(), self.address_var.get().strip(), info.idn, result)
+        self.logger.info("Signal generator settings exported workbook=%s sheet=%s", export.workbook_path, export.sheet_name)
+        return f"Signalgenerator gelesen: {export.workbook_path}\nFrequenz: {settings.frequency}\nPegel: {settings.power}\nRF: {settings.rf_output}"
+
+    def _set_signal_generator(self) -> str:
+        frequency = self.generator_frequency_var.get().strip()
+        power = self.generator_power_var.get().strip()
+        rf_enabled = self.generator_rf_var.get().strip().upper() == "ON"
+        with self._open_instrument() as instrument:
+            info = instrument.info()
+            result = set_signal_generator(
+                instrument,
+                info.idn,
+                frequency,
+                power,
+                rf_enabled,
+                self._generator_max_power(),
+                self.generator_rf_off_before_change_var.get(),
+            )
+        export = append_result(self._output_path(), self.address_var.get().strip(), info.idn, result)
+        self.logger.info("Signal generator set exported workbook=%s sheet=%s frequency=%s power=%s rf=%s", export.workbook_path, export.sheet_name, frequency, power, rf_enabled)
+        return f"Signalgenerator gesetzt: {export.workbook_path}\nFrequenz: {frequency}\nPegel: {power}\nRF: {'ON' if rf_enabled else 'OFF'}"
+
+    def _signal_generator_rf_off(self) -> str:
+        with self._open_instrument() as instrument:
+            info = instrument.info()
+            result = set_signal_generator_rf_output(instrument, info.idn, False)
+        self._messages.put(("generator_settings", (self.generator_frequency_var.get(), self.generator_power_var.get(), "OFF")))
+        export = append_result(self._output_path(), self.address_var.get().strip(), info.idn, result)
+        self.logger.info("Signal generator RF off exported workbook=%s sheet=%s", export.workbook_path, export.sheet_name)
+        return f"RF-Ausgang ausgeschaltet: {export.workbook_path}"
+
     def _timed_measurement(self, mode: str) -> str:
         interval_s = self._timed_interval()
         count = self._timed_count()
@@ -509,6 +616,12 @@ class InstrumentVisaApp(tk.Tk):
             raise ValueError("Anzahl muss größer als 0 sein.")
         return count
 
+    def _generator_max_power(self) -> float:
+        try:
+            return float(self.generator_max_power_var.get().replace(",", "."))
+        except ValueError as exc:
+            raise ValueError("Max. Pegel muss eine Zahl in dBm sein.") from exc
+
     def _open_instrument(self) -> VisaInstrument:
         address = self.address_var.get().strip()
         if not address:
@@ -550,6 +663,12 @@ class InstrumentVisaApp(tk.Tk):
                     self._apply_resources(message.splitlines())
             elif kind == "profile":
                 self._apply_profile_message(message)
+            elif kind == "generator_settings":
+                if isinstance(message, tuple) and len(message) == 3:
+                    frequency, power, rf_output = message
+                    self.generator_frequency_var.set(str(frequency))
+                    self.generator_power_var.set(str(power))
+                    self.generator_rf_var.set(str(rf_output) if str(rf_output) in {"ON", "OFF"} else "OFF")
             elif kind == "progress":
                 if isinstance(message, str):
                     self.status_var.set(message)
@@ -665,6 +784,7 @@ class InstrumentVisaApp(tk.Tk):
         timed_enabled = scope_measurement_enabled or dmm_enabled
         vna_enabled = profile.supports_sparameters
         screenshot_enabled = profile.supports_screenshot
+        generator_enabled = profile.supports_signal_generator
         self._set_widgets_enabled(self._scope_widgets, scope_enabled)
         self._set_widgets_enabled(self._dmm_widgets, dmm_enabled)
         self._set_widgets_enabled(self._timed_widgets, timed_enabled and not self.timed_running)
@@ -673,6 +793,7 @@ class InstrumentVisaApp(tk.Tk):
         self._set_widgets_enabled(self._timed_stop_widgets, self.timed_running)
         self._set_widgets_enabled(self._vna_widgets, vna_enabled)
         self._set_widgets_enabled(self._screenshot_widgets, screenshot_enabled)
+        self._set_widgets_enabled(self._generator_widgets, generator_enabled)
 
     def _apply_profile_message(self, message: object) -> None:
         if isinstance(message, tuple) and len(message) == 3:
@@ -711,6 +832,7 @@ class InstrumentVisaApp(tk.Tk):
             "supports_dmm_read": profile.supports_dmm_read,
             "supports_screenshot": profile.supports_screenshot,
             "supports_sparameters": profile.supports_sparameters,
+            "supports_signal_generator": profile.supports_signal_generator,
         }
         self._refresh_resource_combo(self.last_found_resources)
         self._save_settings()
@@ -726,6 +848,7 @@ class InstrumentVisaApp(tk.Tk):
             supports_dmm_read=bool(saved.get("supports_dmm_read", False)),
             supports_screenshot=bool(saved.get("supports_screenshot", False)),
             supports_sparameters=bool(saved.get("supports_sparameters", False)),
+            supports_signal_generator=bool(saved.get("supports_signal_generator", False)),
         )
 
     def _set_timed_running(self, running: bool) -> None:
@@ -776,6 +899,11 @@ class InstrumentVisaApp(tk.Tk):
             "waveform_channels": [channel for channel, variable in self.waveform_channel_vars.items() if variable.get()],
             "sparameter_format": self.sparameter_format_var.get(),
             "sparameter_ports": [port for port, variable in self.sparameter_port_vars.items() if variable.get()],
+            "generator_frequency": self.generator_frequency_var.get(),
+            "generator_power": self.generator_power_var.get(),
+            "generator_rf": self.generator_rf_var.get(),
+            "generator_max_power": self.generator_max_power_var.get(),
+            "generator_rf_off_before_change": self.generator_rf_off_before_change_var.get(),
             "devices": self.saved_devices,
         }
         SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
@@ -805,6 +933,10 @@ def _csv_rows(rows: list[list[object]]) -> str:
     writer = csv.writer(output, lineterminator="\n")
     writer.writerows(rows)
     return output.getvalue()
+
+
+def _generator_settings_csv(frequency: str, power: str, rf_output: str) -> str:
+    return _csv_rows([["Setting", "Value"], ["Frequency", frequency], ["Power", power], ["RFOutput", rf_output]])
 
 
 if __name__ == "__main__":

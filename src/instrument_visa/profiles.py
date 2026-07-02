@@ -14,6 +14,7 @@ class DeviceProfile:
     supports_dmm_read: bool = False
     supports_screenshot: bool = False
     supports_sparameters: bool = False
+    supports_signal_generator: bool = False
 
 
 UNKNOWN_PROFILE = DeviceProfile(
@@ -119,6 +120,16 @@ def detect_profile(idn: str) -> DeviceProfile:
             supports_waveform=True,
         )
 
+    if "8591A" in compact:
+        return DeviceProfile(
+            manufacturer="HP",
+            model_family="8591A",
+            device_type="Spektrumanalysator",
+            key="hp_8591a",
+            supports_waveform=True,
+            supports_screenshot=True,
+        )
+
     if "KEITHLEY" in compact and "2000" in compact:
         return DeviceProfile(
             manufacturer="Keithley",
@@ -156,6 +167,16 @@ def detect_profile(idn: str) -> DeviceProfile:
             supports_screenshot=True,
         )
 
+    if "E4402B" in compact:
+        return DeviceProfile(
+            manufacturer="HP/Agilent",
+            model_family="E4402B ESA",
+            device_type="Spektrumanalysator",
+            key="hp_agilent_e4402b",
+            supports_screenshot=True,
+            supports_waveform=True,
+        )
+
     if "E740" in compact:
         return DeviceProfile(
             manufacturer="HP/Agilent",
@@ -164,6 +185,24 @@ def detect_profile(idn: str) -> DeviceProfile:
             key="hp_e740",
             supports_screenshot=True,
             supports_waveform=True,
+        )
+
+    if "ROHDE" in compact and any(model in compact for model in ("SMGU", "SMHU")):
+        return DeviceProfile(
+            manufacturer="Rohde & Schwarz",
+            model_family="SMGU/SMHU",
+            device_type="Signalgenerator",
+            key="rs_smg_legacy",
+            supports_signal_generator=True,
+        )
+
+    if "ROHDE" in compact and any(model in compact for model in ("SME", "SMT", "SMIQ")):
+        return DeviceProfile(
+            manufacturer="Rohde & Schwarz",
+            model_family="SME/SMT/SMIQ",
+            device_type="Signalgenerator",
+            key="rs_sme_smt_smiq",
+            supports_signal_generator=True,
         )
 
     if ("HAMEG" in compact or "ROHDE" in compact) and "HMS" in compact:

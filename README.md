@@ -75,6 +75,9 @@ instrument-visa scope-value --measurement Vpp --channel 1 --config config.ini
 instrument-visa screenshot --config config.ini
 instrument-visa waveform --channels 1,2 --point-mode RAW --config config.ini
 instrument-visa sparameters --config config.ini
+instrument-visa generator-read --config config.ini
+instrument-visa generator-set --frequency "100 MHz" --power "-30 dBm" --rf off --max-power 0 --config config.ini
+instrument-visa generator-rf --rf off --config config.ini
 ```
 
 ## Oberfläche
@@ -98,7 +101,9 @@ measurement-devices
 measurement-devices-gui
 ```
 
-Die Oberfläche bietet Geräte-Suche, IDN-Test, DMM-Messwert, Scope-Messwert, getimtes Messen, Screenshot, Waveform-Export und S-Parameter-Export in eine auswählbare Excel-Datei. Nach `IDN testen` wird ein Geräteprofil erkannt und die passenden Bereiche werden aktiviert. Für Oszilloskope sollte `Scope Messwert` genutzt werden, da `DMM Messwert` den Multimeter-Befehl `:READ?` sendet. Beim Waveform-Export können `CH1` bis `CH4` beliebig kombiniert werden. Zusätzlich ist der Punktmodus `RAW`, `NORMAL` oder `MAXIMUM` auswählbar. Jede Waveform-Messung wird zur besseren Übersicht in ein eigenes Tabellenblatt geschrieben.
+Die Oberfläche bietet Geräte-Suche, IDN-Test, DMM-Messwert, Scope-Messwert, getimtes Messen, Screenshot, Waveform-Export, S-Parameter-Export und Signalgenerator-Basisbedienung in eine auswählbare Excel-Datei. Nach `IDN testen` wird ein Geräteprofil erkannt und die passenden Bereiche werden aktiviert. Für Oszilloskope sollte `Scope Messwert` genutzt werden, da `DMM Messwert` den Multimeter-Befehl `:READ?` sendet. Beim Waveform-Export können `CH1` bis `CH4` beliebig kombiniert werden. Zusätzlich ist der Punktmodus `RAW`, `NORMAL` oder `MAXIMUM` auswählbar. Jede Waveform-Messung wird zur besseren Übersicht in ein eigenes Tabellenblatt geschrieben.
+
+Der Signalgenerator-Bereich kann Frequenz, Pegel und RF-Ausgang lesen bzw. setzen. Als Sicherheitsvorgabe ist der RF-Ausgang vor Änderungen abschaltbar und der Maximalpegel wird lokal geprüft, bevor Befehle gesendet werden. `RF Aus` sendet nur den Ausgang-Aus-Befehl und liest anschließend die aktuellen Einstellungen zurück. SME/SMT/SMIQ nutzen SCPI-Basisbefehle `:SOUR:FREQ:CW`, `:SOUR:POW` und `:OUTP`. SMGU/SMHU nutzen laut Programmierbeispielen die ältere IEC-Bus-Syntax `RF`, `LEVEL:RF`, `LEVEL:RF:ON` und `LEVEL:RF:OFF`.
 
 Beim getimten Messen kann eine DMM- oder Scope-Messreihe mit Intervall in Sekunden und Anzahl Messpunkte gestartet werden. Die Messpunkte werden auf feste Sollzeitpunkte geplant, damit die Messdauer das Intervall nicht dauerhaft verschiebt. Die Messreihe kann über `Stop` abgebrochen werden. Die Ergebnisse werden mit Index, Zeitstempel, verstrichener Zeit, Delta zum vorherigen Messpunkt, Abweichung vom Sollzeitpunkt, Messart, Kanal, Wert und Status in ein eigenes Tabellenblatt geschrieben. Zusätzlich enthält das Tabellenblatt eine Zusammenfassung mit Start-/Endzeit, Soll-Intervall, angeforderter und tatsächlicher Anzahl sowie OK- und Fehlerzähler.
 
@@ -130,10 +135,14 @@ Die folgenden Geräteprofile sind als best-effort implementiert, aber noch nicht
 - Keysight/Agilent InfiniiVision 6000, darunter MSO6034A/DSO6034A: Scope-Messwert, getimtes Scope-Messen, Screenshot und Waveform-Export mit 6000-Series-Programmer-SCPI (`:MEASure...`, `:WAVeform...`, `:DISPlay:DATA?`)
 - Keysight/Agilent InfiniiVision 7000, darunter DSO7034B/MSO7034: Scope-Messwert, getimtes Scope-Messen, Screenshot und Waveform-Export mit 7000-Series-Programmer-SCPI (`:MEASure...`, `:WAVeform...`, `:DISPlay:DATA? PNG, SCREEN, COLOR`)
 - HP/Agilent 54600/54620, darunter 54622D: Scope-Messwert, Screenshot und Waveform-Export mit 54620-Series-Programmer-SCPI. Screenshot nutzt BMP, da das 54622D-Manual bei `:DISPlay:DATA?` nur `TIFF | BMP` nennt.
+- HP 8591A: Trace-A-Export best-effort über alten HP-IB-Befehl `TRA?`. Screenshot/Hardcopy ist als HP-GL/Plotter-Capture über `GETPLOT` aktiviert und wird als `.hpgl` abgelegt.
+- Agilent E4402B ESA: Screenshot WMF und Trace CSV best-effort über ESA/E740-ähnliche SCPI-/Mass-Memory-Befehle (`:MMEM:STOR:SCR`, `:MMEM:STOR:TRAC TRACE1,"R:INTUI.CSV"`, `:MMEM:DATA?`).
 - Keithley 2000: DMM-Messwert und getimtes DMM-Messen über `:READ?`, laut Keithley-Manual als `:ABORt`, `:INITiate`, `:FETCh?`-Sequenz beschrieben
 - Tektronix TDS400, darunter TDS420A: Scope-Messwert, Screenshot und Waveform-Export mit TDS-Family-Programmer-SCPI (`MEASUrement:IMMed...`, `DATa:SOUrce`, `DATa:ENCdg ASCii`, `CURVe?`, `HARDCopy START`). Screenshot nutzt TIFF, da PNG im TDS400A-Manual nicht als sicher unterstütztes Hardcopy-Format aufgeführt ist.
 - Tektronix TDS3000/MDO/MSO/DPO: Scope-Messwert und Waveform zusätzlich zu Screenshot best-effort aktiviert
 - Rohde & Schwarz / Hameg HMS-X: Screenshot und Trace-Export mit HMS-X-SCPI-Programmer-Manual gegengeprüft (`HCOPy:FORMat BMP`, `HCOPy:DATA?`, `TRACe:DATA:FORMat CSV`, `TRACe:DATA?`). Screenshot nutzt BMP, da das Manual nur BMP für `HCOPy:FORMat` aufführt.
+- Rohde & Schwarz SME/SMT/SMIQ: IDN-/Profil-Erkennung als Signalgeneratoren sowie Basisbedienung für Frequenz, Pegel und RF-Ausgang über `:SOUR:FREQ:CW`, `:SOUR:POW` und `:OUTP`. Die Langformen sind laut Manuals `[:SOURce]:FREQuency[:CW|:FIXed]`, `[:SOURce]:POWer[:LEVel][:IMMediate][:AMPLitude]` und `:OUTPut[:STATe]`.
+- Rohde & Schwarz SMGU/SMHU: IDN-/Profil-Erkennung als Legacy-Signalgeneratoren sowie Basisbedienung über die im Manual gezeigte IEC-Bus-Syntax `RF`, `LEVEL:RF`, `LEVEL:RF:ON` und `LEVEL:RF:OFF`.
 - Rohde & Schwarz RT-Series-Oszilloskope, falls IDN `RTB`, `RTA`, `RTM`, `RTE`, `RTO` oder `RTP` enthält: Scope-Messwert, Screenshot und Waveform mit RTB2000-Manual-SCPI (`MEASurement...`, `HCOPy:DATA?`, `CHANnel:DATA?`)
 - Teledyne LeCroy WavePro/WaveRunner/SDA/Zi: Scope-Messwert, Screenshot und Waveform-Export mit X-Stream/WaveRunner-Remote-Control-SCPI (`PAVA?`, `SCREEN_DUMP`, `INSPECT? "SIMPLE"`)
 
@@ -236,6 +245,24 @@ Statuswerte:
     Status:            commands from manual, untested
     Notizen:           Screenshot bewusst BMP; noch mit Laborgerät testen
 
+#### HP 8591A
+
+    Profil-Key:        hp_8591a
+    IDN-Erkennung:     8591A
+    Funktionen:        Trace A best-effort über TRA?, Screenshot/Hardcopy HP-GL über GETPLOT
+    Nicht unterstützt: DMM/Messwert, Scope-Messwert, getimtes Messen, S-Parameter
+    Status:            commands from manual, untested
+    Notizen:           Älteres HP-IB/non-SCPI-Gerät; TRA?, GETPLOT und IDN-Verhalten mit realem Gerät prüfen. GETPLOT liefert voraussichtlich Plotterdaten statt Bitmap.
+
+#### HP/Agilent E4402B ESA
+
+    Profil-Key:        hp_agilent_e4402b
+    IDN-Erkennung:     E4402B
+    Funktionen:        Screenshot WMF, Trace CSV
+    Nicht unterstützt: DMM/Messwert, Scope-Messwert, getimtes Messen, S-Parameter
+    Status:            commands from manual, untested
+    Notizen:           ESA-family SCPI; nutzt zunächst E740-ähnliche MMEM-Trace-/Screenshot-Befehle, noch mit Laborgerät testen
+
 #### Keithley 2000
 
     Profil-Key:        keithley_2000
@@ -280,6 +307,24 @@ Statuswerte:
     Nicht unterstützt: DMM/Messwert, Scope-Messwert, getimtes Messen, S-Parameter
     Status:            commands from manual, untested
     Notizen:           Gegen hochgeladenes HMS-X-SCPI-Manual geprüft; echten Gerätetest nachtragen
+
+#### Rohde & Schwarz SMGU/SMHU
+
+    Profil-Key:        rs_smg_legacy
+    IDN-Erkennung:     ROHDE plus SMGU oder SMHU
+    Funktionen:        Frequenz/Pegel/RF-Ausgang lesen und setzen
+    Nicht unterstützt: DMM/Messwert, Scope-Messwert, Screenshot, Waveform/Trace, S-Parameter
+    Status:            commands from manual, untested
+    Notizen:           Ältere Signalgeneratoren; nutzt Manual-Beispiele `RF <freq>`, `RF?`, `LEVEL:RF <level>`, `LEVEL:RF?`, `LEVEL:RF:ON/OFF`; Rückmeldung vom echten Gerät prüfen
+
+#### Rohde & Schwarz SME/SMT/SMIQ
+
+    Profil-Key:        rs_sme_smt_smiq
+    IDN-Erkennung:     ROHDE plus SME, SMT oder SMIQ
+    Funktionen:        Frequenz/Pegel/RF-Ausgang lesen und setzen
+    Nicht unterstützt: DMM/Messwert, Scope-Messwert, Screenshot, Waveform/Trace, S-Parameter
+    Status:            commands from manual, untested
+    Notizen:           Signalgeneratoren mit SCPI/IEEE-488.2; Manual-Langformen `[:SOURce]:FREQuency[:CW|:FIXed]`, `[:SOURce]:POWer[:LEVel][:IMMediate][:AMPLitude]`, `:OUTPut[:STATe]`, Kurzformen im Tool genutzt
 
 #### Rohde & Schwarz RT-Series, RTB/RTA/RTM/RTE/RTO/RTP
 

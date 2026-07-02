@@ -3,7 +3,17 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .acquisition import capture_screenshot, capture_sparameters, capture_waveform, read_scope_measurement, read_value
+from .acquisition import (
+    AcquisitionResult,
+    capture_screenshot,
+    capture_sparameters,
+    capture_waveform,
+    read_scope_measurement,
+    read_signal_generator_settings,
+    read_value,
+    set_signal_generator,
+    set_signal_generator_rf_output,
+)
 from .config import load_config
 from .excel_export import append_result
 from .logging_utils import setup_logging
@@ -13,7 +23,10 @@ from .visa_client import VisaInstrument, list_resources
 def main() -> int:
     logger = setup_logging()
     parser = argparse.ArgumentParser(description="VISA/SCPI instrument communication with Excel export")
-    parser.add_argument("action", choices=["list", "idn", "value", "scope-value", "screenshot", "waveform", "sparameters"])
+    parser.add_argument(
+        "action",
+        choices=["list", "idn", "value", "scope-value", "screenshot", "waveform", "sparameters", "generator-read", "generator-set", "generator-rf"],
+    )
     parser.add_argument("--config", type=Path, default=Path("config.ini"))
     parser.add_argument("--address", help="Override VISA address from config")
     parser.add_argument("--output", type=Path, help="Override Excel output path")
@@ -21,6 +34,11 @@ def main() -> int:
     parser.add_argument("--channel", type=int, default=1, choices=[1, 2, 3, 4])
     parser.add_argument("--channels", help="Comma-separated waveform channels, e.g. 1,2,4. Default: displayed channels.")
     parser.add_argument("--point-mode", default="RAW", choices=["RAW", "NORMAL", "MAXIMUM"])
+    parser.add_argument("--frequency", help='Signal generator CW frequency, e.g. "100 MHz" or "1GHz"')
+    parser.add_argument("--power", help='Signal generator output power, e.g. "-30 dBm"')
+    parser.add_argument("--rf", choices=["on", "off"], help="Signal generator RF output state")
+    parser.add_argument("--max-power", type=float, default=0.0, help="Signal generator safety limit in dBm. Default: 0 dBm")
+    parser.add_argument("--keep-rf-during-change", action="store_true", help="Do not switch RF off before changing frequency/power")
     args = parser.parse_args()
 
     if args.action == "list":
@@ -56,6 +74,25 @@ def main() -> int:
             if config is None:
                 raise FileNotFoundError("S-parameter export requires config.ini for selected ports and format.")
             result = capture_sparameters(instrument, info.idn, config.sparameters)
+        elif args.action == "generator-read":
+            settings = read_signal_generator_settings(instrument, info.idn)
+            result = _generator_settings_result(settings)
+        elif args.action == "generator-set":
+            if args.frequency is None or args.power is None or args.rf is None:
+                raise ValueError('generator-set requires --frequency, --power and --rf on|off')
+            result = set_signal_generator(
+                instrument,
+                info.idn,
+                args.frequency,
+                args.power,
+                args.rf == "on",
+                args.max_power,
+                not args.keep_rf_during_change,
+            )
+        elif args.action == "generator-rf":
+            if args.rf is None:
+                raise ValueError('generator-rf requires --rf on|off')
+            result = set_signal_generator_rf_output(instrument, info.idn, args.rf == "on")
         else:
             raise ValueError(f"Unsupported action: {args.action}")
 
@@ -74,6 +111,11 @@ def _parse_channels(value: str) -> list[int]:
     if not channels or any(channel not in {1, 2, 3, 4} for channel in channels):
         raise ValueError("--channels must contain one or more channels from 1 to 4")
     return channels
+
+
+def _generator_settings_result(settings) -> AcquisitionResult:
+    content = "Setting,Value\n" f"Frequency,{settings.frequency}\n" f"Power,{settings.power}\n" f"RFOutput,{settings.rf_output}"
+    return AcquisitionResult(kind="signal_generator", file_type="csv", content=content)
 
 
 if __name__ == "__main__":

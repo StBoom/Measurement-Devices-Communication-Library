@@ -59,6 +59,16 @@ class VisaInstrument:
         finally:
             instrument.read_termination = original_termination
 
+    def read_raw_after_write(self, command: str) -> bytes:
+        instrument = self._require_open()
+        original_termination = instrument.read_termination
+        instrument.read_termination = None
+        try:
+            instrument.write(command)
+            return bytes(instrument.read_raw())
+        finally:
+            instrument.read_termination = original_termination
+
     def info(self) -> InstrumentInfo:
         return InstrumentInfo(address=self.address, idn=self.query("*IDN?").strip())
 

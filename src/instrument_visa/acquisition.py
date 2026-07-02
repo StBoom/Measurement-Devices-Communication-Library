@@ -30,9 +30,100 @@ class SimpleScreenshotCommand:
     delay_s: float = 0.0
 
 
+@dataclass(frozen=True)
+class SignalGeneratorSettings:
+    frequency: str
+    power: str
+    rf_output: str
+
+
 def read_value(instrument: VisaInstrument) -> AcquisitionResult:
     LOGGER.info("SCPI action=dmm_value command=%s", ":READ?")
     return AcquisitionResult(kind="value", file_type="value", content=instrument.query(":READ?").strip())
+
+
+def read_signal_generator_settings(instrument: VisaInstrument, idn: str) -> SignalGeneratorSettings:
+    profile = detect_profile(idn)
+    if not profile.supports_signal_generator:
+        raise NotImplementedError(f"Unsupported signal generator device: {idn}")
+    LOGGER.info("SCPI action=signal_generator_read profile=%s", profile.key)
+    if profile.key == "rs_smg_legacy":
+        frequency = instrument.query("RF?").strip()
+        level = instrument.query("LEVEL:RF?").strip()
+        return SignalGeneratorSettings(
+            frequency=_strip_prefixed_value(frequency, "RF"),
+            power=_strip_prefixed_value(level, "LEVEL:RF"),
+            rf_output="OFF" if level.upper().startswith("LEVEL:RF:OFF") else "ON",
+        )
+    return SignalGeneratorSettings(
+        frequency=instrument.query(":SOUR:FREQ:CW?").strip(),
+        power=instrument.query(":SOUR:POW?").strip(),
+        rf_output=_normalize_rf_state(instrument.query(":OUTP?").strip()),
+    )
+
+
+def set_signal_generator(
+    instrument: VisaInstrument,
+    idn: str,
+    frequency: str,
+    power: str,
+    rf_output: bool,
+    max_power_dbm: float = 0.0,
+    rf_off_before_change: bool = True,
+) -> AcquisitionResult:
+    profile = detect_profile(idn)
+    if not profile.supports_signal_generator:
+        raise NotImplementedError(f"Unsupported signal generator device: {idn}")
+
+    frequency = frequency.strip()
+    power = power.strip()
+    if not frequency:
+        raise ValueError("Frequency must not be empty")
+    if not power:
+        raise ValueError("Power must not be empty")
+    requested_power_dbm = _parse_dbm(power)
+    if requested_power_dbm > max_power_dbm:
+        raise ValueError(f"Requested power {requested_power_dbm:g} dBm exceeds max power {max_power_dbm:g} dBm")
+
+    LOGGER.info(
+        "SCPI action=signal_generator_set profile=%s frequency=%s power=%s rf_output=%s max_power_dbm=%s rf_off_before_change=%s",
+        profile.key,
+        frequency,
+        power,
+        rf_output,
+        max_power_dbm,
+        rf_off_before_change,
+    )
+    if profile.key == "rs_smg_legacy":
+        if rf_off_before_change:
+            instrument.write("LEVEL:RF:OFF")
+        instrument.write(f"RF {frequency}")
+        instrument.write(f"LEVEL:RF {power}")
+        instrument.write(f"LEVEL:RF:{'ON' if rf_output else 'OFF'}")
+        settings = read_signal_generator_settings(instrument, idn)
+        return AcquisitionResult(kind="signal_generator", file_type="csv", content=_format_signal_generator_settings(settings))
+
+    if rf_off_before_change:
+        instrument.write(":OUTP OFF")
+    instrument.write(f":SOUR:FREQ:CW {frequency}")
+    instrument.write(f":SOUR:POW {power}")
+    instrument.write(f":OUTP {'ON' if rf_output else 'OFF'}")
+    settings = read_signal_generator_settings(instrument, idn)
+    return AcquisitionResult(kind="signal_generator", file_type="csv", content=_format_signal_generator_settings(settings))
+
+
+def set_signal_generator_rf_output(instrument: VisaInstrument, idn: str, enabled: bool) -> AcquisitionResult:
+    profile = detect_profile(idn)
+    if not profile.supports_signal_generator:
+        raise NotImplementedError(f"Unsupported signal generator device: {idn}")
+    LOGGER.info("SCPI action=signal_generator_rf profile=%s enabled=%s", profile.key, enabled)
+    if profile.key == "rs_smg_legacy":
+        instrument.write(f"LEVEL:RF:{'ON' if enabled else 'OFF'}")
+        settings = read_signal_generator_settings(instrument, idn)
+        return AcquisitionResult(kind="signal_generator", file_type="csv", content=_format_signal_generator_settings(settings))
+    instrument.write(f":OUTP {'ON' if enabled else 'OFF'}")
+    settings = read_signal_generator_settings(instrument, idn)
+    return AcquisitionResult(kind="signal_generator", file_type="csv", content=_format_signal_generator_settings(settings))
 
 
 def read_scope_measurement(instrument: VisaInstrument, measurement: str, channel: int, idn: str | None = None) -> AcquisitionResult:
@@ -172,7 +263,7 @@ def capture_screenshot(instrument: VisaInstrument, idn: str, title: str = "") ->
     if simple_command is not None:
         return _capture_simple_screenshot(instrument, simple_command)
 
-    if profile.key == "hp_e740":
+    if profile.key in {"hp_e740", "hp_agilent_e4402b"}:
         _set_e740_date_time(instrument)
         if title:
             instrument.write(f":DISP:ANN:Title:Data '{title}'")
@@ -187,6 +278,10 @@ def capture_screenshot(instrument: VisaInstrument, idn: str, title: str = "") ->
         finally:
             instrument.write(":DISP:MENU:STATE 1")
         return AcquisitionResult(kind="screenshot", file_type="wmf", content=data)
+
+    if profile.key == "hp_8591a":
+        data = _read_raw_after_write(instrument, "GETPLOT")
+        return AcquisitionResult(kind="screenshot", file_type="hpgl", content=data)
 
     if profile.key == "keysight_e5071c":
         instrument.write(":DISP:MENU:STATE 0")
@@ -257,7 +352,7 @@ def capture_waveform(
     profile = detect_profile(idn)
     LOGGER.info("SCPI action=waveform profile=%s channels=%s point_mode=%s", profile.key, channels, point_mode)
 
-    if profile.key == "hp_e740":
+    if profile.key in {"hp_e740", "hp_agilent_e4402b"}:
         _set_e740_date_time(instrument)
         instrument.write(":DISP:MENU:STATE 0")
         try:
@@ -270,6 +365,10 @@ def capture_waveform(
         finally:
             instrument.write(":DISP:MENU:STATE 1")
         return AcquisitionResult(kind="waveform", file_type="csv", content=_strip_ieee_header(content))
+
+    if profile.key == "hp_8591a":
+        content = _capture_hp_8591a_trace(instrument)
+        return AcquisitionResult(kind="waveform", file_type="csv", content=content)
 
     if profile.key == "hp_4395a":
         instrument.write("FORM4")
@@ -421,6 +520,15 @@ def _store_read_delete_text(
         instrument.write(delete_command)
 
 
+def _read_raw_after_write(instrument: VisaInstrument, command: str) -> bytes:
+    if hasattr(instrument, "read_raw_after_write"):
+        return instrument.read_raw_after_write(command)  # type: ignore[attr-defined]
+    instrument.write(command)
+    if hasattr(instrument, "read_raw"):
+        return instrument.read_raw()  # type: ignore[attr-defined]
+    raise NotImplementedError("Instrument does not support raw read after write")
+
+
 def _write_commands(instrument: VisaInstrument, commands: tuple[str, ...]) -> None:
     for command in commands:
         LOGGER.info("SCPI write command=%s", command)
@@ -482,6 +590,47 @@ def _command_summary(command: str | tuple[tuple[str, ...], str]) -> str:
         setup, query = command
         return "; ".join([*setup, query])
     return command
+
+
+def _normalize_rf_state(value: str) -> str:
+    normalized = value.strip().upper()
+    if normalized in {"1", "+1", "ON"}:
+        return "ON"
+    if normalized in {"0", "+0", "OFF"}:
+        return "OFF"
+    return value.strip()
+
+
+def _strip_prefixed_value(value: str, prefix: str) -> str:
+    stripped = value.strip()
+    if stripped.upper().startswith(prefix.upper()):
+        stripped = stripped[len(prefix) :].strip()
+        if stripped.startswith(":"):
+            stripped = stripped[1:].strip()
+        return stripped
+    return stripped
+
+
+def _parse_dbm(value: str) -> float:
+    normalized = value.strip().upper().replace(" ", "")
+    for suffix in ("DBM", "DB"):
+        if normalized.endswith(suffix):
+            normalized = normalized[: -len(suffix)]
+            break
+    try:
+        return float(normalized.replace(",", "."))
+    except ValueError as exc:
+        raise ValueError("Power must be a dBm value, for example -30 dBm") from exc
+
+
+def _format_signal_generator_settings(settings: SignalGeneratorSettings) -> str:
+    rows = [
+        ["Setting", "Value"],
+        ["Frequency", settings.frequency],
+        ["Power", settings.power],
+        ["RFOutput", settings.rf_output],
+    ]
+    return "\n".join(",".join(row) for row in rows)
 
 
 def _format_4395a_waveform(frequency_data: str, trace_data: str, complex_data: str) -> str:
@@ -626,6 +775,11 @@ def _capture_hms_trace(instrument: VisaInstrument) -> str:
     instrument.write("TRACe:DATA:FORMat CSV")
     content = instrument.query("TRAC:DATA?").strip()
     return "Trace\n" + _strip_ieee_header(content).lstrip()
+
+
+def _capture_hp_8591a_trace(instrument: VisaInstrument) -> str:
+    trace_values = _split_numeric_series(_strip_ieee_header(instrument.query("TRA?")).lstrip())
+    return "Point,TraceA\n" + "\n".join(f"{index},{value}" for index, value in enumerate(trace_values, start=1))
 
 
 def _capture_lecroy_waveform(instrument: VisaInstrument, selected_channels: list[int] | None = None) -> str:
