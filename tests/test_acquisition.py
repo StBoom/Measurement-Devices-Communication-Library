@@ -22,14 +22,19 @@ from instrument_visa.acquisition import (  # noqa: E402
     set_signal_generator_rf_output,
 )
 from instrument_visa.excel_export import append_result  # noqa: E402
+from instrument_visa.cli import _load_sequence_config  # noqa: E402
 from instrument_visa.profiles import detect_profile  # noqa: E402
 from instrument_visa.sequence import (  # noqa: E402
+    CustomSequenceConfig,
     MAX_SWEEP_POINTS,
     FrequencySweepConfig,
+    SequenceStep,
+    SequenceVariable,
     TimedSwitchConfig,
     VoltageSweepConfig,
     frequency_points,
     parse_frequency_hz,
+    run_custom_sequence,
     run_frequency_sweep,
     run_timed_switch,
     run_voltage_sweep,
@@ -422,6 +427,142 @@ class AcquisitionTests(unittest.TestCase):
         self.assertIn("101000000.000000", result.csv_content)
         self.assertEqual(generator.writes[-1], ":OUTP OFF")
         self.assertEqual(measurement.queries, ["*IDN?", ":READ?", ":READ?"])
+
+    def test_custom_sequence_repeats_variable_and_reads_dmm(self) -> None:
+        generator = FakeInstrument(query_responses={
+            "*IDN?": "Rohde&Schwarz,SMIQ03B,123,1.0",
+            ":SOUR:FREQ:CW?": "100000000",
+            ":SOUR:POW?": "-30",
+            ":OUTP?": "1",
+        })
+        generator.address = "GPIB0::1::INSTR"
+        dmm = FakeInstrument(query_responses={"*IDN?": "KEITHLEY INSTRUMENTS INC.,MODEL 2000,123,1.0", ":READ?": "4.2"})
+        dmm.address = "GPIB0::2::INSTR"
+
+        result = run_custom_sequence(
+            {"Generator1": generator, "DMM1": dmm},  # type: ignore[dict-item]
+            CustomSequenceConfig(
+                devices={"Generator1": generator.address, "DMM1": dmm.address},
+                steps=[
+                    SequenceStep("Generator1", "generator_set_frequency", {"frequency": "${frequency}", "power": "-30 dBm", "max_power_dbm": "0", "rf": "ON"}),
+                    SequenceStep("DMM1", "dmm_read"),
+                ],
+                repeat=2,
+                variables=[SequenceVariable("frequency", "100 MHz", "1 MHz", "frequency")],
+            ),
+        )
+
+        self.assertEqual(result.actual_count, 4)
+        self.assertEqual(result.ok_count, 4)
+        self.assertIn(":SOUR:FREQ:CW 100000000HZ", generator.writes)
+        self.assertIn(":SOUR:FREQ:CW 101000000HZ", generator.writes)
+        self.assertEqual(dmm.queries, ["*IDN?", ":READ?", ":READ?"])
+        self.assertIn("generator_set_frequency", result.csv_content)
+
+    def test_custom_sequence_can_capture_spectrum_trace_summary(self) -> None:
+        analyzer = FakeInstrument(query_responses={"*IDN?": "HEWLETT-PACKARD,8591A,123,1.0", "TRA?": "1,2,3"})
+        analyzer.address = "GPIB0::18::INSTR"
+
+        result = run_custom_sequence(
+            {"Spectrum1": analyzer},  # type: ignore[dict-item]
+            CustomSequenceConfig(
+                devices={"Spectrum1": analyzer.address},
+                steps=[SequenceStep("Spectrum1", "capture_waveform", {"channels": "", "point_mode": "RAW"})],
+            ),
+        )
+
+        self.assertEqual(result.ok_count, 1)
+        self.assertIn("waveform", result.csv_content)
+        self.assertEqual(analyzer.queries, ["*IDN?", "TRA?"])
+
+    def test_custom_sequence_exports_screenshot_step_artifact(self) -> None:
+        instrument = FakeInstrument(query_responses={"*IDN?": "TEST,DSOX2024A,1,1"}, binary_responses={":DISPLAY:DATA? PNG, COLOR": b"PNGDATA"})
+        exports: list[tuple[str, str, str, bytes | str]] = []
+
+        def export_step(device: str, info, result: AcquisitionResult) -> str:
+            exports.append((device, info.address, result.file_type, result.content))
+            return "Datei: screenshot.png"
+
+        result = run_custom_sequence(
+            {"Scope1": instrument},  # type: ignore[dict-item]
+            CustomSequenceConfig(devices={"Scope1": instrument.address}, steps=[SequenceStep("Scope1", "capture_screenshot")], end_rf_off=False),
+            step_result_export=export_step,
+        )
+
+        self.assertEqual(result.ok_count, 1)
+        self.assertEqual(exports, [("Scope1", "USB::TEST", "png", b"PNGDATA")])
+        self.assertIn("Datei: screenshot.png", result.csv_content)
+
+    def test_custom_sequence_power_supply_uses_configured_safety_limits(self) -> None:
+        supply = FakeInstrument(query_responses={"*IDN?": "HAMEG,HMP4030,123,1.0"})
+
+        result = run_custom_sequence(
+            {"Supply1": supply},  # type: ignore[dict-item]
+            CustomSequenceConfig(
+                devices={"Supply1": supply.address},
+                steps=[SequenceStep("Supply1", "power_supply_set", {"voltage": "10 V", "current": "0.1 A", "channel": "1", "output": "ON"})],
+                power_supply_max_voltage=5,
+                power_supply_max_current=1,
+            )
+        )
+
+        self.assertEqual(result.error_count, 1)
+        self.assertIn("exceeds max voltage", result.csv_content)
+        self.assertEqual(supply.writes, [])
+
+    def test_custom_sequence_validation_rejects_bad_imported_step(self) -> None:
+        instrument = FakeInstrument(query_responses={"*IDN?": "TEST,UNKNOWN,1,1"})
+
+        with self.assertRaises(ValueError):
+            run_custom_sequence(
+                {"Device1": instrument},  # type: ignore[dict-item]
+                CustomSequenceConfig(devices={"Device1": instrument.address}, steps=[SequenceStep("Device1", "unknown_action")]),
+            )
+
+    def test_cli_loads_json_sequence_config(self) -> None:
+        content = {
+            "devices": {"DMM1": "GPIB0::2::INSTR"},
+            "repeat": 2,
+            "pause_s": 0,
+            "variables": [{"name": "value", "start": "0", "step": "1", "unit": "number"}],
+            "steps": [{"device": "DMM1", "action": "dmm_read", "params": {}}],
+            "end_rf_off": False,
+            "end_power_supply_off": False,
+            "power_supply_max_voltage": 5,
+            "power_supply_max_current": 1,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sequence_path = Path(temp_dir) / "ablauf.json"
+            sequence_path.write_text(__import__("json").dumps(content), encoding="utf-8")
+
+            config = _load_sequence_config(sequence_path)
+
+        self.assertEqual(config.devices, {"DMM1": "GPIB0::2::INSTR"})
+        self.assertEqual(config.repeat, 2)
+        self.assertEqual(config.steps, [SequenceStep("DMM1", "dmm_read", {})])
+        self.assertEqual(config.variables[0].name, "value")
+        self.assertFalse(config.end_rf_off)
+
+    def test_custom_sequence_stops_on_step_error_and_cleans_up_generator(self) -> None:
+        generator = FakeInstrument(query_responses={"*IDN?": "Rohde&Schwarz,SMIQ03B,123,1.0", ":SOUR:FREQ:CW?": "100000000", ":SOUR:POW?": "-30", ":OUTP?": "1"})
+
+        def failing_write(command: str) -> None:
+            if command == ":SOUR:FREQ:CW 100 MHz":
+                raise RuntimeError("generator failed")
+            generator.writes.append(command)
+
+        generator.write = failing_write  # type: ignore[method-assign]
+        result = run_custom_sequence(
+            {"Generator1": generator},  # type: ignore[dict-item]
+            CustomSequenceConfig(
+                devices={"Generator1": generator.address},
+                steps=[SequenceStep("Generator1", "generator_set_frequency", {"frequency": "100 MHz", "power": "-30 dBm", "max_power_dbm": "0"})],
+            ),
+        )
+
+        self.assertEqual(result.error_count, 1)
+        self.assertIn(":OUTP OFF", generator.writes)
+        self.assertIn("generator failed", result.csv_content)
 
     def test_frequency_sweep_rejects_power_above_limit_before_writes(self) -> None:
         generator = FakeInstrument(query_responses={"*IDN?": "Rohde&Schwarz,SMIQ03B,123,1.0"})

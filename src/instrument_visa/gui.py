@@ -6,6 +6,7 @@ import os
 import queue
 import threading
 import tkinter as tk
+from dataclasses import asdict
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
@@ -32,7 +33,10 @@ from .excel_export import append_result
 from .logging_utils import setup_logging
 from .profiles import UNKNOWN_PROFILE, DeviceProfile, detect_profile, hmp_channel_count
 from .sequence import (
+    CustomSequenceConfig,
     FrequencySweepConfig,
+    SequenceStep,
+    SequenceVariable,
     TimedSwitchConfig,
     VoltageSweepConfig,
     frequency_points,
@@ -40,6 +44,7 @@ from .sequence import (
     parse_dbm,
     parse_voltage,
     run_frequency_sweep,
+    run_custom_sequence,
     run_timed_switch,
     run_voltage_sweep,
     voltage_points,
@@ -49,6 +54,36 @@ from .visa_client import VisaInstrument, list_resources
 
 DEFAULT_ADDRESS = "USB0::0x0957::0x1796::MY58104189::0::INSTR"
 SETTINGS_PATH = Path("gui_settings.json")
+SCOPE_MEASUREMENTS = ("Vpp", "Vrms", "Frequency", "Period", "Vmax", "Vmin")
+ON_OFF_VALUES = ("ON", "OFF")
+CHANNEL_VALUES = ("1", "2", "3", "4")
+POINT_MODE_VALUES = ("RAW", "NORMAL", "MAXIMUM")
+CUSTOM_SEQUENCE_ACTIONS = (
+    ("Signalgenerator: Frequenz setzen", "generator_set_frequency", ("device", "frequency", "power", "max_power_dbm", "rf")),
+    ("Signalgenerator: Pegel setzen", "generator_set_power", ("device", "power", "max_power_dbm", "rf", "rf_off_before_change")),
+    ("Signalgenerator: RF ein/aus", "generator_rf", ("device", "enabled")),
+    ("Netzgerät: Spannung/Strom setzen", "power_supply_set", ("device", "voltage", "current", "channel", "output")),
+    ("Netzgerät: Kanal ein/aus", "power_supply_output", ("device", "enabled", "channel")),
+    ("Netzgerät: Master ein/aus", "power_supply_master_output", ("device", "enabled", "channel")),
+    ("Multimeter: Messwert lesen", "dmm_read", ("device",)),
+    ("Oszilloskop: Messwert lesen", "scope_measure", ("device", "measurement", "channel")),
+    ("Oszilloskop/Spektrum: Kurve erfassen", "capture_waveform", ("device", "channels", "point_mode")),
+    ("Screenshot erfassen", "capture_screenshot", ("device",)),
+    ("Warten", "wait", ("device", "seconds")),
+)
+CUSTOM_SEQUENCE_FILE_VERSION = 1
+CUSTOM_SEQUENCE_EXAMPLES = (
+    ("Multimeter getimt", "timed_dmm"),
+    ("Oszilloskop getimt", "timed_scope"),
+    ("RF schalten", "rf_switch"),
+    ("Signalgenerator + Multimeter", "generator_dmm"),
+    ("Signalgenerator + Oszilloskop", "generator_scope"),
+    ("Signalgenerator + Spektrumanalysator", "generator_spectrum"),
+    ("Netzgerät + Multimeter", "supply_dmm"),
+    ("Netzgerät + Oszilloskop", "supply_scope"),
+    ("Netzgerät schalten", "supply_switch"),
+)
+SEQUENCE_DEVICE_ROLES = ("Multimeter", "Netzgerät", "Oszilloskop", "Signalgenerator", "Spektrumanalysator", "Netzwerkanalysator", "Gerät")
 
 
 class InstrumentVisaApp(tk.Tk):
@@ -105,6 +140,32 @@ class InstrumentVisaApp(tk.Tk):
         self.sequence_settle_var = tk.StringVar(value=str(self.settings.get("sequence_settle", "0.5")))
         self.sequence_measurement_mode_var = tk.StringVar(value=self.settings.get("sequence_measurement_mode", "DMM"))
         self.sequence_rf_off_at_end_var = tk.BooleanVar(value=bool(self.settings.get("sequence_rf_off_at_end", True)))
+        self.custom_sequence_steps: list[SequenceStep] = [self._step_from_settings(step) for step in self.settings.get("custom_sequence_steps", []) if isinstance(step, dict)]
+        self.custom_sequence_devices: dict[str, str] = {str(name): str(address) for name, address in self.settings.get("custom_sequence_devices", {}).items()} if isinstance(self.settings.get("custom_sequence_devices", {}), dict) else {}
+        self.custom_sequence_repeat_var = tk.StringVar(value=str(self.settings.get("custom_sequence_repeat", "1")))
+        self.custom_sequence_pause_var = tk.StringVar(value=str(self.settings.get("custom_sequence_pause", "0")))
+        self.custom_sequence_variable_name_var = tk.StringVar(value=self.settings.get("custom_sequence_variable_name", "frequency"))
+        self.custom_sequence_variable_unit_var = tk.StringVar(value=self.settings.get("custom_sequence_variable_unit", "frequency"))
+        self.custom_sequence_variable_start_var = tk.StringVar(value=self.settings.get("custom_sequence_variable_start", "100 MHz"))
+        self.custom_sequence_variable_step_var = tk.StringVar(value=self.settings.get("custom_sequence_variable_step", "1 MHz"))
+        self.custom_sequence_end_rf_off_var = tk.BooleanVar(value=bool(self.settings.get("custom_sequence_end_rf_off", True)))
+        self.custom_sequence_end_supply_off_var = tk.BooleanVar(value=bool(self.settings.get("custom_sequence_end_supply_off", False)))
+        self.custom_sequence_window: tk.Toplevel | None = None
+        self.custom_sequence_tree: ttk.Treeview | None = None
+        self.custom_sequence_device_tree: ttk.Treeview | None = None
+        self.custom_sequence_device_select_var: tk.StringVar | None = None
+        self.custom_sequence_device_select_combo: ttk.Combobox | None = None
+        self.custom_sequence_device_select_map: dict[str, str] = {}
+        self.custom_sequence_device_name_var: tk.StringVar | None = None
+        self.custom_sequence_device_address_var: tk.StringVar | None = None
+        self.custom_sequence_device_role_var: tk.StringVar | None = None
+        self.custom_sequence_action_var: tk.StringVar | None = None
+        self.custom_sequence_example_var: tk.StringVar | None = None
+        self.custom_sequence_param_vars: dict[str, tk.StringVar] = {}
+        self.custom_sequence_param_labels: dict[str, ttk.Label] = {}
+        self.custom_sequence_param_widgets: dict[str, tk.Widget] = {}
+        self.custom_sequence_edit_index: int | None = None
+        self.custom_sequence_step_button: ttk.Button | None = None
         self.switch_source_type_var = tk.StringVar(value=self.settings.get("switch_source_type", "Signalgenerator"))
         self.switch_address_var = tk.StringVar(value=self.settings.get("switch_address", self.address_var.get()))
         self.switch_on_s_var = tk.StringVar(value=str(self.settings.get("switch_on_s", "1")))
@@ -128,6 +189,7 @@ class InstrumentVisaApp(tk.Tk):
         self._sequence_stop_widgets: list[tk.Widget] = []
         self._switch_widgets: list[tk.Widget] = []
         self._switch_stop_widgets: list[tk.Widget] = []
+        self._custom_sequence_widgets: list[tk.Widget] = []
         self._device_sections: dict[str, tk.Widget] = {}
         self._power_supply_channel_spinbox: ttk.Spinbox | None = None
         self.timed_stop_event = threading.Event()
@@ -239,7 +301,7 @@ class InstrumentVisaApp(tk.Tk):
         measurement_combo = ttk.Combobox(
             scope_measurement,
             textvariable=self.measurement_var,
-            values=("Vpp", "Vrms", "Frequency", "Period", "Vmax", "Vmin"),
+            values=SCOPE_MEASUREMENTS,
             width=11,
             state="readonly",
         )
@@ -269,7 +331,7 @@ class InstrumentVisaApp(tk.Tk):
         point_mode_combo = ttk.Combobox(
             waveform_options,
             textvariable=self.point_mode_var,
-            values=("RAW", "NORMAL", "MAXIMUM"),
+            values=POINT_MODE_VALUES,
             width=10,
             state="readonly",
         )
@@ -283,6 +345,7 @@ class InstrumentVisaApp(tk.Tk):
 
         timed = ttk.LabelFrame(measurement_area, text="Getimtes Messen")
         timed.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        timed.grid_remove()
 
         timed_controls = ttk.Frame(timed)
         timed_controls.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
@@ -400,69 +463,13 @@ class InstrumentVisaApp(tk.Tk):
         sequence.columnconfigure(1, weight=1)
         sequence.columnconfigure(3, weight=1)
 
-        ttk.Label(sequence, text="Quellgerät").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 4))
-        sequence_source_type_combo = ttk.Combobox(sequence, textvariable=self.sequence_source_type_var, values=("Signalgenerator", "Netzgerät"), width=16, state="readonly")
-        sequence_source_type_combo.grid(row=0, column=1, sticky="ew", padx=8, pady=(8, 4))
-        ttk.Label(sequence, text="Quell-Adresse").grid(row=0, column=2, sticky="w", padx=8, pady=(8, 4))
-        sequence_generator_entry = ttk.Entry(sequence, textvariable=self.sequence_generator_address_var)
-        sequence_generator_entry.grid(row=0, column=3, sticky="ew", padx=8, pady=(8, 4))
-        sequence_generator_current_button = ttk.Button(sequence, text="aktuelle Adresse", command=self.use_current_address_as_sequence_generator)
-        sequence_generator_current_button.grid(row=0, column=4, sticky="ew", padx=8, pady=(8, 4))
-
-        ttk.Label(sequence, text="Messgerät-Adresse").grid(row=1, column=0, sticky="w", padx=8, pady=4)
-        sequence_measurement_entry = ttk.Entry(sequence, textvariable=self.sequence_measurement_address_var)
-        sequence_measurement_entry.grid(row=1, column=1, columnspan=3, sticky="ew", padx=8, pady=4)
-        sequence_measurement_current_button = ttk.Button(sequence, text="aktuelle Adresse", command=self.use_current_address_as_sequence_measurement)
-        sequence_measurement_current_button.grid(row=1, column=4, sticky="ew", padx=8, pady=4)
-
-        ttk.Label(sequence, text="Generator Start").grid(row=2, column=0, sticky="w", padx=8, pady=4)
-        sequence_start_entry = ttk.Entry(sequence, textvariable=self.sequence_start_frequency_var, width=12)
-        sequence_start_entry.grid(row=2, column=1, sticky="ew", padx=8, pady=4)
-        ttk.Label(sequence, text="Stop").grid(row=2, column=2, sticky="w", padx=8, pady=4)
-        sequence_stop_entry = ttk.Entry(sequence, textvariable=self.sequence_stop_frequency_var, width=12)
-        sequence_stop_entry.grid(row=2, column=3, sticky="ew", padx=8, pady=4)
-        ttk.Label(sequence, text="Schritt").grid(row=2, column=4, sticky="w", padx=8, pady=4)
-        sequence_step_entry = ttk.Entry(sequence, textvariable=self.sequence_step_frequency_var, width=12)
-        sequence_step_entry.grid(row=2, column=5, sticky="ew", padx=8, pady=4)
-
-        ttk.Label(sequence, text="Generator Pegel").grid(row=3, column=0, sticky="w", padx=8, pady=4)
-        sequence_power_entry = ttk.Entry(sequence, textvariable=self.sequence_power_var, width=12)
-        sequence_power_entry.grid(row=3, column=1, sticky="ew", padx=8, pady=4)
-        ttk.Label(sequence, text="Netzteil Kanal").grid(row=3, column=2, sticky="w", padx=8, pady=4)
-        sequence_supply_channel_spinbox = ttk.Spinbox(sequence, from_=1, to=4, textvariable=self.sequence_supply_channel_var, width=4)
-        sequence_supply_channel_spinbox.grid(row=3, column=3, sticky="ew", padx=8, pady=4)
-
-        ttk.Label(sequence, text="Netzteil Start").grid(row=4, column=0, sticky="w", padx=8, pady=4)
-        sequence_voltage_start_entry = ttk.Entry(sequence, textvariable=self.sequence_start_voltage_var, width=12)
-        sequence_voltage_start_entry.grid(row=4, column=1, sticky="ew", padx=8, pady=4)
-        ttk.Label(sequence, text="Stop").grid(row=4, column=2, sticky="w", padx=8, pady=4)
-        sequence_voltage_stop_entry = ttk.Entry(sequence, textvariable=self.sequence_stop_voltage_var, width=12)
-        sequence_voltage_stop_entry.grid(row=4, column=3, sticky="ew", padx=8, pady=4)
-        ttk.Label(sequence, text="Schritt").grid(row=4, column=4, sticky="w", padx=8, pady=4)
-        sequence_voltage_step_entry = ttk.Entry(sequence, textvariable=self.sequence_step_voltage_var, width=12)
-        sequence_voltage_step_entry.grid(row=4, column=5, sticky="ew", padx=8, pady=4)
-
-        ttk.Label(sequence, text="Stromlimit").grid(row=5, column=0, sticky="w", padx=8, pady=4)
-        sequence_current_limit_entry = ttk.Entry(sequence, textvariable=self.sequence_current_limit_var, width=12)
-        sequence_current_limit_entry.grid(row=5, column=1, sticky="ew", padx=8, pady=4)
-        ttk.Label(sequence, text="Wartezeit [s]").grid(row=5, column=2, sticky="w", padx=8, pady=4)
-        sequence_settle_entry = ttk.Entry(sequence, textvariable=self.sequence_settle_var, width=8)
-        sequence_settle_entry.grid(row=5, column=3, sticky="ew", padx=8, pady=4)
-        ttk.Label(sequence, text="Messart").grid(row=5, column=4, sticky="w", padx=8, pady=4)
-        sequence_mode_combo = ttk.Combobox(sequence, textvariable=self.sequence_measurement_mode_var, values=("DMM", "Scope"), width=8, state="readonly")
-        sequence_mode_combo.grid(row=5, column=5, sticky="ew", padx=8, pady=4)
-
-        sequence_rf_off_check = ttk.Checkbutton(sequence, text="RF am Ende aus", variable=self.sequence_rf_off_at_end_var)
-        sequence_rf_off_check.grid(row=6, column=0, columnspan=2, sticky="w", padx=8, pady=(4, 8))
-        sequence_preview_button = ttk.Button(sequence, text="Vorschau", command=self.preview_sequence)
-        sequence_preview_button.grid(row=6, column=3, sticky="ew", padx=8, pady=(4, 8))
-        sequence_start_button = ttk.Button(sequence, text="Ablauf starten", command=self.start_sequence)
-        sequence_start_button.grid(row=6, column=4, sticky="ew", padx=8, pady=(4, 8))
-        sequence_stop_button = ttk.Button(sequence, text="Stop", command=self.stop_sequence)
-        sequence_stop_button.grid(row=6, column=5, sticky="ew", padx=8, pady=(4, 8))
+        ttk.Label(sequence, text="Komplexe Mess- und Schaltabläufe werden im freien Editor erstellt.").grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 4))
+        custom_sequence_button = ttk.Button(sequence, text="Freier Ablauf-Editor", command=self.open_custom_sequence_window)
+        custom_sequence_button.grid(row=1, column=0, sticky="ew", padx=8, pady=(4, 8))
 
         timed_switch = ttk.LabelFrame(controls_frame, text="Getimtes Schalten")
         timed_switch.grid(row=5, column=0, sticky="ew", padx=12, pady=6)
+        timed_switch.grid_remove()
         timed_switch.columnconfigure(1, weight=1)
         timed_switch.columnconfigure(3, weight=1)
         ttk.Label(timed_switch, text="Quellgerät").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 4))
@@ -539,27 +546,9 @@ class InstrumentVisaApp(tk.Tk):
             "power_supply": power_supply,
         }
         self._sequence_widgets = [
-            sequence_source_type_combo,
-            sequence_generator_entry,
-            sequence_generator_current_button,
-            sequence_measurement_entry,
-            sequence_measurement_current_button,
-            sequence_start_entry,
-            sequence_stop_entry,
-            sequence_step_entry,
-            sequence_power_entry,
-            sequence_supply_channel_spinbox,
-            sequence_voltage_start_entry,
-            sequence_voltage_stop_entry,
-            sequence_voltage_step_entry,
-            sequence_current_limit_entry,
-            sequence_settle_entry,
-            sequence_mode_combo,
-            sequence_rf_off_check,
-            sequence_preview_button,
-            sequence_start_button,
+            custom_sequence_button,
         ]
-        self._sequence_stop_widgets = [sequence_stop_button]
+        self._sequence_stop_widgets = []
         self._switch_widgets = [
             switch_source_combo,
             switch_address_entry,
@@ -661,6 +650,780 @@ class InstrumentVisaApp(tk.Tk):
 
     def use_current_address_as_switch_source(self) -> None:
         self.switch_address_var.set(self.address_var.get().strip())
+
+    def open_custom_sequence_window(self) -> None:
+        if self.custom_sequence_window is not None and self.custom_sequence_window.winfo_exists():
+            self.custom_sequence_window.lift()
+            return
+        window = tk.Toplevel(self)
+        self.custom_sequence_window = window
+        window.title("Freier Ablauf-Editor")
+        window.geometry("1280x820")
+        window.minsize(1100, 740)
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(1, weight=1)
+
+        settings = ttk.LabelFrame(window, text="Durchlauf")
+        settings.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
+        for column in (1, 3, 5, 7):
+            settings.columnconfigure(column, weight=1)
+        ttk.Label(settings, text="Wiederholungen").grid(row=0, column=0, sticky="w", padx=8, pady=8)
+        ttk.Entry(settings, textvariable=self.custom_sequence_repeat_var, width=8).grid(row=0, column=1, sticky="ew", padx=8, pady=8)
+        ttk.Label(settings, text="Pause [s]").grid(row=0, column=2, sticky="w", padx=8, pady=8)
+        ttk.Entry(settings, textvariable=self.custom_sequence_pause_var, width=8).grid(row=0, column=3, sticky="ew", padx=8, pady=8)
+        ttk.Label(settings, text="Variable").grid(row=0, column=4, sticky="w", padx=8, pady=8)
+        ttk.Entry(settings, textvariable=self.custom_sequence_variable_name_var, width=12).grid(row=0, column=5, sticky="ew", padx=8, pady=8)
+        unit_combo = ttk.Combobox(settings, textvariable=self.custom_sequence_variable_unit_var, values=("frequency", "voltage", "number"), state="readonly", width=10)
+        unit_combo.grid(row=0, column=6, sticky="ew", padx=8, pady=8)
+        unit_combo.bind("<<ComboboxSelected>>", lambda _event: self._apply_custom_sequence_variable_unit_defaults())
+        ttk.Label(settings, text="Start").grid(row=1, column=0, sticky="w", padx=8, pady=(0, 8))
+        ttk.Entry(settings, textvariable=self.custom_sequence_variable_start_var, width=12).grid(row=1, column=1, sticky="ew", padx=8, pady=(0, 8))
+        ttk.Label(settings, text="Schritt").grid(row=1, column=2, sticky="w", padx=8, pady=(0, 8))
+        ttk.Entry(settings, textvariable=self.custom_sequence_variable_step_var, width=12).grid(row=1, column=3, sticky="ew", padx=8, pady=(0, 8))
+        ttk.Checkbutton(settings, text="RF am Ende aus", variable=self.custom_sequence_end_rf_off_var).grid(row=1, column=4, sticky="w", padx=8, pady=(0, 8))
+        ttk.Checkbutton(settings, text="Netzgerät am Ende aus", variable=self.custom_sequence_end_supply_off_var).grid(row=1, column=5, columnspan=2, sticky="w", padx=8, pady=(0, 8))
+
+        body = ttk.Frame(window)
+        body.grid(row=1, column=0, sticky="nsew", padx=12, pady=6)
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, weight=2)
+        body.rowconfigure(0, weight=1)
+
+        left = ttk.Frame(body)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left.columnconfigure(0, weight=1)
+        left.rowconfigure(0, weight=1)
+        left_canvas = tk.Canvas(left, highlightthickness=0)
+        left_scrollbar = ttk.Scrollbar(left, orient="vertical", command=left_canvas.yview)
+        left_canvas.grid(row=0, column=0, sticky="nsew")
+        left_scrollbar.grid(row=0, column=1, sticky="ns")
+        left_content = ttk.Frame(left_canvas)
+        left_content.columnconfigure(0, weight=1)
+        left_window = left_canvas.create_window((0, 0), window=left_content, anchor="nw")
+        left_canvas.configure(yscrollcommand=left_scrollbar.set)
+        left_content.bind("<Configure>", lambda event: left_canvas.configure(scrollregion=left_canvas.bbox("all")))
+        left_canvas.bind("<Configure>", lambda event: left_canvas.itemconfigure(left_window, width=event.width))
+        left.bind("<Enter>", lambda event: left_canvas.bind_all("<MouseWheel>", lambda wheel_event: self._scroll_controls_if_needed(left_canvas, wheel_event)))
+        left.bind("<Leave>", lambda event: left_canvas.unbind_all("<MouseWheel>"))
+        self._build_custom_sequence_device_panel(left_content)
+        self._build_custom_sequence_step_panel(left_content)
+
+        right = ttk.LabelFrame(body, text="Ablauf-Liste")
+        right.grid(row=0, column=1, sticky="nsew")
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(0, weight=1)
+        self.custom_sequence_tree = ttk.Treeview(right, columns=("nr", "device", "action", "params"), show="headings", height=16)
+        for column, text, width in (("nr", "Nr.", 50), ("device", "Gerät", 140), ("action", "Aktion", 190), ("params", "Parameter", 420)):
+            self.custom_sequence_tree.heading(column, text=text)
+            self.custom_sequence_tree.column(column, width=width, anchor="w")
+        self.custom_sequence_tree.grid(row=0, column=0, sticky="nsew", padx=(8, 0), pady=8)
+        self.custom_sequence_tree.bind("<Double-1>", self._edit_custom_sequence_step_from_event)
+        tree_scrollbar = ttk.Scrollbar(right, orient="vertical", command=self.custom_sequence_tree.yview)
+        tree_scrollbar.grid(row=0, column=1, sticky="ns", padx=(0, 8), pady=8)
+        self.custom_sequence_tree.configure(yscrollcommand=tree_scrollbar.set)
+        step_buttons = ttk.Frame(right)
+        step_buttons.grid(row=1, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 8))
+        ttk.Button(step_buttons, text="Hoch", command=lambda: self._move_custom_sequence_step(-1)).pack(side="left", padx=(0, 8))
+        ttk.Button(step_buttons, text="Runter", command=lambda: self._move_custom_sequence_step(1)).pack(side="left", padx=(0, 8))
+        ttk.Button(step_buttons, text="Entfernen", command=self._remove_custom_sequence_step).pack(side="left", padx=(0, 8))
+        ttk.Button(step_buttons, text="Leeren", command=self._clear_custom_sequence_steps).pack(side="left", padx=(0, 8))
+        ttk.Button(step_buttons, text="Bearbeiten", command=self._edit_selected_custom_sequence_step).pack(side="left", padx=(0, 8))
+
+        footer = ttk.Frame(window)
+        footer.grid(row=2, column=0, sticky="ew", padx=12, pady=(6, 12))
+        footer.columnconfigure(1, weight=1)
+        self.custom_sequence_example_var = tk.StringVar(value=CUSTOM_SEQUENCE_EXAMPLES[0][0])
+        ttk.Label(footer, text="Beispiel").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=(0, 6))
+        example_combo = ttk.Combobox(footer, textvariable=self.custom_sequence_example_var, values=tuple(label for label, _key in CUSTOM_SEQUENCE_EXAMPLES), state="readonly", width=24)
+        example_combo.grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=(0, 6))
+        ttk.Button(footer, text="Laden", command=self.load_selected_custom_sequence_example).grid(row=0, column=2, sticky="ew", padx=(0, 8), pady=(0, 6))
+        ttk.Button(footer, text="Import", command=self.import_custom_sequence).grid(row=0, column=3, sticky="ew", padx=(0, 8), pady=(0, 6))
+        ttk.Button(footer, text="Export", command=self.export_custom_sequence).grid(row=0, column=4, sticky="ew", padx=(0, 8), pady=(0, 6))
+        ttk.Button(footer, text="Vorschau", command=self.preview_custom_sequence).grid(row=1, column=0, sticky="ew", padx=(0, 8))
+        ttk.Button(footer, text="Ablauf starten", command=self.start_custom_sequence).grid(row=1, column=1, sticky="ew", padx=(0, 8))
+        ttk.Button(footer, text="Stop", command=self.stop_sequence).grid(row=1, column=2, sticky="ew", padx=(0, 8))
+        ttk.Button(footer, text="Schließen", command=window.destroy).grid(row=1, column=4, sticky="ew")
+        self._refresh_custom_sequence_device_tree()
+        self._refresh_custom_sequence_tree()
+
+    def _build_custom_sequence_device_panel(self, parent: ttk.Frame) -> None:
+        devices = ttk.LabelFrame(parent, text="Geräte")
+        devices.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        devices.columnconfigure(1, weight=1)
+        self.custom_sequence_device_select_var = tk.StringVar(value="")
+        self.custom_sequence_device_name_var = tk.StringVar(value="Signalgenerator1")
+        self.custom_sequence_device_address_var = tk.StringVar(value=self.address_var.get().strip())
+        self.custom_sequence_device_role_var = tk.StringVar(value="Signalgenerator")
+        ttk.Label(devices, text="Gefundenes Gerät").grid(row=0, column=0, sticky="w", padx=8, pady=8)
+        self.custom_sequence_device_select_combo = ttk.Combobox(devices, textvariable=self.custom_sequence_device_select_var, state="readonly")
+        self.custom_sequence_device_select_combo.grid(row=0, column=1, sticky="ew", padx=8, pady=8)
+        self.custom_sequence_device_select_combo.bind("<<ComboboxSelected>>", self._apply_selected_resource_as_custom_sequence_device)
+        ttk.Button(devices, text="übernehmen", command=self._apply_selected_resource_as_custom_sequence_device).grid(row=0, column=2, sticky="ew", padx=8, pady=8)
+        ttk.Label(devices, text="Gerätetyp").grid(row=1, column=0, sticky="w", padx=8, pady=(0, 8))
+        role_combo = ttk.Combobox(devices, textvariable=self.custom_sequence_device_role_var, values=SEQUENCE_DEVICE_ROLES, state="readonly", width=18)
+        role_combo.grid(row=1, column=1, sticky="ew", padx=8, pady=(0, 8))
+        role_combo.bind("<<ComboboxSelected>>", lambda _event: self._apply_custom_sequence_device_role())
+        ttk.Label(devices, text="Name").grid(row=2, column=0, sticky="w", padx=8, pady=(0, 8))
+        ttk.Entry(devices, textvariable=self.custom_sequence_device_name_var, width=14).grid(row=2, column=1, sticky="ew", padx=8, pady=(0, 8))
+        ttk.Label(devices, text="Adresse").grid(row=3, column=0, sticky="w", padx=8, pady=(0, 8))
+        ttk.Entry(devices, textvariable=self.custom_sequence_device_address_var).grid(row=3, column=1, sticky="ew", padx=8, pady=(0, 8))
+        ttk.Button(devices, text="aktuelle Adresse", command=lambda: self.custom_sequence_device_address_var.set(self.address_var.get().strip()) if self.custom_sequence_device_address_var else None).grid(row=3, column=2, sticky="ew", padx=8, pady=(0, 8))
+        ttk.Button(devices, text="Gerät hinzufügen", command=self._add_custom_sequence_device).grid(row=4, column=1, sticky="ew", padx=8, pady=(0, 8))
+        ttk.Button(devices, text="Gerät entfernen", command=self._remove_custom_sequence_device).grid(row=4, column=2, sticky="ew", padx=8, pady=(0, 8))
+        self.custom_sequence_device_tree = ttk.Treeview(devices, columns=("name", "address"), show="headings", height=4)
+        self.custom_sequence_device_tree.heading("name", text="Name")
+        self.custom_sequence_device_tree.heading("address", text="Adresse")
+        self.custom_sequence_device_tree.column("name", width=110)
+        self.custom_sequence_device_tree.column("address", width=260)
+        self.custom_sequence_device_tree.grid(row=5, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        self._refresh_custom_sequence_resource_combo()
+
+    def _build_custom_sequence_step_panel(self, parent: ttk.Frame) -> None:
+        steps = ttk.LabelFrame(parent, text="Schritt hinzufügen")
+        steps.grid(row=1, column=0, sticky="nsew")
+        steps.columnconfigure(1, weight=1)
+        action_values = tuple(label for label, _action, _params in CUSTOM_SEQUENCE_ACTIONS)
+        self.custom_sequence_action_var = tk.StringVar(value=action_values[0])
+        ttk.Label(steps, text="Aktion").grid(row=0, column=0, sticky="w", padx=8, pady=8)
+        action_combo = ttk.Combobox(steps, textvariable=self.custom_sequence_action_var, values=action_values, state="readonly")
+        action_combo.grid(row=0, column=1, sticky="ew", padx=8, pady=8)
+        action_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_custom_sequence_param_defaults())
+        self.custom_sequence_param_vars = {
+            "device": tk.StringVar(value="Signalgenerator1"),
+            "value1": tk.StringVar(value="${frequency}"),
+            "value2": tk.StringVar(value="-30 dBm"),
+            "value3": tk.StringVar(value="0"),
+            "value4": tk.StringVar(value="1"),
+        }
+        for row, (label, key) in enumerate((("Gerät", "device"), ("Wert 1", "value1"), ("Wert 2", "value2"), ("Wert 3", "value3"), ("Wert 4", "value4")), start=1):
+            label_widget = ttk.Label(steps, text=label)
+            label_widget.grid(row=row, column=0, sticky="w", padx=8, pady=(0, 8))
+            self.custom_sequence_param_labels[key] = label_widget
+            entry = ttk.Entry(steps, textvariable=self.custom_sequence_param_vars[key])
+            entry.grid(row=row, column=1, sticky="ew", padx=8, pady=(0, 8))
+            self.custom_sequence_param_widgets[key] = entry
+        ttk.Label(steps, text="Variablen werden mit ${name} genutzt, z. B. ${frequency}.", wraplength=360).grid(row=6, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8))
+        self.custom_sequence_step_button = ttk.Button(steps, text="Schritt hinzufügen", command=self._add_custom_sequence_step)
+        self.custom_sequence_step_button.grid(row=7, column=1, sticky="ew", padx=8, pady=(0, 8))
+        ttk.Button(steps, text="Bearbeiten abbrechen", command=self._cancel_custom_sequence_step_edit).grid(row=8, column=1, sticky="ew", padx=8, pady=(0, 8))
+        self._refresh_custom_sequence_param_defaults()
+
+    def _refresh_custom_sequence_param_defaults(self) -> None:
+        if not self.custom_sequence_action_var or not self.custom_sequence_param_vars:
+            return
+        action = self._selected_custom_sequence_action()[1]
+        defaults = {
+            "generator_set_frequency": (self._default_sequence_device_name("Signalgenerator"), "${frequency}", "-30 dBm", self.generator_max_power_var.get(), "ON"),
+            "generator_set_power": (self._default_sequence_device_name("Signalgenerator"), self.generator_power_var.get(), self.generator_max_power_var.get(), "ON", "ON"),
+            "generator_rf": (self._default_sequence_device_name("Signalgenerator"), "OFF", "", "", ""),
+            "power_supply_set": (self._default_sequence_device_name("Netzgerät"), "${voltage}", self.power_supply_current_var.get(), str(self._safe_power_supply_channel_setting()), "ON"),
+            "power_supply_output": (self._default_sequence_device_name("Netzgerät"), "OFF", str(self._safe_power_supply_channel_setting()), "", ""),
+            "power_supply_master_output": (self._default_sequence_device_name("Netzgerät"), "OFF", str(self._safe_power_supply_channel_setting()), "", ""),
+            "dmm_read": (self._default_sequence_device_name("Multimeter"), "", "", "", ""),
+            "scope_measure": (self._default_sequence_device_name("Oszilloskop"), self.measurement_var.get(), str(self.channel_var.get()), "", ""),
+            "capture_waveform": (self._default_sequence_device_name("Oszilloskop"), "1", self.point_mode_var.get(), "", ""),
+            "capture_screenshot": (self._default_sequence_device_name("Oszilloskop"), "", "", "", ""),
+            "wait": ("", "0.5", "", "", ""),
+        }.get(action, ("", "", "", "", ""))
+        for key, value in zip(("device", "value1", "value2", "value3", "value4"), defaults):
+            self.custom_sequence_param_vars[key].set(value)
+        self._refresh_custom_sequence_param_labels(action)
+        self._refresh_custom_sequence_param_widgets(action)
+
+    def _refresh_custom_sequence_param_labels(self, action: str) -> None:
+        labels = self._custom_sequence_param_labels(action)
+        for key, fallback in (("device", "Gerät"), ("value1", "Wert 1"), ("value2", "Wert 2"), ("value3", "Wert 3"), ("value4", "Wert 4")):
+            label = self.custom_sequence_param_labels.get(key)
+            if label is not None:
+                label.configure(text=labels.get(key, fallback))
+
+    def _custom_sequence_param_labels(self, action: str) -> dict[str, str]:
+        return {
+            "generator_set_frequency": {"device": "Signalgenerator", "value1": "Frequenz", "value2": "Pegel", "value3": "Max. Pegel [dBm]", "value4": "RF"},
+            "generator_set_power": {"device": "Signalgenerator", "value1": "Pegel", "value2": "Max. Pegel [dBm]", "value3": "RF", "value4": "RF vor Änderung aus"},
+            "generator_rf": {"device": "Signalgenerator", "value1": "RF"},
+            "power_supply_set": {"device": "Netzgerät", "value1": "Spannung", "value2": "Stromlimit", "value3": "Kanal", "value4": "Ausgang"},
+            "power_supply_output": {"device": "Netzgerät", "value1": "Ausgang", "value2": "Kanal"},
+            "power_supply_master_output": {"device": "Netzgerät", "value1": "Master-Ausgang", "value2": "Referenzkanal"},
+            "dmm_read": {"device": "Multimeter"},
+            "scope_measure": {"device": "Oszilloskop", "value1": "Messwert", "value2": "Kanal"},
+            "capture_waveform": {"device": "Oszilloskop/Spektrum", "value1": "Kanäle", "value2": "Punktmodus"},
+            "capture_screenshot": {"device": "Gerät"},
+            "wait": {"device": "", "value1": "Sekunden"},
+        }.get(action, {})
+
+    def _refresh_custom_sequence_param_widgets(self, action: str) -> None:
+        combo_values = self._custom_sequence_param_combo_values(action)
+        for key in ("value1", "value2", "value3", "value4"):
+            current = self.custom_sequence_param_widgets.get(key)
+            if current is None:
+                continue
+            grid_info = current.grid_info()
+            current.destroy()
+            values = combo_values.get(key)
+            if values:
+                widget = ttk.Combobox(current.master, textvariable=self.custom_sequence_param_vars[key], values=values, state="readonly")
+            else:
+                widget = ttk.Entry(current.master, textvariable=self.custom_sequence_param_vars[key])
+            widget.grid(**grid_info)
+            self.custom_sequence_param_widgets[key] = widget
+
+    def _custom_sequence_param_combo_values(self, action: str) -> dict[str, tuple[str, ...]]:
+        if action == "generator_set_frequency":
+            return {"value4": ON_OFF_VALUES}
+        if action == "generator_set_power":
+            return {"value3": ON_OFF_VALUES, "value4": ON_OFF_VALUES}
+        if action == "generator_rf":
+            return {"value1": ON_OFF_VALUES}
+        if action == "power_supply_set":
+            return {"value3": CHANNEL_VALUES, "value4": ON_OFF_VALUES}
+        if action == "power_supply_output":
+            return {"value1": ON_OFF_VALUES, "value2": CHANNEL_VALUES}
+        if action == "power_supply_master_output":
+            return {"value1": ON_OFF_VALUES, "value2": CHANNEL_VALUES}
+        if action == "scope_measure":
+            return {"value1": SCOPE_MEASUREMENTS, "value2": CHANNEL_VALUES}
+        if action == "capture_waveform":
+            return {"value2": POINT_MODE_VALUES}
+        return {}
+
+    def _apply_custom_sequence_variable_unit_defaults(self) -> None:
+        unit = self.custom_sequence_variable_unit_var.get().strip()
+        defaults = {
+            "frequency": ("frequency", "100 MHz", "1 MHz"),
+            "voltage": ("voltage", "0 V", "1 V"),
+            "number": ("value", "0", "1"),
+        }
+        name, start, step = defaults.get(unit, defaults["number"])
+        self.custom_sequence_variable_name_var.set(name)
+        self.custom_sequence_variable_start_var.set(start)
+        self.custom_sequence_variable_step_var.set(step)
+
+    def _selected_custom_sequence_action(self) -> tuple[str, str, tuple[str, ...]]:
+        selected = self.custom_sequence_action_var.get() if self.custom_sequence_action_var is not None else ""
+        for action in CUSTOM_SEQUENCE_ACTIONS:
+            if action[0] == selected:
+                return action
+        return CUSTOM_SEQUENCE_ACTIONS[0]
+
+    def _custom_sequence_action_label(self, action_key: str) -> str:
+        for label, action, _params in CUSTOM_SEQUENCE_ACTIONS:
+            if action == action_key:
+                return label
+        return CUSTOM_SEQUENCE_ACTIONS[0][0]
+
+    def _custom_sequence_action_params(self, action_key: str) -> tuple[str, ...]:
+        for _label, action, params in CUSTOM_SEQUENCE_ACTIONS:
+            if action == action_key:
+                return params
+        return CUSTOM_SEQUENCE_ACTIONS[0][2]
+
+    def _add_custom_sequence_device(self) -> None:
+        if self.custom_sequence_device_name_var is None or self.custom_sequence_device_address_var is None:
+            return
+        name = self.custom_sequence_device_name_var.get().strip()
+        address = self.custom_sequence_device_address_var.get().strip()
+        if not name or not address:
+            messagebox.showerror("Freier Ablauf", "Gerätename und Adresse dürfen nicht leer sein.")
+            return
+        self.custom_sequence_devices[name] = address
+        self._refresh_custom_sequence_device_tree()
+
+    def _refresh_custom_sequence_resource_combo(self) -> None:
+        if self.custom_sequence_device_select_combo is None or self.custom_sequence_device_select_var is None:
+            return
+        labels: list[str] = []
+        self.custom_sequence_device_select_map = {}
+        known_display_addresses = [self._display_address_for_known_device(address) for address in self._known_device_addresses()]
+        resource_addresses = list(dict.fromkeys(self.last_found_resources))
+        numbering = self._resource_numbering_for_addresses([*known_display_addresses, *resource_addresses])
+        for display_address in known_display_addresses:
+            label = self._resource_display_label(display_address, numbering)
+            labels.append(label)
+            self.custom_sequence_device_select_map[label] = display_address
+        for address in resource_addresses:
+            label = self._resource_display_label(address, numbering)
+            if label not in self.custom_sequence_device_select_map:
+                labels.append(label)
+            self.custom_sequence_device_select_map[label] = address
+        self.custom_sequence_device_select_combo.configure(values=labels)
+        if labels and not self.custom_sequence_device_select_var.get():
+            self.custom_sequence_device_select_var.set(labels[0])
+
+    def _apply_selected_resource_as_custom_sequence_device(self, event: tk.Event | None = None) -> None:
+        if self.custom_sequence_device_select_var is None or self.custom_sequence_device_address_var is None or self.custom_sequence_device_name_var is None:
+            return
+        label = self.custom_sequence_device_select_var.get().strip()
+        address = self.custom_sequence_device_select_map.get(label, label)
+        if not address:
+            return
+        self.custom_sequence_device_address_var.set(address)
+        saved = self._saved_device_for_address(address)
+        role = self._sequence_role_from_saved_device(saved) if isinstance(saved, dict) else self._sequence_role_from_profile(self.current_profile)
+        if self.custom_sequence_device_role_var is not None:
+            self.custom_sequence_device_role_var.set(role)
+        self.custom_sequence_device_name_var.set(self._next_sequence_device_name(role))
+
+    def _sequence_role_from_saved_device(self, saved: dict) -> str:
+        profile = self._profile_from_settings(saved)
+        return self._sequence_role_from_profile(profile)
+
+    def _sequence_role_from_profile(self, profile: DeviceProfile) -> str:
+        device_type = profile.device_type.lower()
+        if profile.supports_signal_generator:
+            return "Signalgenerator"
+        if profile.supports_power_supply:
+            return "Netzgerät"
+        if profile.supports_dmm_read:
+            return "Multimeter"
+        if profile.supports_scope_measurements:
+            return "Oszilloskop"
+        if "spektrum" in device_type:
+            return "Spektrumanalysator"
+        if profile.supports_sparameters or "netzwerk" in device_type:
+            return "Netzwerkanalysator"
+        return profile.device_type if profile.device_type not in {"Nicht erkannt", "Unbekannt"} else "Gerät"
+
+    def _apply_custom_sequence_device_role(self) -> None:
+        if self.custom_sequence_device_role_var is None or self.custom_sequence_device_name_var is None or self.custom_sequence_device_address_var is None:
+            return
+        role = self.custom_sequence_device_role_var.get().strip()
+        self.custom_sequence_device_name_var.set(self._next_sequence_device_name(role))
+        self.custom_sequence_device_address_var.set(self._example_address(role, self.address_var.get().strip()))
+
+    def _default_sequence_device_name(self, role: str) -> str:
+        matches = [name for name in self.custom_sequence_devices if self._sequence_device_name_matches_role(name, role)]
+        return matches[0] if matches else self._next_sequence_device_name(role)
+
+    def _next_sequence_device_name(self, role: str) -> str:
+        role = self._sequence_device_role_name(role)
+        index = 1
+        while f"{role}{index}" in self.custom_sequence_devices:
+            index += 1
+        return f"{role}{index}"
+
+    def _sequence_device_name_matches_role(self, name: str, role: str) -> bool:
+        return name.lower().startswith(self._sequence_device_role_name(role).lower())
+
+    def _sequence_device_role_name(self, role: str) -> str:
+        normalized = role.strip().lower()
+        if normalized in {"dmm", "multimeter"}:
+            return "Multimeter"
+        if normalized in {"supply", "netzteil", "netzgerät"}:
+            return "Netzgerät"
+        if normalized in {"scope", "oszilloskop"}:
+            return "Oszilloskop"
+        if normalized in {"generator", "signalgenerator"}:
+            return "Signalgenerator"
+        if normalized in {"spectrum", "spektrum", "spektrumanalysator"}:
+            return "Spektrumanalysator"
+        return role.strip() or "Gerät"
+
+    def _remove_custom_sequence_device(self) -> None:
+        if self.custom_sequence_device_tree is None:
+            return
+        selected = self.custom_sequence_device_tree.selection()
+        if not selected:
+            return
+        name = self.custom_sequence_device_tree.item(selected[0], "values")[0]
+        self.custom_sequence_devices.pop(str(name), None)
+        self._refresh_custom_sequence_device_tree()
+
+    def _refresh_custom_sequence_device_tree(self) -> None:
+        if self.custom_sequence_device_tree is None:
+            return
+        self.custom_sequence_device_tree.delete(*self.custom_sequence_device_tree.get_children())
+        for name, address in self.custom_sequence_devices.items():
+            self.custom_sequence_device_tree.insert("", "end", values=(name, address))
+
+    def _add_custom_sequence_step(self) -> None:
+        try:
+            label, action, param_names = self._selected_custom_sequence_action()
+            raw_values = [self.custom_sequence_param_vars[key].get().strip() for key in ("device", "value1", "value2", "value3", "value4")]
+            values_by_name = dict(zip(param_names, raw_values))
+            device = values_by_name.pop("device", "")
+            params = {name: value for name, value in values_by_name.items() if value != ""}
+            if action != "wait" and not device:
+                raise ValueError("Bitte Gerätename für den Schritt eintragen.")
+            step = SequenceStep(device=device, action=action, params=params)
+            if self.custom_sequence_edit_index is None:
+                self.custom_sequence_steps.append(step)
+                status = f"Schritt hinzugefügt: {label}"
+            else:
+                self.custom_sequence_steps[self.custom_sequence_edit_index] = step
+                status = f"Schritt aktualisiert: {label}"
+                self.custom_sequence_edit_index = None
+                if self.custom_sequence_step_button is not None:
+                    self.custom_sequence_step_button.configure(text="Schritt hinzufügen")
+        except ValueError as exc:
+            messagebox.showerror("Freier Ablauf", str(exc))
+            return
+        self._refresh_custom_sequence_tree()
+        self.status_var.set(status)
+
+    def _cancel_custom_sequence_step_edit(self) -> None:
+        self.custom_sequence_edit_index = None
+        if self.custom_sequence_step_button is not None:
+            self.custom_sequence_step_button.configure(text="Schritt hinzufügen")
+        self._refresh_custom_sequence_param_defaults()
+        self.status_var.set("Schritt-Bearbeitung abgebrochen.")
+
+    def _refresh_custom_sequence_tree(self) -> None:
+        if self.custom_sequence_tree is None:
+            return
+        self.custom_sequence_tree.delete(*self.custom_sequence_tree.get_children())
+        for index, step in enumerate(self.custom_sequence_steps, start=1):
+            self.custom_sequence_tree.insert("", "end", iid=str(index - 1), values=(index, step.device, step.action, _format_step_params(step.params)))
+
+    def _selected_custom_sequence_step_index(self) -> int | None:
+        if self.custom_sequence_tree is None:
+            return None
+        selected = self.custom_sequence_tree.selection()
+        if not selected:
+            return None
+        return int(selected[0])
+
+    def _edit_custom_sequence_step_from_event(self, event: tk.Event) -> None:
+        if self.custom_sequence_tree is None:
+            return
+        row_id = self.custom_sequence_tree.identify_row(event.y)
+        if row_id:
+            self.custom_sequence_tree.selection_set(row_id)
+            self._edit_selected_custom_sequence_step()
+
+    def _edit_selected_custom_sequence_step(self) -> None:
+        index = self._selected_custom_sequence_step_index()
+        if index is None or index < 0 or index >= len(self.custom_sequence_steps):
+            return
+        step = self.custom_sequence_steps[index]
+        self.custom_sequence_edit_index = index
+        if self.custom_sequence_action_var is not None:
+            self.custom_sequence_action_var.set(self._custom_sequence_action_label(step.action))
+        self._refresh_custom_sequence_param_labels(step.action)
+        self._refresh_custom_sequence_param_widgets(step.action)
+        param_names = self._custom_sequence_action_params(step.action)
+        values = {"device": step.device, **{name: str(value) for name, value in step.params.items()}}
+        for key, param_name in zip(("device", "value1", "value2", "value3", "value4"), param_names):
+            self.custom_sequence_param_vars[key].set(values.get(param_name, ""))
+        for key in ("value1", "value2", "value3", "value4"):
+            if key not in dict(zip(("device", "value1", "value2", "value3", "value4"), param_names)):
+                self.custom_sequence_param_vars[key].set("")
+        if self.custom_sequence_step_button is not None:
+            self.custom_sequence_step_button.configure(text="Schritt aktualisieren")
+        self.status_var.set(f"Schritt {index + 1} wird bearbeitet.")
+
+    def _move_custom_sequence_step(self, direction: int) -> None:
+        index = self._selected_custom_sequence_step_index()
+        if index is None:
+            return
+        new_index = index + direction
+        if new_index < 0 or new_index >= len(self.custom_sequence_steps):
+            return
+        self.custom_sequence_steps[index], self.custom_sequence_steps[new_index] = self.custom_sequence_steps[new_index], self.custom_sequence_steps[index]
+        self._refresh_custom_sequence_tree()
+        if self.custom_sequence_tree is not None:
+            self.custom_sequence_tree.selection_set(str(new_index))
+
+    def _remove_custom_sequence_step(self) -> None:
+        index = self._selected_custom_sequence_step_index()
+        if index is None:
+            return
+        del self.custom_sequence_steps[index]
+        self._refresh_custom_sequence_tree()
+
+    def _clear_custom_sequence_steps(self) -> None:
+        self.custom_sequence_steps.clear()
+        self._cancel_custom_sequence_step_edit()
+        self._refresh_custom_sequence_tree()
+
+    def preview_custom_sequence(self) -> None:
+        try:
+            config = self._custom_sequence_config()
+        except ValueError as exc:
+            messagebox.showerror("Freier Ablauf", str(exc))
+            return
+        wait_s = self._custom_sequence_wait_seconds(config)
+        duration = wait_s * config.repeat + config.pause_s * max(0, config.repeat - 1)
+        variable_text = ", ".join(f"{variable.name}: {variable.start} + {variable.step}/Durchlauf" for variable in config.variables) or "keine"
+        messagebox.showinfo(
+            "Freier Ablauf",
+            f"Geräte: {len(config.devices)}\nSchritte pro Durchlauf: {len(config.steps)}\nWiederholungen: {config.repeat}\nPause zwischen Durchläufen: {config.pause_s:.3f} s\nExplizite Wartezeit pro Durchlauf: {wait_s:.3f} s\nGeschätzte Mindestdauer: {duration:.1f} s\nVariablen: {variable_text}",
+        )
+
+    def _custom_sequence_wait_seconds(self, config: CustomSequenceConfig) -> float:
+        total = 0.0
+        for step in config.steps:
+            if step.action != "wait":
+                continue
+            try:
+                total += float(str(step.params.get("seconds", "0")).replace(",", "."))
+            except ValueError:
+                pass
+        return total
+
+    def load_selected_custom_sequence_example(self) -> None:
+        selected = self.custom_sequence_example_var.get() if self.custom_sequence_example_var is not None else ""
+        for label, key in CUSTOM_SEQUENCE_EXAMPLES:
+            if label == selected:
+                self._load_custom_sequence_example(key)
+                return
+
+    def _load_custom_sequence_example(self, example: str) -> None:
+        current_address = self.address_var.get().strip()
+        generator_address = self._example_address("Signalgenerator", current_address)
+        dmm_address = self._example_address("Multimeter", current_address)
+        scope_address = self._example_address("Oszilloskop", current_address)
+        spectrum_address = self._example_address("Spektrumanalysator", current_address)
+        supply_address = self._example_address("Netzgerät", current_address)
+        if example == "timed_dmm":
+            self.custom_sequence_devices = {"Multimeter1": dmm_address}
+            self.custom_sequence_steps = [SequenceStep("Multimeter1", "dmm_read")]
+            self.custom_sequence_repeat_var.set(self.timed_count_var.get())
+            self.custom_sequence_pause_var.set(self.timed_interval_var.get())
+            self.custom_sequence_variable_name_var.set("")
+            self.custom_sequence_variable_start_var.set("")
+            self.custom_sequence_variable_step_var.set("")
+            self.status_var.set("Beispiel geladen: getimtes Multimeter-Messen")
+        elif example == "timed_scope":
+            self.custom_sequence_devices = {"Oszilloskop1": scope_address}
+            self.custom_sequence_steps = [SequenceStep("Oszilloskop1", "scope_measure", {"measurement": self.measurement_var.get(), "channel": str(self.channel_var.get())})]
+            self.custom_sequence_repeat_var.set(self.timed_count_var.get())
+            self.custom_sequence_pause_var.set(self.timed_interval_var.get())
+            self.custom_sequence_variable_name_var.set("")
+            self.custom_sequence_variable_start_var.set("")
+            self.custom_sequence_variable_step_var.set("")
+            self.status_var.set("Beispiel geladen: getimtes Oszilloskop-Messen")
+        elif example == "rf_switch":
+            self.custom_sequence_devices = {"Signalgenerator1": generator_address}
+            self.custom_sequence_steps = [
+                SequenceStep("Signalgenerator1", "generator_rf", {"enabled": "ON"}),
+                SequenceStep("", "wait", {"seconds": self.switch_on_s_var.get()}),
+                SequenceStep("Signalgenerator1", "generator_rf", {"enabled": "OFF"}),
+                SequenceStep("", "wait", {"seconds": self.switch_off_s_var.get()}),
+            ]
+            self.custom_sequence_repeat_var.set(self.switch_repetitions_var.get())
+            self.custom_sequence_pause_var.set("0")
+            self.custom_sequence_variable_name_var.set("")
+            self.custom_sequence_variable_start_var.set("")
+            self.custom_sequence_variable_step_var.set("")
+            self.custom_sequence_end_rf_off_var.set(True)
+            self.status_var.set("Beispiel geladen: RF getimt schalten")
+        elif example == "generator_dmm":
+            self.custom_sequence_devices = {"Signalgenerator1": generator_address, "Multimeter1": dmm_address}
+            self.custom_sequence_steps = [
+                SequenceStep("Signalgenerator1", "generator_set_frequency", {"frequency": "${frequency}", "power": self.generator_power_var.get(), "max_power_dbm": self.generator_max_power_var.get(), "rf": "ON"}),
+                SequenceStep("", "wait", {"seconds": "0.5"}),
+                SequenceStep("Multimeter1", "dmm_read"),
+            ]
+            self._set_custom_sequence_frequency_defaults(repeat="10")
+            self.custom_sequence_end_rf_off_var.set(True)
+            self.status_var.set("Beispiel geladen: Signalgenerator + Multimeter")
+        elif example == "generator_scope":
+            self.custom_sequence_devices = {"Signalgenerator1": generator_address, "Oszilloskop1": scope_address}
+            self.custom_sequence_steps = [
+                SequenceStep("Signalgenerator1", "generator_set_frequency", {"frequency": "${frequency}", "power": self.generator_power_var.get(), "max_power_dbm": self.generator_max_power_var.get(), "rf": "ON"}),
+                SequenceStep("", "wait", {"seconds": "0.5"}),
+                SequenceStep("Oszilloskop1", "scope_measure", {"measurement": self.measurement_var.get(), "channel": str(self.channel_var.get())}),
+            ]
+            self._set_custom_sequence_frequency_defaults(repeat="10")
+            self.custom_sequence_end_rf_off_var.set(True)
+            self.status_var.set("Beispiel geladen: Signalgenerator + Oszilloskop")
+        elif example == "supply_scope":
+            self.custom_sequence_devices = {"Netzgerät1": supply_address, "Oszilloskop1": scope_address}
+            self.custom_sequence_steps = [
+                SequenceStep("Netzgerät1", "power_supply_set", {"voltage": "${voltage}", "current": self.power_supply_current_var.get(), "channel": str(self._safe_power_supply_channel_setting()), "output": "ON"}),
+                SequenceStep("", "wait", {"seconds": "0.5"}),
+                SequenceStep("Oszilloskop1", "scope_measure", {"measurement": self.measurement_var.get(), "channel": str(self.channel_var.get())}),
+            ]
+            self._set_custom_sequence_voltage_defaults(repeat="6")
+            self.custom_sequence_end_supply_off_var.set(True)
+            self.status_var.set("Beispiel geladen: Netzgerät + Oszilloskop")
+        elif example == "generator_spectrum":
+            self.custom_sequence_devices = {"Signalgenerator1": generator_address, "Spektrumanalysator1": spectrum_address}
+            self.custom_sequence_steps = [
+                SequenceStep("Signalgenerator1", "generator_set_frequency", {"frequency": "${frequency}", "power": self.generator_power_var.get(), "max_power_dbm": self.generator_max_power_var.get(), "rf": "ON"}),
+                SequenceStep("", "wait", {"seconds": "0.5"}),
+                SequenceStep("Spektrumanalysator1", "capture_waveform", {"channels": "", "point_mode": "RAW"}),
+            ]
+            self._set_custom_sequence_frequency_defaults(repeat="10")
+            self.custom_sequence_end_rf_off_var.set(True)
+            self.status_var.set("Beispiel geladen: Signalgenerator + Spektrumanalysator")
+        elif example == "supply_dmm":
+            self.custom_sequence_devices = {"Netzgerät1": supply_address, "Multimeter1": dmm_address}
+            self.custom_sequence_steps = [
+                SequenceStep("Netzgerät1", "power_supply_set", {"voltage": "${voltage}", "current": self.power_supply_current_var.get(), "channel": str(self._safe_power_supply_channel_setting()), "output": "ON"}),
+                SequenceStep("", "wait", {"seconds": "0.5"}),
+                SequenceStep("Multimeter1", "dmm_read"),
+            ]
+            self._set_custom_sequence_voltage_defaults(repeat="6")
+            self.custom_sequence_end_supply_off_var.set(True)
+            self.status_var.set("Beispiel geladen: Netzgerät + Multimeter")
+        elif example == "supply_switch":
+            self.custom_sequence_devices = {"Netzgerät1": supply_address}
+            self.custom_sequence_steps = [
+                SequenceStep("Netzgerät1", "power_supply_output", {"enabled": "ON", "channel": str(self._safe_power_supply_channel_setting())}),
+                SequenceStep("", "wait", {"seconds": self.switch_on_s_var.get()}),
+                SequenceStep("Netzgerät1", "power_supply_output", {"enabled": "OFF", "channel": str(self._safe_power_supply_channel_setting())}),
+                SequenceStep("", "wait", {"seconds": self.switch_off_s_var.get()}),
+            ]
+            self.custom_sequence_repeat_var.set(self.switch_repetitions_var.get())
+            self.custom_sequence_pause_var.set("0")
+            self.custom_sequence_variable_name_var.set("")
+            self.custom_sequence_variable_start_var.set("")
+            self.custom_sequence_variable_step_var.set("")
+            self.custom_sequence_end_supply_off_var.set(True)
+            self.status_var.set("Beispiel geladen: Netzgerät getimt schalten")
+        else:
+            return
+        self._refresh_custom_sequence_device_tree()
+        self._refresh_custom_sequence_tree()
+
+    def _example_address(self, role: str, fallback: str) -> str:
+        for address in self._known_device_addresses():
+            saved = self._saved_device_for_address(address)
+            if isinstance(saved, dict) and self._saved_device_matches_example_role(saved, role):
+                return str(saved.get("address", address)).strip() or address
+        return fallback
+
+    def _saved_device_matches_example_role(self, saved: dict, role: str) -> bool:
+        role = role.lower()
+        device_type = str(saved.get("device_type", "")).lower()
+        if role == "signalgenerator":
+            return bool(saved.get("supports_signal_generator")) or "signalgenerator" in device_type or "generator" in device_type
+        if role in {"dmm", "multimeter"}:
+            return bool(saved.get("supports_dmm_read")) or "multimeter" in device_type or "dmm" in device_type
+        if role in {"scope", "oszilloskop"}:
+            return bool(saved.get("supports_scope_measurements")) or "oszilloskop" in device_type or "scope" in device_type
+        if role in {"spektrum", "spektrumanalysator"}:
+            return bool(saved.get("supports_waveform")) and ("spektrum" in device_type or "analysator" in device_type)
+        if role in {"netzteil", "netzgerät"}:
+            return bool(saved.get("supports_power_supply")) or "netzgerät" in device_type or "netzteil" in device_type
+        return role in device_type
+
+    def _set_custom_sequence_frequency_defaults(self, repeat: str) -> None:
+        self.custom_sequence_repeat_var.set(repeat)
+        self.custom_sequence_pause_var.set("0")
+        self.custom_sequence_variable_unit_var.set("frequency")
+        self.custom_sequence_variable_name_var.set("frequency")
+        self.custom_sequence_variable_start_var.set(self.sequence_start_frequency_var.get())
+        self.custom_sequence_variable_step_var.set(self.sequence_step_frequency_var.get())
+
+    def _set_custom_sequence_voltage_defaults(self, repeat: str) -> None:
+        self.custom_sequence_repeat_var.set(repeat)
+        self.custom_sequence_pause_var.set("0")
+        self.custom_sequence_variable_unit_var.set("voltage")
+        self.custom_sequence_variable_name_var.set("voltage")
+        self.custom_sequence_variable_start_var.set(self.sequence_start_voltage_var.get())
+        self.custom_sequence_variable_step_var.set(self.sequence_step_voltage_var.get())
+
+    def export_custom_sequence(self) -> None:
+        try:
+            data = self._custom_sequence_export_data()
+        except ValueError as exc:
+            messagebox.showerror("Ablauf exportieren", str(exc))
+            return
+        selected = filedialog.asksaveasfilename(
+            title="Ablauf exportieren",
+            defaultextension=".json",
+            filetypes=[("Ablauf-Dateien", "*.json"), ("Alle Dateien", "*.*")],
+            initialfile="ablauf.json",
+        )
+        if not selected:
+            return
+        selected_path = Path(selected)
+        try:
+            _write_sequence_data_file(selected_path, data)
+        except RuntimeError as exc:
+            messagebox.showerror("Ablauf exportieren", str(exc))
+            return
+        self.status_var.set(f"Ablauf exportiert: {selected}")
+        self._append_log(f"Ablauf exportiert: {selected}")
+
+    def import_custom_sequence(self) -> None:
+        selected = filedialog.askopenfilename(
+            title="Ablauf importieren",
+            filetypes=[("Ablauf-Dateien", "*.json"), ("Alle Dateien", "*.*")],
+        )
+        if not selected:
+            return
+        try:
+            data = _read_sequence_data_file(Path(selected))
+            self._apply_custom_sequence_import_data(data)
+        except (OSError, json.JSONDecodeError, ValueError, RuntimeError) as exc:
+            messagebox.showerror("Ablauf importieren", str(exc))
+            return
+        self.status_var.set(f"Ablauf importiert: {selected}")
+        self._append_log(f"Ablauf importiert: {selected}")
+
+    def _custom_sequence_export_data(self) -> dict:
+        config = self._custom_sequence_config()
+        return {
+            "version": CUSTOM_SEQUENCE_FILE_VERSION,
+            "repeat": config.repeat,
+            "pause_s": config.pause_s,
+            "variables": [asdict(variable) for variable in config.variables],
+            "devices": config.devices,
+            "steps": [{"device": step.device, "action": step.action, "params": step.params} for step in config.steps],
+            "end_rf_off": config.end_rf_off,
+            "end_power_supply_off": config.end_power_supply_off,
+            "power_supply_max_voltage": config.power_supply_max_voltage,
+            "power_supply_max_current": config.power_supply_max_current,
+        }
+
+    def _apply_custom_sequence_import_data(self, data: object) -> None:
+        if not isinstance(data, dict):
+            raise ValueError("Ablauf-Datei muss ein JSON-Objekt enthalten.")
+        devices = data.get("devices", {})
+        steps = data.get("steps", [])
+        variables = data.get("variables", [])
+        if not isinstance(devices, dict) or not isinstance(steps, list):
+            raise ValueError("Ablauf-Datei enthält ungültige Geräte oder Schritte.")
+        self.custom_sequence_devices = {str(name): str(address) for name, address in devices.items()}
+        imported_steps: list[SequenceStep] = []
+        for step in steps:
+            if not isinstance(step, dict):
+                raise ValueError("Ablauf-Datei enthält einen ungültigen Schritt.")
+            imported_steps.append(self._step_from_settings(step))
+        self.custom_sequence_steps = imported_steps
+        self.custom_sequence_repeat_var.set(str(data.get("repeat", "1")))
+        self.custom_sequence_pause_var.set(str(data.get("pause_s", "0")))
+        if isinstance(variables, list) and variables and isinstance(variables[0], dict):
+            variable = variables[0]
+            self.custom_sequence_variable_name_var.set(str(variable.get("name", "")))
+            self.custom_sequence_variable_unit_var.set(str(variable.get("unit", "number")))
+            self.custom_sequence_variable_start_var.set(str(variable.get("start", "")))
+            self.custom_sequence_variable_step_var.set(str(variable.get("step", "")))
+        else:
+            self.custom_sequence_variable_name_var.set("")
+            self.custom_sequence_variable_start_var.set("")
+            self.custom_sequence_variable_step_var.set("")
+        self.custom_sequence_end_rf_off_var.set(bool(data.get("end_rf_off", True)))
+        self.custom_sequence_end_supply_off_var.set(bool(data.get("end_power_supply_off", False)))
+        self.power_supply_max_voltage_var.set(str(data.get("power_supply_max_voltage", self.power_supply_max_voltage_var.get())))
+        self.power_supply_max_current_var.set(str(data.get("power_supply_max_current", self.power_supply_max_current_var.get())))
+        self._refresh_custom_sequence_device_tree()
+        self._refresh_custom_sequence_tree()
+
+    def start_custom_sequence(self) -> None:
+        if self.sequence_running:
+            messagebox.showwarning("Freier Ablauf", "Es läuft bereits ein Ablauf.")
+            return
+        if self.timed_running or self.switch_running:
+            messagebox.showwarning("Freier Ablauf", "Bitte zuerst laufende Abläufe stoppen.")
+            return
+        try:
+            config = self._custom_sequence_config()
+        except ValueError as exc:
+            messagebox.showerror("Freier Ablauf", str(exc))
+            return
+        self.sequence_stop_event.clear()
+        self.sequence_running = True
+        self._set_sequence_running(True)
+        self.status_var.set("Freier Ablauf läuft...")
+        self._append_log("Freier Ablauf läuft...")
+        self.logger.info("Freier Ablauf läuft...")
+        thread = threading.Thread(target=self._worker_target, args=(lambda: self._run_custom_sequence(config),), daemon=True)
+        thread.start()
 
     def preview_sequence(self) -> None:
         try:
@@ -1023,6 +1786,47 @@ class InstrumentVisaApp(tk.Tk):
             self.sequence_running = False
             self._messages.put(("sequence_done", ""))
 
+    def _run_custom_sequence(self, config: CustomSequenceConfig) -> str:
+        instruments: dict[str, VisaInstrument] = {}
+        try:
+            for name, address in config.devices.items():
+                instruments[name] = VisaInstrument(address, timeout_ms=10000)
+                instruments[name].open()
+            result_data = run_custom_sequence(
+                instruments,
+                config,
+                stop_requested=self.sequence_stop_event.is_set,
+                progress=lambda message: self._messages.put(("progress", message)),
+                step_result_export=lambda _device, info, result: self._export_custom_sequence_step_result(info, result),
+            )
+            first_device = next(iter(config.devices))
+            result = AcquisitionResult(kind="custom sequence", file_type="csv", content=result_data.csv_content)
+            export = append_result(self._output_path(), config.devices[first_device], result_data.device_infos[first_device].idn, result)
+            stopped_text = " gestoppt" if result_data.stopped else " abgeschlossen"
+            self.logger.info(
+                "Custom sequence exported workbook=%s sheet=%s steps=%s ok=%s errors=%s devices=%s",
+                export.workbook_path,
+                export.sheet_name,
+                result_data.actual_count,
+                result_data.ok_count,
+                result_data.error_count,
+                ",".join(config.devices),
+            )
+            return f"Freier Ablauf{stopped_text}: {export.workbook_path}\nTabellenblatt: {export.sheet_name}\nSchritte: {result_data.actual_count}\nOK: {result_data.ok_count}, Fehler: {result_data.error_count}"
+        finally:
+            for instrument in instruments.values():
+                instrument.close()
+            self.sequence_running = False
+            self._messages.put(("sequence_done", ""))
+
+    def _export_custom_sequence_step_result(self, info, result: AcquisitionResult) -> str:
+        export = append_result(self._output_path(), info.address, info.idn, result)
+        if export.artifact_path is not None:
+            return f"Datei: {export.artifact_path}"
+        if export.sheet_name is not None:
+            return f"Tabellenblatt: {export.sheet_name}"
+        return f"Export: {export.workbook_path}"
+
     def _run_timed_switch(self, config: TimedSwitchConfig, address: str) -> str:
         try:
             with VisaInstrument(address, timeout_ms=10000) as source:
@@ -1230,6 +2034,40 @@ class InstrumentVisaApp(tk.Tk):
             rf_off_at_end=self.sequence_rf_off_at_end_var.get(),
         )
 
+    def _custom_sequence_config(self) -> CustomSequenceConfig:
+        try:
+            repeat = int(self.custom_sequence_repeat_var.get())
+            pause_s = float(self.custom_sequence_pause_var.get().replace(",", "."))
+        except ValueError as exc:
+            raise ValueError("Wiederholungen müssen ganzzahlig und Pause eine Zahl sein.") from exc
+        max_voltage, max_current = self._power_supply_limits()
+        variables: list[SequenceVariable] = []
+        variable_name = self.custom_sequence_variable_name_var.get().strip()
+        variable_start = self.custom_sequence_variable_start_var.get().strip()
+        if variable_name and variable_start:
+            unit = self.custom_sequence_variable_unit_var.get().strip()
+            if unit not in {"frequency", "voltage", "number"}:
+                unit = "number"
+            variables.append(
+                SequenceVariable(
+                    name=variable_name,
+                    start=variable_start,
+                    step=self.custom_sequence_variable_step_var.get().strip(),
+                    unit=unit,  # type: ignore[arg-type]
+                )
+            )
+        return CustomSequenceConfig(
+            devices=dict(self.custom_sequence_devices),
+            steps=list(self.custom_sequence_steps),
+            repeat=repeat,
+            pause_s=pause_s,
+            variables=variables,
+            end_rf_off=self.custom_sequence_end_rf_off_var.get(),
+            end_power_supply_off=self.custom_sequence_end_supply_off_var.get(),
+            power_supply_max_voltage=max_voltage,
+            power_supply_max_current=max_current,
+        )
+
     def _sequence_supply_channel(self) -> int:
         try:
             channel = int(self.sequence_supply_channel_var.get())
@@ -1431,6 +2269,7 @@ class InstrumentVisaApp(tk.Tk):
     def _apply_resources(self, resources: list[str]) -> None:
         self.last_found_resources = list(dict.fromkeys(resources))
         self._refresh_resource_combo(resources)
+        self._refresh_custom_sequence_resource_combo()
         if not resources:
             self.status_var.set("Keine VISA-Geräte gefunden. Bekannte Geräte bleiben in der Liste.")
             return
@@ -1445,13 +2284,15 @@ class InstrumentVisaApp(tk.Tk):
         resources = self.last_found_resources if resources is None else resources
         values: list[str] = []
         self.resource_display_map = {}
-        for address in self._known_device_addresses():
-            display_address = self._display_address_for_known_device(address)
-            label = self._resource_display_label(display_address)
+        known_display_addresses = [self._display_address_for_known_device(address) for address in self._known_device_addresses()]
+        resource_addresses = list(dict.fromkeys(resources or []))
+        numbering = self._resource_numbering_for_addresses([*known_display_addresses, *resource_addresses])
+        for display_address in known_display_addresses:
+            label = self._resource_display_label(display_address, numbering)
             values.append(label)
             self.resource_display_map[label] = display_address
-        for address in dict.fromkeys(resources or []):
-            label = self._resource_display_label(address)
+        for address in resource_addresses:
+            label = self._resource_display_label(address, numbering)
             if label not in self.resource_display_map:
                 values.append(label)
             self.resource_display_map[label] = address
@@ -1459,7 +2300,7 @@ class InstrumentVisaApp(tk.Tk):
 
         current_address = self.address_var.get().strip()
         if current_address:
-            current_label = self._resource_display_label(current_address)
+            current_label = self._resource_display_label(current_address, numbering)
             if current_label in self.resource_display_map:
                 self.resource_var.set(current_label)
         elif values:
@@ -1469,16 +2310,31 @@ class InstrumentVisaApp(tk.Tk):
     def _known_device_addresses(self) -> list[str]:
         return sorted(self.saved_devices, key=lambda address: self._resource_display_label(address).lower())
 
-    def _resource_display_label(self, address: str) -> str:
+    def _resource_display_label(self, address: str, numbering: dict[str, str] | None = None) -> str:
         saved = self._saved_device_for_address(address)
         if isinstance(saved, dict):
             device_type = str(saved.get("device_type", "")).strip()
+            display_type = numbering.get(self._canonical_address(address), device_type) if numbering is not None else device_type
             manufacturer = str(saved.get("manufacturer", "")).strip()
             model_family = str(saved.get("model_family", "")).strip()
-            description = " ".join(part for part in (device_type, manufacturer, model_family) if part and part != "Unbekannt")
+            description = " ".join(part for part in (display_type, manufacturer, model_family) if part and part != "Unbekannt")
             if description:
                 return f"{description} - {address}"
         return address
+
+    def _resource_numbering_for_addresses(self, addresses: list[str]) -> dict[str, str]:
+        counters: dict[str, int] = {}
+        numbering: dict[str, str] = {}
+        for address in dict.fromkeys(addresses):
+            saved = self._saved_device_for_address(address)
+            if not isinstance(saved, dict):
+                continue
+            role = self._sequence_role_from_saved_device(saved)
+            if role == "Gerät":
+                continue
+            counters[role] = counters.get(role, 0) + 1
+            numbering[self._canonical_address(address)] = f"{role}{counters[role]}"
+        return numbering
 
     def _display_address_for_known_device(self, address: str) -> str:
         saved = self.saved_devices.get(address)
@@ -1597,6 +2453,7 @@ class InstrumentVisaApp(tk.Tk):
             "supports_power_supply": profile.supports_power_supply,
         }
         self._refresh_resource_combo(self.last_found_resources)
+        self._refresh_custom_sequence_resource_combo()
         self._save_settings()
 
     def _profile_from_settings(self, saved: dict) -> DeviceProfile:
@@ -1710,6 +2567,12 @@ class InstrumentVisaApp(tk.Tk):
             return {str(address): device for address, device in devices.items() if isinstance(device, dict)}
         return {}
 
+    def _step_from_settings(self, data: dict) -> SequenceStep:
+        params = data.get("params", {})
+        if not isinstance(params, dict):
+            params = {}
+        return SequenceStep(device=str(data.get("device", "")), action=str(data.get("action", "")), params=dict(params))
+
     def _save_settings(self) -> None:
         settings = {
             "window_geometry": self.geometry(),
@@ -1750,6 +2613,19 @@ class InstrumentVisaApp(tk.Tk):
             "sequence_settle": self.sequence_settle_var.get(),
             "sequence_measurement_mode": self.sequence_measurement_mode_var.get(),
             "sequence_rf_off_at_end": self.sequence_rf_off_at_end_var.get(),
+            "custom_sequence_devices": self.custom_sequence_devices,
+            "custom_sequence_steps": [
+                {"device": step.device, "action": step.action, "params": step.params}
+                for step in self.custom_sequence_steps
+            ],
+            "custom_sequence_repeat": self.custom_sequence_repeat_var.get(),
+            "custom_sequence_pause": self.custom_sequence_pause_var.get(),
+            "custom_sequence_variable_name": self.custom_sequence_variable_name_var.get(),
+            "custom_sequence_variable_unit": self.custom_sequence_variable_unit_var.get(),
+            "custom_sequence_variable_start": self.custom_sequence_variable_start_var.get(),
+            "custom_sequence_variable_step": self.custom_sequence_variable_step_var.get(),
+            "custom_sequence_end_rf_off": self.custom_sequence_end_rf_off_var.get(),
+            "custom_sequence_end_supply_off": self.custom_sequence_end_supply_off_var.get(),
             "switch_source_type": self.switch_source_type_var.get(),
             "switch_address": self.switch_address_var.get().strip(),
             "switch_on_s": self.switch_on_s_var.get(),
@@ -1803,6 +2679,22 @@ def _csv_rows(rows: list[list[object]]) -> str:
 
 def _generator_settings_csv(frequency: str, power: str, rf_output: str) -> str:
     return _csv_rows([["Setting", "Value"], ["Frequency", frequency], ["Power", power], ["RFOutput", rf_output]])
+
+
+def _format_step_params(params: dict[str, object]) -> str:
+    return "; ".join(f"{key}={value}" for key, value in params.items())
+
+
+def _read_sequence_data_file(path: Path) -> dict:
+    text = path.read_text(encoding="utf-8-sig")
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError("Ablauf-Datei muss ein JSON-Objekt enthalten.")
+    return data
+
+
+def _write_sequence_data_file(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def _power_supply_settings_csv(settings) -> str:
