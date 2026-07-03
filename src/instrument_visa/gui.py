@@ -40,6 +40,7 @@ from .sequence import (
     TimedSwitchConfig,
     VoltageSweepConfig,
     frequency_points,
+    parse_json_bool,
     parse_ampere,
     parse_dbm,
     parse_voltage,
@@ -1397,8 +1398,8 @@ class InstrumentVisaApp(tk.Tk):
             self.custom_sequence_variable_name_var.set("")
             self.custom_sequence_variable_start_var.set("")
             self.custom_sequence_variable_step_var.set("")
-        self.custom_sequence_end_rf_off_var.set(bool(data.get("end_rf_off", True)))
-        self.custom_sequence_end_supply_off_var.set(bool(data.get("end_power_supply_off", False)))
+        self.custom_sequence_end_rf_off_var.set(parse_json_bool(data.get("end_rf_off"), True))
+        self.custom_sequence_end_supply_off_var.set(parse_json_bool(data.get("end_power_supply_off"), False))
         self.power_supply_max_voltage_var.set(str(data.get("power_supply_max_voltage", self.power_supply_max_voltage_var.get())))
         self.power_supply_max_current_var.set(str(data.get("power_supply_max_current", self.power_supply_max_current_var.get())))
         self._refresh_custom_sequence_device_tree()

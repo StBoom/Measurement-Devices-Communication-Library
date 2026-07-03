@@ -33,6 +33,7 @@ from instrument_visa.sequence import (  # noqa: E402
     TimedSwitchConfig,
     VoltageSweepConfig,
     frequency_points,
+    parse_json_bool,
     parse_frequency_hz,
     run_custom_sequence,
     run_frequency_sweep,
@@ -542,6 +543,26 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(config.steps, [SequenceStep("DMM1", "dmm_read", {})])
         self.assertEqual(config.variables[0].name, "value")
         self.assertFalse(config.end_rf_off)
+
+    def test_cli_sequence_config_parses_boolean_strings(self) -> None:
+        content = {
+            "devices": {"DMM1": "GPIB0::2::INSTR"},
+            "steps": [{"device": "DMM1", "action": "dmm_read", "params": {}}],
+            "end_rf_off": "false",
+            "end_power_supply_off": "true",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sequence_path = Path(temp_dir) / "ablauf.json"
+            sequence_path.write_text(__import__("json").dumps(content), encoding="utf-8")
+
+            config = _load_sequence_config(sequence_path)
+
+        self.assertFalse(config.end_rf_off)
+        self.assertTrue(config.end_power_supply_off)
+
+    def test_cli_sequence_config_rejects_invalid_boolean_strings(self) -> None:
+        with self.assertRaises(ValueError):
+            parse_json_bool("maybe", True)
 
     def test_custom_sequence_stops_on_step_error_and_cleans_up_generator(self) -> None:
         generator = FakeInstrument(query_responses={"*IDN?": "Rohde&Schwarz,SMIQ03B,123,1.0", ":SOUR:FREQ:CW?": "100000000", ":SOUR:POW?": "-30", ":OUTP?": "1"})

@@ -18,7 +18,7 @@ from .acquisition import (
 from .config import load_config
 from .excel_export import append_result
 from .logging_utils import setup_logging
-from .sequence import CustomSequenceConfig, SequenceStep, SequenceVariable, run_custom_sequence
+from .sequence import CustomSequenceConfig, SequenceStep, SequenceVariable, parse_json_bool, run_custom_sequence
 from .visa_client import VisaInstrument, list_resources
 
 
@@ -201,8 +201,8 @@ def _load_sequence_config(path: Path) -> CustomSequenceConfig:
         repeat=int(data.get("repeat", 1)),
         pause_s=float(str(data.get("pause_s", 0)).replace(",", ".")),
         variables=parsed_variables,
-        end_rf_off=bool(data.get("end_rf_off", True)),
-        end_power_supply_off=bool(data.get("end_power_supply_off", False)),
+        end_rf_off=parse_json_bool(data.get("end_rf_off"), True),
+        end_power_supply_off=parse_json_bool(data.get("end_power_supply_off"), False),
         power_supply_max_voltage=float(str(data.get("power_supply_max_voltage", 32.0)).replace(",", ".")),
         power_supply_max_current=float(str(data.get("power_supply_max_current", 10.0)).replace(",", ".")),
     )
