@@ -149,6 +149,22 @@ def detect_profile(idn: str) -> DeviceProfile:
             supports_dmm_read=True,
         )
 
+    if "PICOSCOPE" in compact:
+        return DeviceProfile(
+            manufacturer="Pico Technology",
+            model_family="PicoScope",
+            device_type="PicoScope",
+            key="picoscope",
+        )
+
+    if "SALEAE" in compact or "LOGIC2AUTOMATION" in compact:
+        return DeviceProfile(
+            manufacturer="Saleae",
+            model_family="Logic 2 Automation",
+            device_type="Saleae",
+            key="saleae_logic2",
+        )
+
     if "344" in compact or "L44" in compact:
         return DeviceProfile(
             manufacturer="Keysight/Agilent",

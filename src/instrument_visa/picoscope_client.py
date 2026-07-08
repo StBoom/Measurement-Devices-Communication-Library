@@ -78,6 +78,13 @@ class PicoScope2000AInstrument:
             self._dll.ps2000aCloseUnit(self._handle)
         self._handle = None
 
+    def __enter__(self):
+        self.open()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self.close()
+
     def info(self) -> InstrumentInfo:
         return InstrumentInfo(address=self.address, idn="PicoScope 2000A")
 

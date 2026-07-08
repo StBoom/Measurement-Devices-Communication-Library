@@ -80,6 +80,11 @@ CUSTOM_SEQUENCE_ACTIONS = (
     ("PicoScope: Digital erfassen", "picoscope_digital", ("device", "channels", "logic_level_mv", "samples", "interval_us")),
     ("Agilent 34970A: Kanäle messen", "data_logger_34970a_read", ("device", "measurement", "channels", "baudrate", "serial_format")),
     ("Agilent 34970A: Messplan", "data_logger_34970a_plan", ("device", "plan", "baudrate", "serial_format")),
+    ("Saleae: Digital aufnehmen", "saleae_capture", ("device", "channels", "duration_s", "sample_rate", "threshold_v")),
+    ("Saleae: UART dekodieren", "saleae_uart", ("device", "channel", "baudrate", "duration_s", "sample_rate")),
+    ("Saleae: I2C dekodieren", "saleae_i2c", ("device", "sda", "scl", "duration_s", "sample_rate")),
+    ("Saleae: SPI dekodieren", "saleae_spi", ("device", "mosi", "miso", "clock", "duration_s")),
+    ("Saleae: CAN dekodieren", "saleae_can", ("device", "channel", "bitrate", "duration_s", "sample_rate")),
     ("Warten", "wait", ("device", "seconds")),
 )
 CUSTOM_SEQUENCE_FILE_VERSION = 1
@@ -94,7 +99,7 @@ CUSTOM_SEQUENCE_EXAMPLES = (
     ("Netzgerät + Oszilloskop", "supply_scope"),
     ("Netzgerät schalten", "supply_switch"),
 )
-SEQUENCE_DEVICE_ROLES = ("Multimeter", "Netzgerät", "Oszilloskop", "Signalgenerator", "Spektrumanalysator", "Netzwerkanalysator", "Seriell", "PicoScope", "Datenlogger", "Gerät")
+SEQUENCE_DEVICE_ROLES = ("Multimeter", "Netzgerät", "Oszilloskop", "Signalgenerator", "Spektrumanalysator", "Netzwerkanalysator", "Seriell", "PicoScope", "Saleae", "Datenlogger", "Gerät")
 SERIAL_FORMAT_VALUES = ("8N1", "7E1", "7O1", "8E1", "8O1", "8N2")
 
 
@@ -854,6 +859,11 @@ class InstrumentVisaApp(tk.Tk):
             "picoscope_digital": (self._default_sequence_device_name("PicoScope"), "D0-D7", "1500", "10000", "1"),
             "data_logger_34970a_read": (self._default_sequence_device_name("Datenlogger"), "VOLT_DC", "1-22", "9600", "8N1"),
             "data_logger_34970a_plan": (self._default_sequence_device_name("Datenlogger"), "1-4:VOLT_DC; 5-8:TEMP; 9-12:RES", "9600", "8N1", ""),
+            "saleae_capture": (self._default_sequence_device_name("Saleae"), "D0-D7", "5", "10000000", "3.3"),
+            "saleae_uart": (self._default_sequence_device_name("Saleae"), "0", "115200", "5", "10000000"),
+            "saleae_i2c": (self._default_sequence_device_name("Saleae"), "0", "1", "5", "10000000"),
+            "saleae_spi": (self._default_sequence_device_name("Saleae"), "0", "1", "2", "5"),
+            "saleae_can": (self._default_sequence_device_name("Saleae"), "0", "500000", "5", "10000000"),
             "wait": ("", "0.5", "", "", ""),
         }.get(action, ("", "", "", "", ""))
         for key, value in zip(("device", "value1", "value2", "value3", "value4"), defaults):
@@ -886,6 +896,11 @@ class InstrumentVisaApp(tk.Tk):
             "picoscope_digital": {"device": "PicoScope", "value1": "Kanäle", "value2": "Logikpegel [mV]", "value3": "Samples", "value4": "Intervall [us]"},
             "data_logger_34970a_read": {"device": "34970A", "value1": "Messart", "value2": "Kanäle", "value3": "Baudrate", "value4": "Format"},
             "data_logger_34970a_plan": {"device": "34970A", "value1": "Messplan", "value2": "Baudrate", "value3": "Format", "value4": ""},
+            "saleae_capture": {"device": "Saleae", "value1": "Kanäle", "value2": "Dauer [s]", "value3": "Sample-Rate", "value4": "Schwelle [V]"},
+            "saleae_uart": {"device": "Saleae", "value1": "Kanal", "value2": "Baudrate", "value3": "Dauer [s]", "value4": "Sample-Rate"},
+            "saleae_i2c": {"device": "Saleae", "value1": "SDA", "value2": "SCL", "value3": "Dauer [s]", "value4": "Sample-Rate"},
+            "saleae_spi": {"device": "Saleae", "value1": "MOSI", "value2": "MISO", "value3": "Clock", "value4": "Dauer [s]"},
+            "saleae_can": {"device": "Saleae", "value1": "Kanal", "value2": "Bitrate", "value3": "Dauer [s]", "value4": "Sample-Rate"},
             "wait": {"device": "", "value1": "Sekunden"},
         }.get(action, {})
 
@@ -1099,6 +1114,8 @@ class InstrumentVisaApp(tk.Tk):
             return "Seriell"
         if normalized in {"pico", "picoscope"}:
             return "PicoScope"
+        if normalized in {"saleae", "logic", "logic2"}:
+            return "Saleae"
         if normalized in {"datenlogger", "logger", "datalogger", "data logger", "34970a"}:
             return "Datenlogger"
         return role.strip() or "Gerät"
@@ -1366,6 +1383,8 @@ class InstrumentVisaApp(tk.Tk):
     def _example_address(self, role: str, fallback: str) -> str:
         if self._sequence_device_role_name(role) == "PicoScope":
             return "PICO2000A::AUTO"
+        if self._sequence_device_role_name(role) == "Saleae":
+            return "SALEAE::LOCAL"
         for address in self._known_device_addresses():
             saved = self._saved_device_for_address(address)
             if isinstance(saved, dict) and self._saved_device_matches_example_role(saved, role):
@@ -1670,7 +1689,7 @@ class InstrumentVisaApp(tk.Tk):
             variable.set(False)
 
     def _search_devices(self) -> str:
-        resources = list_resources()
+        resources = list(dict.fromkeys([*list_resources(), *self._manual_device_resources()]))
         if resources:
             self._messages.put(("resources", "\n".join(resources)))
             return "Gefundene Geräte:\n" + "\n".join(resources)
@@ -2226,10 +2245,12 @@ class InstrumentVisaApp(tk.Tk):
             power_supply_switch_mode="channel" if self.switch_power_mode_var.get().strip().lower() == "kanal" else "master",
         )
 
-    def _open_instrument(self) -> VisaInstrument:
+    def _open_instrument(self):
         address = self.address_var.get().strip()
         if not address:
             raise ValueError("Bitte eine VISA-Adresse eintragen.")
+        if address.upper().startswith(("COM", "PICO::", "PICO2000A::", "SALEAE::")):
+            return create_sequence_instrument(address, timeout_ms=10000)
         return VisaInstrument(address=address, timeout_ms=10000)
 
     def _output_path(self) -> Path:
@@ -2394,6 +2415,11 @@ class InstrumentVisaApp(tk.Tk):
             self.resource_var.set(values[0])
             self.address_var.set(self.resource_display_map[values[0]])
 
+    def _manual_device_resources(self) -> list[str]:
+        resources = ["PICO2000A::AUTO", "SALEAE::LOCAL"]
+        resources.extend(port.device for port in list_direct_serial_ports())
+        return resources
+
     def _known_device_addresses(self) -> list[str]:
         return sorted(self.saved_devices, key=lambda address: self._resource_display_label(address).lower())
 
@@ -2407,6 +2433,9 @@ class InstrumentVisaApp(tk.Tk):
             description = " ".join(part for part in (display_type, manufacturer, model_family) if part and part != "Unbekannt")
             if description:
                 return f"{description} - {address}"
+        inferred = self._profile_for_manual_address(address)
+        if inferred is not None:
+            return f"{inferred.device_type} - {address}"
         return address
 
     def _resource_numbering_for_addresses(self, addresses: list[str]) -> dict[str, str]:
@@ -2515,7 +2544,17 @@ class InstrumentVisaApp(tk.Tk):
         if isinstance(saved, dict):
             self._apply_profile(self._profile_from_settings(saved))
         else:
-            self._apply_profile(UNKNOWN_PROFILE)
+            self._apply_profile(self._profile_for_manual_address(address) or UNKNOWN_PROFILE)
+
+    def _profile_for_manual_address(self, address: str) -> DeviceProfile | None:
+        normalized = address.strip().upper()
+        if normalized.startswith(("PICO::", "PICO2000A::")):
+            return DeviceProfile("Pico Technology", "PicoScope", "PicoScope", key="picoscope")
+        if normalized.startswith("SALEAE::"):
+            return DeviceProfile("Saleae", "Logic 2 Automation", "Saleae", key="saleae_logic2")
+        if normalized.startswith("COM") and normalized[3:].isdigit():
+            return DeviceProfile("Unbekannt", "Direkter COM-Port", "Seriell", key="direct_serial")
+        return None
 
     def _remember_device(self, address: str, idn: str, profile: DeviceProfile) -> None:
         if not address:

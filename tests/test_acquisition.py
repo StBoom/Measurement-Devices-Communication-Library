@@ -25,6 +25,7 @@ from instrument_visa.acquisition import (  # noqa: E402
 from instrument_visa.excel_export import append_result  # noqa: E402
 from instrument_visa.cli import _load_sequence_config  # noqa: E402
 from instrument_visa.picoscope_client import parse_pico_analog_channels, parse_pico_digital_channels  # noqa: E402
+from instrument_visa.saleae_client import SaleaeCanConfig, SaleaeCaptureConfig, SaleaeI2cConfig, SaleaeSpiConfig, SaleaeUartConfig, parse_saleae_channels  # noqa: E402
 from instrument_visa.profiles import detect_profile  # noqa: E402
 from instrument_visa.sequence import (  # noqa: E402
     CustomSequenceConfig,
@@ -61,6 +62,11 @@ class FakeInstrument:
         self.serial_log_responses: dict[float, str] = {}
         self.pico_analog_configs: list[object] = []
         self.pico_digital_configs: list[object] = []
+        self.saleae_capture_configs: list[object] = []
+        self.saleae_uart_configs: list[object] = []
+        self.saleae_i2c_configs: list[object] = []
+        self.saleae_spi_configs: list[object] = []
+        self.saleae_can_configs: list[object] = []
         self.writes: list[str] = []
         self.queries: list[str] = []
         self.binary_queries: list[str] = []
@@ -114,6 +120,26 @@ class FakeInstrument:
         self.pico_digital_configs.append(config)
         return AcquisitionResult(kind="picoscope digital", file_type="csv", content="Time_s,D0\n0,1\n")
 
+    def capture_saleae_digital(self, config, output_dir, stop_requested=None):
+        self.saleae_capture_configs.append((config, output_dir))
+        return AcquisitionResult(kind="saleae capture", file_type="txt", content="Capture: capture.sal\nRaw CSV: raw")
+
+    def capture_uart(self, config, output_dir, stop_requested=None):
+        self.saleae_uart_configs.append((config, output_dir))
+        return AcquisitionResult(kind="saleae uart", file_type="txt", content="Capture: capture.sal\nUART CSV: uart.csv")
+
+    def capture_i2c(self, config, output_dir, stop_requested=None):
+        self.saleae_i2c_configs.append((config, output_dir))
+        return AcquisitionResult(kind="saleae i2c", file_type="txt", content="Capture: capture.sal\nI2C CSV: i2c.csv")
+
+    def capture_spi(self, config, output_dir, stop_requested=None):
+        self.saleae_spi_configs.append((config, output_dir))
+        return AcquisitionResult(kind="saleae spi", file_type="txt", content="Capture: capture.sal\nSPI CSV: spi.csv")
+
+    def capture_can(self, config, output_dir, stop_requested=None):
+        self.saleae_can_configs.append((config, output_dir))
+        return AcquisitionResult(kind="saleae can", file_type="txt", content="Capture: capture.sal\nCAN CSV: can.csv")
+
 
 class AcquisitionTests(unittest.TestCase):
     def test_profile_detection_for_new_manual_checked_devices(self) -> None:
@@ -132,6 +158,8 @@ class AcquisitionTests(unittest.TestCase):
             "Rohde&Schwarz,SMHU,123,1.0": "rs_smg_legacy",
             "HAMEG,HMP4030,123,1.0": "rs_hmp_power_supply",
             "HEWLETT-PACKARD,34970A,0,13-2-2": "keysight_34970a",
+            "Saleae Logic 2 Automation": "saleae_logic2",
+            "PicoScope 2000A": "picoscope",
         }
 
         for idn, expected_key in cases.items():
@@ -779,6 +807,105 @@ class AcquisitionTests(unittest.TestCase):
 
         self.assertEqual(result.ok_count, 1)
         self.assertIn("34970A measurement plan", result.csv_content)
+
+    def test_parse_saleae_channels(self) -> None:
+        self.assertEqual(parse_saleae_channels("D0-D3,D7"), [0, 1, 2, 3, 7])
+
+        with self.assertRaises(ValueError):
+            parse_saleae_channels("D16")
+
+    def test_custom_sequence_saleae_capture_step(self) -> None:
+        saleae = FakeInstrument(query_responses={"*IDN?": "Saleae"})
+        saleae.address = "SALEAE::LOCAL"
+
+        result = run_custom_sequence(
+            {"Saleae1": saleae},  # type: ignore[dict-item]
+            CustomSequenceConfig(
+                devices={"Saleae1": saleae.address},
+                steps=[SequenceStep("Saleae1", "saleae_capture", {"channels": "D0-D1", "duration_s": "1", "sample_rate": "1000000", "threshold_v": "3.3"})],
+                end_rf_off=False,
+            ),
+        )
+
+        self.assertEqual(result.ok_count, 1)
+        config, output_dir = saleae.saleae_capture_configs[0]
+        self.assertIsInstance(config, SaleaeCaptureConfig)
+        self.assertEqual(config.digital_channels, "D0-D1")
+        self.assertEqual(str(output_dir), "saleae_output")
+
+    def test_custom_sequence_saleae_uart_step(self) -> None:
+        saleae = FakeInstrument(query_responses={"*IDN?": "Saleae"})
+        saleae.address = "SALEAE::LOCAL"
+
+        result = run_custom_sequence(
+            {"Saleae1": saleae},  # type: ignore[dict-item]
+            CustomSequenceConfig(
+                devices={"Saleae1": saleae.address},
+                steps=[SequenceStep("Saleae1", "saleae_uart", {"channel": "0", "baudrate": "115200", "duration_s": "1", "sample_rate": "1000000", "threshold_v": "3.3"})],
+                end_rf_off=False,
+            ),
+        )
+
+        self.assertEqual(result.ok_count, 1)
+        config, output_dir = saleae.saleae_uart_configs[0]
+        self.assertIsInstance(config, SaleaeUartConfig)
+        self.assertEqual(config.channel, 0)
+        self.assertEqual(str(output_dir), "saleae_output")
+
+    def test_custom_sequence_saleae_i2c_step(self) -> None:
+        saleae = FakeInstrument(query_responses={"*IDN?": "Saleae"})
+        saleae.address = "SALEAE::LOCAL"
+
+        result = run_custom_sequence(
+            {"Saleae1": saleae},  # type: ignore[dict-item]
+            CustomSequenceConfig(
+                devices={"Saleae1": saleae.address},
+                steps=[SequenceStep("Saleae1", "saleae_i2c", {"sda": "0", "scl": "1", "duration_s": "1", "sample_rate": "1000000"})],
+                end_rf_off=False,
+            ),
+        )
+
+        self.assertEqual(result.ok_count, 1)
+        config, output_dir = saleae.saleae_i2c_configs[0]
+        self.assertIsInstance(config, SaleaeI2cConfig)
+        self.assertEqual(config.sda_channel, 0)
+        self.assertEqual(config.scl_channel, 1)
+
+    def test_custom_sequence_saleae_spi_step(self) -> None:
+        saleae = FakeInstrument(query_responses={"*IDN?": "Saleae"})
+        saleae.address = "SALEAE::LOCAL"
+
+        result = run_custom_sequence(
+            {"Saleae1": saleae},  # type: ignore[dict-item]
+            CustomSequenceConfig(
+                devices={"Saleae1": saleae.address},
+                steps=[SequenceStep("Saleae1", "saleae_spi", {"mosi": "0", "miso": "1", "clock": "2", "duration_s": "1"})],
+                end_rf_off=False,
+            ),
+        )
+
+        self.assertEqual(result.ok_count, 1)
+        config, output_dir = saleae.saleae_spi_configs[0]
+        self.assertIsInstance(config, SaleaeSpiConfig)
+        self.assertEqual(config.clock_channel, 2)
+
+    def test_custom_sequence_saleae_can_step(self) -> None:
+        saleae = FakeInstrument(query_responses={"*IDN?": "Saleae"})
+        saleae.address = "SALEAE::LOCAL"
+
+        result = run_custom_sequence(
+            {"Saleae1": saleae},  # type: ignore[dict-item]
+            CustomSequenceConfig(
+                devices={"Saleae1": saleae.address},
+                steps=[SequenceStep("Saleae1", "saleae_can", {"channel": "0", "bitrate": "500000", "duration_s": "1", "sample_rate": "1000000"})],
+                end_rf_off=False,
+            ),
+        )
+
+        self.assertEqual(result.ok_count, 1)
+        config, output_dir = saleae.saleae_can_configs[0]
+        self.assertIsInstance(config, SaleaeCanConfig)
+        self.assertEqual(config.bitrate, 500000)
 
     def test_custom_sequence_power_supply_uses_configured_safety_limits(self) -> None:
         supply = FakeInstrument(query_responses={"*IDN?": "HAMEG,HMP4030,123,1.0"})

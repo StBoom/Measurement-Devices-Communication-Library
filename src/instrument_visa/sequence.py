@@ -30,6 +30,7 @@ from .acquisition import (
     set_signal_generator_rf_output,
 )
 from .picoscope_client import PicoScopeAnalogConfig, PicoScopeDigitalConfig, create_picoscope_instrument, is_picoscope_address
+from .saleae_client import SaleaeCanConfig, SaleaeCaptureConfig, SaleaeI2cConfig, SaleaeSpiConfig, SaleaeUartConfig, create_saleae_instrument, is_saleae_address
 from .visa_client import InstrumentInfo, VisaInstrument
 
 
@@ -790,8 +791,19 @@ class DirectSerialInstrument:
     def close(self) -> None:
         return
 
+    def __enter__(self):
+        self.open()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self.close()
+
     def info(self) -> InstrumentInfo:
-        return InstrumentInfo(address=self.address, idn="Direkter COM-Port")
+        try:
+            idn = self.query("*IDN?").strip()
+        except Exception:
+            idn = "Direkter COM-Port"
+        return InstrumentInfo(address=self.address, idn=idn)
 
     def configure_serial(self, baudrate: int | None = None, bytesize: int | None = None, parity: str | None = None, stopbits: float | None = None) -> None:
         if baudrate is not None:
@@ -812,6 +824,8 @@ class DirectSerialInstrument:
 def create_sequence_instrument(address: str, timeout_ms: int = 10000) -> VisaInstrument | DirectSerialInstrument:
     if is_picoscope_address(address):
         return create_picoscope_instrument(address, timeout_ms=timeout_ms)
+    if is_saleae_address(address):
+        return create_saleae_instrument(address, timeout_ms=timeout_ms)
     if _is_direct_serial_address(address):
         return DirectSerialInstrument(address, timeout_ms)
     return VisaInstrument(address, timeout_ms=timeout_ms)
@@ -970,6 +984,67 @@ def _execute_custom_sequence_step(
             ),
             stop_requested=stop_requested,
         )
+    if step.action == "saleae_capture":
+        return instrument.capture_saleae_digital(
+            SaleaeCaptureConfig(
+                digital_channels=_string_param(params, "channels"),
+                duration_s=_float_param(params, "duration_s", 1.0),
+                sample_rate=_int_param(params, "sample_rate", 10_000_000),
+                threshold_v=_float_param(params, "threshold_v", 3.3),
+            ),
+            output_dir=_sequence_artifact_dir(step_result_export),
+            stop_requested=stop_requested,
+        )
+    if step.action == "saleae_uart":
+        return instrument.capture_uart(
+            SaleaeUartConfig(
+                channel=_int_param(params, "channel", 0),
+                baudrate=_int_param(params, "baudrate", 115200),
+                duration_s=_float_param(params, "duration_s", 1.0),
+                sample_rate=_int_param(params, "sample_rate", 10_000_000),
+                threshold_v=_float_param(params, "threshold_v", 3.3),
+            ),
+            output_dir=_sequence_artifact_dir(step_result_export),
+            stop_requested=stop_requested,
+        )
+    if step.action == "saleae_i2c":
+        return instrument.capture_i2c(
+            SaleaeI2cConfig(
+                sda_channel=_int_param(params, "sda", 0),
+                scl_channel=_int_param(params, "scl", 1),
+                duration_s=_float_param(params, "duration_s", 1.0),
+                sample_rate=_int_param(params, "sample_rate", 10_000_000),
+                threshold_v=_float_param(params, "threshold_v", 3.3),
+            ),
+            output_dir=_sequence_artifact_dir(step_result_export),
+            stop_requested=stop_requested,
+        )
+    if step.action == "saleae_spi":
+        return instrument.capture_spi(
+            SaleaeSpiConfig(
+                mosi_channel=_int_param(params, "mosi", 0),
+                miso_channel=_int_param(params, "miso", 1),
+                clock_channel=_int_param(params, "clock", 2),
+                enable_channel=_int_param(params, "enable", -1),
+                duration_s=_float_param(params, "duration_s", 1.0),
+                sample_rate=_int_param(params, "sample_rate", 10_000_000),
+                threshold_v=_float_param(params, "threshold_v", 3.3),
+            ),
+            output_dir=_sequence_artifact_dir(step_result_export),
+            stop_requested=stop_requested,
+        )
+    if step.action == "saleae_can":
+        return instrument.capture_can(
+            SaleaeCanConfig(
+                channel=_int_param(params, "channel", 0),
+                bitrate=_int_param(params, "bitrate", 500000),
+                duration_s=_float_param(params, "duration_s", 1.0),
+                sample_rate=_int_param(params, "sample_rate", 10_000_000),
+                threshold_v=_float_param(params, "threshold_v", 3.3),
+            ),
+            output_dir=_sequence_artifact_dir(step_result_export),
+            stop_requested=stop_requested,
+        )
     raise ValueError(f"Unbekannte Aktion: {step.action}")
 
 
@@ -1016,6 +1091,11 @@ def _validate_custom_sequence_step(step: SequenceStep) -> None:
         "parallel_phase": {"duration_s", "interval_s", "tasks"},
         "picoscope_analog": {"channels", "range", "samples", "interval_us"},
         "picoscope_digital": {"channels", "logic_level_mv", "samples", "interval_us"},
+        "saleae_capture": {"channels", "duration_s", "sample_rate", "threshold_v"},
+        "saleae_uart": {"channel", "baudrate", "duration_s", "sample_rate"},
+        "saleae_i2c": {"sda", "scl", "duration_s", "sample_rate"},
+        "saleae_spi": {"mosi", "miso", "clock", "duration_s"},
+        "saleae_can": {"channel", "bitrate", "duration_s", "sample_rate"},
         "wait": {"seconds"},
     }
     if step.action not in required_params:
@@ -1297,6 +1377,12 @@ def _csv_rows(rows: list[list[object]]) -> str:
 
 def _csv_text_rows(text: str) -> list[list[str]]:
     return list(csv.reader(StringIO(text)))
+
+
+def _sequence_artifact_dir(step_result_export: StepResultExportCallback | None):
+    from pathlib import Path
+
+    return Path("saleae_output")
 
 
 def parse_serial_format(value: str) -> tuple[int, str, float]:
