@@ -40,6 +40,10 @@ from instrument_visa.sequence import (  # noqa: E402
     parse_serial_format,
     parse_parallel_tasks,
     read_direct_serial_log,
+    parse_34970a_channels,
+    read_34970a_data_logger,
+    DataLogger34970AConfig,
+    parse_34970a_measurement_plan,
     run_custom_sequence,
     run_frequency_sweep,
     run_timed_switch,
@@ -63,6 +67,7 @@ class FakeInstrument:
         self.raw_writes: list[str] = []
         self.serial_log_durations: list[float] = []
         self.serial_log_baudrates: list[int | None] = []
+        self.serial_configs: list[tuple[int | None, int | None, str | None, float | None]] = []
 
     def write(self, command: str) -> None:
         self.writes.append(command)
@@ -98,6 +103,9 @@ class FakeInstrument:
 
         return InstrumentInfo(address=self.address, idn=self.query("*IDN?").strip())
 
+    def configure_serial(self, baudrate: int | None = None, bytesize: int | None = None, parity: str | None = None, stopbits: float | None = None) -> None:
+        self.serial_configs.append((baudrate, bytesize, parity, stopbits))
+
     def capture_analog(self, config, stop_requested=None):
         self.pico_analog_configs.append(config)
         return AcquisitionResult(kind="picoscope analog", file_type="csv", content="Time_s,A_V\n0,1.0\n")
@@ -123,6 +131,7 @@ class AcquisitionTests(unittest.TestCase):
             "Rohde&Schwarz,SMIQ03B,123,1.0": "rs_sme_smt_smiq",
             "Rohde&Schwarz,SMHU,123,1.0": "rs_smg_legacy",
             "HAMEG,HMP4030,123,1.0": "rs_hmp_power_supply",
+            "HEWLETT-PACKARD,34970A,0,13-2-2": "keysight_34970a",
         }
 
         for idn, expected_key in cases.items():
@@ -700,6 +709,76 @@ class AcquisitionTests(unittest.TestCase):
 
         self.assertEqual(result.ok_count, 1)
         self.assertEqual(pico.pico_digital_configs[0].channels, "D0-D7")
+
+    def test_parse_34970a_channels(self) -> None:
+        self.assertEqual(parse_34970a_channels("1-3,5"), [1, 2, 3, 5])
+
+        with self.assertRaises(ValueError):
+            parse_34970a_channels("0")
+        with self.assertRaises(ValueError):
+            parse_34970a_channels("23")
+
+    def test_34970a_voltage_read_uses_channel_list(self) -> None:
+        instrument = FakeInstrument(query_responses={"MEAS:VOLT:DC? (@101,102,103)": "1.0,2.0,3.0"})
+
+        result = read_34970a_data_logger(instrument, DataLogger34970AConfig(measurement="VOLT_DC", channels="1-3"))
+
+        self.assertEqual(result.file_type, "csv")
+        self.assertIn("101", instrument.queries[0])
+        self.assertIn("1,VOLT_DC,1.0,V", str(result.content))
+
+    def test_34970a_temperature_read_sets_serial_and_tc_type(self) -> None:
+        instrument = FakeInstrument(query_responses={"MEAS:TEMP? TC,K,(@101)": "23.5"})
+
+        result = read_34970a_data_logger(instrument, DataLogger34970AConfig(measurement="TEMP", channels="1", thermocouple_type="K", baudrate=19200, serial_format="7E1"))
+
+        self.assertIn("1,TEMP,23.5,degC", str(result.content))
+        self.assertEqual(instrument.serial_configs, [(19200, 7, "E", 1.0)])
+
+    def test_parse_34970a_measurement_plan(self) -> None:
+        tasks = parse_34970a_measurement_plan("1-4:VOLT_DC; 5:TEMP; 6-7:RES")
+
+        self.assertEqual([(task.channels, task.measurement) for task in tasks], [("1-4", "VOLT_DC"), ("5", "TEMP"), ("6-7", "RES")])
+
+        with self.assertRaises(ValueError):
+            parse_34970a_measurement_plan("1-4")
+
+    def test_custom_sequence_34970a_step(self) -> None:
+        instrument = FakeInstrument(query_responses={"*IDN?": "HEWLETT-PACKARD,34970A,0,1", "MEAS:RES? (@101,102)": "10,20"})
+        instrument.address = "COM5"
+
+        result = run_custom_sequence(
+            {"Logger1": instrument},  # type: ignore[dict-item]
+            CustomSequenceConfig(
+                devices={"Logger1": instrument.address},
+                steps=[SequenceStep("Logger1", "data_logger_34970a_read", {"measurement": "RES", "channels": "1-2", "range": "AUTO", "resolution": "DEF", "thermocouple_type": "K", "baudrate": "9600", "serial_format": "8N1"})],
+                end_rf_off=False,
+            ),
+        )
+
+        self.assertEqual(result.ok_count, 1)
+        self.assertIn("34970A data logger", result.csv_content)
+
+    def test_custom_sequence_34970a_measurement_plan_step(self) -> None:
+        instrument = FakeInstrument(
+            query_responses={
+                "*IDN?": "HEWLETT-PACKARD,34970A,0,1",
+                "MEAS:VOLT:DC? (@101,102)": "1,2",
+                "MEAS:TEMP? TC,K,(@103)": "23",
+            }
+        )
+
+        result = run_custom_sequence(
+            {"Logger1": instrument},  # type: ignore[dict-item]
+            CustomSequenceConfig(
+                devices={"Logger1": "COM5"},
+                steps=[SequenceStep("Logger1", "data_logger_34970a_plan", {"plan": "1-2:VOLT_DC; 3:TEMP", "baudrate": "9600", "serial_format": "8N1"})],
+                end_rf_off=False,
+            ),
+        )
+
+        self.assertEqual(result.ok_count, 1)
+        self.assertIn("34970A measurement plan", result.csv_content)
 
     def test_custom_sequence_power_supply_uses_configured_safety_limits(self) -> None:
         supply = FakeInstrument(query_responses={"*IDN?": "HAMEG,HMP4030,123,1.0"})

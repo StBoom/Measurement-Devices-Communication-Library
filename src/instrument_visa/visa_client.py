@@ -50,6 +50,17 @@ class VisaInstrument:
     def query(self, command: str) -> str:
         return str(self._require_open().query(command))
 
+    def configure_serial(self, baudrate: int | None = None, bytesize: int | None = None, parity: str | None = None, stopbits: float | None = None) -> None:
+        instrument = self._require_open()
+        if baudrate is not None and hasattr(instrument, "baud_rate"):
+            instrument.baud_rate = int(baudrate)
+        if bytesize is not None and hasattr(instrument, "data_bits"):
+            instrument.data_bits = int(bytesize)
+        if parity is not None and hasattr(instrument, "parity"):
+            instrument.parity = _pyvisa_parity(parity)
+        if stopbits is not None and hasattr(instrument, "stop_bits"):
+            instrument.stop_bits = _pyvisa_stop_bits(stopbits)
+
     def query_binary(self, command: str) -> bytes:
         instrument = self._require_open()
         original_termination = instrument.read_termination

@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import csv
+from io import StringIO
 from time import monotonic, sleep
 from typing import Callable, Literal
 
@@ -185,6 +187,23 @@ class ParallelTask:
     channel: int = 1
     baudrate: int = 115200
     serial_format: str = "8N1"
+
+
+@dataclass(frozen=True)
+class DataLogger34970AConfig:
+    measurement: str
+    channels: str
+    range_value: str = "AUTO"
+    resolution: str = "DEF"
+    thermocouple_type: str = "K"
+    baudrate: int = 9600
+    serial_format: str = "8N1"
+
+
+@dataclass(frozen=True)
+class DataLogger34970ATask:
+    measurement: str
+    channels: str
 
 
 def run_frequency_sweep(
@@ -762,6 +781,8 @@ class DirectSerialInstrument:
     def __init__(self, address: str, timeout_ms: int = 10000) -> None:
         self.address = address
         self.timeout_ms = timeout_ms
+        self.baudrate = 9600
+        self.serial_format = "8N1"
 
     def open(self) -> None:
         return
@@ -771,6 +792,21 @@ class DirectSerialInstrument:
 
     def info(self) -> InstrumentInfo:
         return InstrumentInfo(address=self.address, idn="Direkter COM-Port")
+
+    def configure_serial(self, baudrate: int | None = None, bytesize: int | None = None, parity: str | None = None, stopbits: float | None = None) -> None:
+        if baudrate is not None:
+            self.baudrate = int(baudrate)
+        if bytesize is not None and parity is not None and stopbits is not None:
+            self.serial_format = f"{int(bytesize)}{parity}{stopbits:g}"
+
+    def write(self, command: str) -> None:
+        with _open_direct_serial_for_scpi(self.address, self.timeout_ms, self.baudrate, self.serial_format) as serial_port:
+            _serial_write_line(serial_port, command)
+
+    def query(self, command: str) -> str:
+        with _open_direct_serial_for_scpi(self.address, self.timeout_ms, self.baudrate, self.serial_format) as serial_port:
+            _serial_write_line(serial_port, command)
+            return _serial_read_text(serial_port)
 
 
 def create_sequence_instrument(address: str, timeout_ms: int = 10000) -> VisaInstrument | DirectSerialInstrument:
@@ -894,6 +930,26 @@ def _execute_custom_sequence_step(
         else:
             content = instrument.read_serial_log(duration_s, baudrate=baudrate, bytesize=bytesize, parity=parity, stopbits=stopbits, stop_requested=stop_requested)
         return AcquisitionResult(kind="serial log", file_type="txt", content=content)
+    if step.action == "data_logger_34970a_read":
+        return read_34970a_data_logger(
+            instrument,
+            DataLogger34970AConfig(
+                measurement=_string_param(params, "measurement"),
+                channels=_string_param(params, "channels"),
+                range_value=str(params.get("range", "AUTO")).strip() or "AUTO",
+                resolution=str(params.get("resolution", "DEF")).strip() or "DEF",
+                thermocouple_type=str(params.get("thermocouple_type", "K")).strip() or "K",
+                baudrate=_int_param(params, "baudrate", 9600),
+                serial_format=str(params.get("serial_format", "8N1")).strip() or "8N1",
+            )
+        )
+    if step.action == "data_logger_34970a_plan":
+        return read_34970a_measurement_plan(
+            instrument,
+            parse_34970a_measurement_plan(_string_param(params, "plan")),
+            baudrate=_int_param(params, "baudrate", 9600),
+            serial_format_value=str(params.get("serial_format", "8N1")).strip() or "8N1",
+        )
     if step.action == "picoscope_analog":
         return instrument.capture_analog(
             PicoScopeAnalogConfig(
@@ -955,6 +1011,8 @@ def _validate_custom_sequence_step(step: SequenceStep) -> None:
         "capture_waveform": set(),
         "capture_screenshot": set(),
         "serial_log": {"duration_s", "baudrate", "serial_format"},
+        "data_logger_34970a_read": {"measurement", "channels", "baudrate", "serial_format"},
+        "data_logger_34970a_plan": {"plan", "baudrate", "serial_format"},
         "parallel_phase": {"duration_s", "interval_s", "tasks"},
         "picoscope_analog": {"channels", "range", "samples", "interval_us"},
         "picoscope_digital": {"channels", "logic_level_mv", "samples", "interval_us"},
@@ -1090,6 +1148,155 @@ def _bool_param(params: dict[str, object], name: str, default: bool) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().upper() in {"1", "TRUE", "JA", "YES", "ON"}
+
+
+def read_34970a_data_logger(instrument: object, config: DataLogger34970AConfig) -> AcquisitionResult:
+    measurement = _normalize_34970a_measurement(config.measurement)
+    channels = parse_34970a_channels(config.channels)
+    channel_list = _format_34970a_channel_list(channels)
+    if config.baudrate <= 0:
+        raise ValueError("Baudrate muss größer als 0 sein.")
+    bytesize, parity, stopbits = parse_serial_format(config.serial_format)
+    if hasattr(instrument, "configure_serial"):
+        instrument.configure_serial(config.baudrate, bytesize, parity, stopbits)
+
+    command = _34970a_read_command(measurement, channel_list, config.range_value, config.resolution, config.thermocouple_type)
+    raw = str(instrument.query(command)).strip()
+    values = _parse_34970a_values(raw)
+    rows: list[list[object]] = [["Channel", "Measurement", "Value", "Unit"]]
+    unit = _34970a_unit(measurement)
+    for index, channel in enumerate(channels):
+        value = values[index] if index < len(values) else ""
+        rows.append([channel, measurement, value, unit])
+    return AcquisitionResult(kind="34970A data logger", file_type="csv", content=_csv_rows(rows))
+
+
+def read_34970a_measurement_plan(instrument: object, tasks: list[DataLogger34970ATask], baudrate: int = 9600, serial_format_value: str = "8N1") -> AcquisitionResult:
+    rows: list[list[object]] = [["Channel", "Measurement", "Value", "Unit"]]
+    for task in tasks:
+        result = read_34970a_data_logger(
+            instrument,
+            DataLogger34970AConfig(
+                measurement=task.measurement,
+                channels=task.channels,
+                baudrate=baudrate,
+                serial_format=serial_format_value,
+            ),
+        )
+        rows.extend(_csv_text_rows(str(result.content))[1:])
+    return AcquisitionResult(kind="34970A measurement plan", file_type="csv", content=_csv_rows(rows))
+
+
+def parse_34970a_measurement_plan(value: str) -> list[DataLogger34970ATask]:
+    tasks: list[DataLogger34970ATask] = []
+    for part in value.replace("\n", ";").split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" not in part:
+            raise ValueError("34970A-Messplan braucht Einträge wie 1-4:VOLT_DC oder 5:TEMP.")
+        channels, measurement = part.split(":", 1)
+        parse_34970a_channels(channels)
+        _normalize_34970a_measurement(measurement)
+        tasks.append(DataLogger34970ATask(measurement=measurement.strip(), channels=channels.strip()))
+    if not tasks:
+        raise ValueError("34970A-Messplan benötigt mindestens einen Eintrag.")
+    return tasks
+
+
+def parse_34970a_channels(value: str) -> list[int]:
+    channels: list[int] = []
+    for part in value.replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start_text, end_text = part.split("-", 1)
+            start = int(start_text)
+            end = int(end_text)
+            if end < start:
+                raise ValueError("34970A-Kanalbereich ist rückwärts angegeben.")
+            channels.extend(range(start, end + 1))
+        else:
+            channels.append(int(part))
+    unique: list[int] = []
+    for channel in channels:
+        if channel < 1 or channel > 22:
+            raise ValueError("34970A-Kanäle müssen zwischen 1 und 22 liegen.")
+        if channel not in unique:
+            unique.append(channel)
+    if not unique:
+        raise ValueError("Bitte mindestens einen 34970A-Kanal angeben.")
+    return unique
+
+
+def _normalize_34970a_measurement(value: str) -> str:
+    normalized = value.strip().upper().replace(" ", "_").replace("Ä", "AE")
+    aliases = {
+        "VOLT": "VOLT_DC",
+        "VOLTAGE": "VOLT_DC",
+        "SPANNUNG": "VOLT_DC",
+        "VOLT_DC": "VOLT_DC",
+        "VOLT:DC": "VOLT_DC",
+        "CURR": "CURR_DC",
+        "CURRENT": "CURR_DC",
+        "STROM": "CURR_DC",
+        "CURR_DC": "CURR_DC",
+        "CURR:DC": "CURR_DC",
+        "RES": "RES",
+        "WIDERSTAND": "RES",
+        "OHM": "RES",
+        "FRES": "FRES",
+        "4W_RES": "FRES",
+        "4WIDERSTAND": "FRES",
+        "TEMP": "TEMP",
+        "TEMPERATURE": "TEMP",
+        "TEMPERATUR": "TEMP",
+    }
+    if normalized not in aliases:
+        raise ValueError("34970A-Messart muss VOLT_DC, CURR_DC, RES, FRES oder TEMP sein.")
+    return aliases[normalized]
+
+
+def _34970a_read_command(measurement: str, channel_list: str, range_value: str, resolution: str, thermocouple_type: str) -> str:
+    if measurement == "TEMP":
+        sensor_type = thermocouple_type.strip().upper() or "K"
+        return f"MEAS:TEMP? TC,{sensor_type},(@{channel_list})"
+    function = {"VOLT_DC": "VOLT:DC", "CURR_DC": "CURR:DC", "RES": "RES", "FRES": "FRES"}[measurement]
+    range_part = _34970a_optional_numeric_param(range_value)
+    resolution_part = _34970a_optional_numeric_param(resolution)
+    params = ",".join(part for part in (range_part, resolution_part) if part)
+    return f"MEAS:{function}? {params},(@{channel_list})" if params else f"MEAS:{function}? (@{channel_list})"
+
+
+def _34970a_optional_numeric_param(value: str) -> str:
+    normalized = value.strip().upper().replace(",", ".")
+    if not normalized or normalized in {"AUTO", "DEF", "DEFAULT"}:
+        return ""
+    return normalized
+
+
+def _format_34970a_channel_list(channels: list[int]) -> str:
+    return ",".join(str(100 + channel) for channel in channels)
+
+
+def _parse_34970a_values(raw: str) -> list[str]:
+    return [value.strip() for value in raw.replace("\n", ",").split(",") if value.strip()]
+
+
+def _34970a_unit(measurement: str) -> str:
+    return {"VOLT_DC": "V", "CURR_DC": "A", "RES": "Ohm", "FRES": "Ohm", "TEMP": "degC"}[measurement]
+
+
+def _csv_rows(rows: list[list[object]]) -> str:
+    output = StringIO()
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerows(rows)
+    return output.getvalue()
+
+
+def _csv_text_rows(text: str) -> list[list[str]]:
+    return list(csv.reader(StringIO(text)))
 
 
 def parse_serial_format(value: str) -> tuple[int, str, float]:
@@ -1251,6 +1458,24 @@ def read_direct_serial_log(
             if data:
                 chunks.append(data)
     return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+def _open_direct_serial_for_scpi(port: str, timeout_ms: int, baudrate: int = 9600, serial_format_value: str = "8N1"):
+    if serial is None:
+        raise RuntimeError("Direkter COM-Port-Zugriff benötigt pyserial. Bitte Abhängigkeiten neu installieren.")
+    bytesize, parity, stopbits = parse_serial_format(serial_format_value)
+    return serial.Serial(port=port, baudrate=baudrate, bytesize=bytesize, parity=parity, stopbits=stopbits, timeout=max(0.1, timeout_ms / 1000.0), write_timeout=max(0.1, timeout_ms / 1000.0))
+
+
+def _serial_write_line(serial_port, command: str) -> None:
+    serial_port.write((command.rstrip("\r\n") + "\n").encode("ascii"))
+
+
+def _serial_read_text(serial_port) -> str:
+    data = serial_port.readline()
+    if data:
+        return bytes(data).decode("ascii", errors="replace")
+    return ""
 
 
 def _channels_param(value: object) -> list[int]:

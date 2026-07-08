@@ -62,6 +62,7 @@ ON_OFF_VALUES = ("ON", "OFF")
 CHANNEL_VALUES = ("1", "2", "3", "4")
 POINT_MODE_VALUES = ("RAW", "NORMAL", "MAXIMUM")
 PICOSCOPE_RANGE_VALUES = ("100MV", "200MV", "500MV", "1V", "2V", "5V", "10V", "20V")
+DATA_LOGGER_34970A_MEASUREMENTS = ("VOLT_DC", "RES", "FRES", "CURR_DC", "TEMP")
 CUSTOM_SEQUENCE_ACTIONS = (
     ("Signalgenerator: Frequenz setzen", "generator_set_frequency", ("device", "frequency", "power", "max_power_dbm", "rf")),
     ("Signalgenerator: Pegel setzen", "generator_set_power", ("device", "power", "max_power_dbm", "rf", "rf_off_before_change")),
@@ -77,6 +78,8 @@ CUSTOM_SEQUENCE_ACTIONS = (
     ("Parallel-Messphase", "parallel_phase", ("device", "duration_s", "interval_s", "tasks")),
     ("PicoScope: Analog erfassen", "picoscope_analog", ("device", "channels", "range", "samples", "interval_us")),
     ("PicoScope: Digital erfassen", "picoscope_digital", ("device", "channels", "logic_level_mv", "samples", "interval_us")),
+    ("Agilent 34970A: Kanäle messen", "data_logger_34970a_read", ("device", "measurement", "channels", "baudrate", "serial_format")),
+    ("Agilent 34970A: Messplan", "data_logger_34970a_plan", ("device", "plan", "baudrate", "serial_format")),
     ("Warten", "wait", ("device", "seconds")),
 )
 CUSTOM_SEQUENCE_FILE_VERSION = 1
@@ -91,7 +94,7 @@ CUSTOM_SEQUENCE_EXAMPLES = (
     ("Netzgerät + Oszilloskop", "supply_scope"),
     ("Netzgerät schalten", "supply_switch"),
 )
-SEQUENCE_DEVICE_ROLES = ("Multimeter", "Netzgerät", "Oszilloskop", "Signalgenerator", "Spektrumanalysator", "Netzwerkanalysator", "Seriell", "PicoScope", "Gerät")
+SEQUENCE_DEVICE_ROLES = ("Multimeter", "Netzgerät", "Oszilloskop", "Signalgenerator", "Spektrumanalysator", "Netzwerkanalysator", "Seriell", "PicoScope", "Datenlogger", "Gerät")
 SERIAL_FORMAT_VALUES = ("8N1", "7E1", "7O1", "8E1", "8O1", "8N2")
 
 
@@ -849,6 +852,8 @@ class InstrumentVisaApp(tk.Tk):
             "parallel_phase": ("", "10", "1", "Multimeter1:dmm; Oszilloskop1:scope:Vpp:1; Seriell1:serial:115200:8N1", ""),
             "picoscope_analog": (self._default_sequence_device_name("PicoScope"), "A,B", "5V", "10000", "1"),
             "picoscope_digital": (self._default_sequence_device_name("PicoScope"), "D0-D7", "1500", "10000", "1"),
+            "data_logger_34970a_read": (self._default_sequence_device_name("Datenlogger"), "VOLT_DC", "1-22", "9600", "8N1"),
+            "data_logger_34970a_plan": (self._default_sequence_device_name("Datenlogger"), "1-4:VOLT_DC; 5-8:TEMP; 9-12:RES", "9600", "8N1", ""),
             "wait": ("", "0.5", "", "", ""),
         }.get(action, ("", "", "", "", ""))
         for key, value in zip(("device", "value1", "value2", "value3", "value4"), defaults):
@@ -879,6 +884,8 @@ class InstrumentVisaApp(tk.Tk):
             "parallel_phase": {"device": "", "value1": "Dauer [s]", "value2": "Intervall [s]", "value3": "Aufgaben"},
             "picoscope_analog": {"device": "PicoScope", "value1": "Kanäle", "value2": "Bereich", "value3": "Samples", "value4": "Intervall [us]"},
             "picoscope_digital": {"device": "PicoScope", "value1": "Kanäle", "value2": "Logikpegel [mV]", "value3": "Samples", "value4": "Intervall [us]"},
+            "data_logger_34970a_read": {"device": "34970A", "value1": "Messart", "value2": "Kanäle", "value3": "Baudrate", "value4": "Format"},
+            "data_logger_34970a_plan": {"device": "34970A", "value1": "Messplan", "value2": "Baudrate", "value3": "Format", "value4": ""},
             "wait": {"device": "", "value1": "Sekunden"},
         }.get(action, {})
 
@@ -919,6 +926,10 @@ class InstrumentVisaApp(tk.Tk):
             return {"value3": SERIAL_FORMAT_VALUES}
         if action == "picoscope_analog":
             return {"value2": PICOSCOPE_RANGE_VALUES}
+        if action == "data_logger_34970a_read":
+            return {"value1": DATA_LOGGER_34970A_MEASUREMENTS, "value4": SERIAL_FORMAT_VALUES}
+        if action == "data_logger_34970a_plan":
+            return {"value3": SERIAL_FORMAT_VALUES}
         return {}
 
     def _apply_custom_sequence_variable_unit_defaults(self) -> None:
@@ -1088,6 +1099,8 @@ class InstrumentVisaApp(tk.Tk):
             return "Seriell"
         if normalized in {"pico", "picoscope"}:
             return "PicoScope"
+        if normalized in {"datenlogger", "logger", "datalogger", "data logger", "34970a"}:
+            return "Datenlogger"
         return role.strip() or "Gerät"
 
     def _remove_custom_sequence_device(self) -> None:
