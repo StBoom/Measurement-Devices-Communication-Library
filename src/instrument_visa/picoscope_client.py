@@ -187,6 +187,26 @@ def create_picoscope_instrument(address: str, timeout_ms: int = 10000) -> PicoSc
     raise ValueError(f"Unsupported PicoScope address: {address}")
 
 
+def list_picoscope_resources() -> list[str]:
+    try:
+        dll = _load_ps2000a()
+    except RuntimeError:
+        return []
+    count = ctypes.c_int16()
+    serial_buffer = ctypes.create_string_buffer(4096)
+    serial_length = ctypes.c_int16(len(serial_buffer))
+    try:
+        status = dll.ps2000aEnumerateUnits(ctypes.byref(count), serial_buffer, ctypes.byref(serial_length))
+    except Exception:
+        return []
+    if int(status) != PICO_OK or count.value <= 0:
+        return []
+    serials = serial_buffer.value.decode("ascii", errors="ignore").strip()
+    if not serials:
+        return ["PICO2000A::AUTO"]
+    return [f"PICO2000A::SERIAL::{serial.strip()}" for serial in serials.replace(";", ",").split(",") if serial.strip()]
+
+
 def parse_pico_analog_channels(value: str | list[str]) -> list[str]:
     if isinstance(value, str):
         parts = [part.strip().upper().removeprefix("CH") for part in value.replace(";", ",").split(",")]

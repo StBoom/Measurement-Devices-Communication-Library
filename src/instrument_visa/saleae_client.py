@@ -183,6 +183,15 @@ def create_saleae_instrument(address: str, timeout_ms: int = 10000) -> SaleaeIns
     return SaleaeInstrument(address, timeout_ms)
 
 
+def list_saleae_resources() -> list[str]:
+    try:
+        with _connect_saleae_manager() as manager:
+            devices = manager.get_devices(include_simulation_devices=False)
+    except Exception:
+        return []
+    return ["SALEAE::LOCAL"] if devices else []
+
+
 def parse_saleae_channels(value: str) -> list[int]:
     channels: list[int] = []
     for part in value.upper().replace("D", "").replace(";", ",").split(","):

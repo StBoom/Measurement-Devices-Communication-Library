@@ -32,6 +32,8 @@ from .config import SParameterConfig
 from .excel_export import append_result
 from .logging_utils import setup_logging
 from .profiles import UNKNOWN_PROFILE, DeviceProfile, detect_profile, hmp_channel_count
+from .picoscope_client import list_picoscope_resources
+from .saleae_client import list_saleae_resources
 from .sequence import (
     CustomSequenceConfig,
     FrequencySweepConfig,
@@ -2416,9 +2418,11 @@ class InstrumentVisaApp(tk.Tk):
             self.address_var.set(self.resource_display_map[values[0]])
 
     def _manual_device_resources(self) -> list[str]:
-        resources = ["PICO2000A::AUTO", "SALEAE::LOCAL"]
-        resources.extend(port.device for port in list_direct_serial_ports())
-        return resources
+        return [
+            *(port.device for port in list_direct_serial_ports()),
+            *list_picoscope_resources(),
+            *list_saleae_resources(),
+        ]
 
     def _known_device_addresses(self) -> list[str]:
         return sorted(self.saved_devices, key=lambda address: self._resource_display_label(address).lower())
