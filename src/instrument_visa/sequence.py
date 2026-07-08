@@ -27,6 +27,7 @@ from .acquisition import (
     set_signal_generator,
     set_signal_generator_rf_output,
 )
+from .picoscope_client import PicoScopeAnalogConfig, PicoScopeDigitalConfig, create_picoscope_instrument, is_picoscope_address
 from .visa_client import InstrumentInfo, VisaInstrument
 
 
@@ -773,6 +774,8 @@ class DirectSerialInstrument:
 
 
 def create_sequence_instrument(address: str, timeout_ms: int = 10000) -> VisaInstrument | DirectSerialInstrument:
+    if is_picoscope_address(address):
+        return create_picoscope_instrument(address, timeout_ms=timeout_ms)
     if _is_direct_serial_address(address):
         return DirectSerialInstrument(address, timeout_ms)
     return VisaInstrument(address, timeout_ms=timeout_ms)
@@ -891,6 +894,26 @@ def _execute_custom_sequence_step(
         else:
             content = instrument.read_serial_log(duration_s, baudrate=baudrate, bytesize=bytesize, parity=parity, stopbits=stopbits, stop_requested=stop_requested)
         return AcquisitionResult(kind="serial log", file_type="txt", content=content)
+    if step.action == "picoscope_analog":
+        return instrument.capture_analog(
+            PicoScopeAnalogConfig(
+                channels=_string_param(params, "channels"),
+                voltage_range=_string_param(params, "range"),
+                samples=_int_param(params, "samples", 10000),
+                interval_us=_float_param(params, "interval_us", 1.0),
+            ),
+            stop_requested=stop_requested,
+        )
+    if step.action == "picoscope_digital":
+        return instrument.capture_digital(
+            PicoScopeDigitalConfig(
+                channels=_string_param(params, "channels"),
+                logic_level_mv=_int_param(params, "logic_level_mv", 1500),
+                samples=_int_param(params, "samples", 10000),
+                interval_us=_float_param(params, "interval_us", 1.0),
+            ),
+            stop_requested=stop_requested,
+        )
     raise ValueError(f"Unbekannte Aktion: {step.action}")
 
 
@@ -933,6 +956,8 @@ def _validate_custom_sequence_step(step: SequenceStep) -> None:
         "capture_screenshot": set(),
         "serial_log": {"duration_s", "baudrate", "serial_format"},
         "parallel_phase": {"duration_s", "interval_s", "tasks"},
+        "picoscope_analog": {"channels", "range", "samples", "interval_us"},
+        "picoscope_digital": {"channels", "logic_level_mv", "samples", "interval_us"},
         "wait": {"seconds"},
     }
     if step.action not in required_params:

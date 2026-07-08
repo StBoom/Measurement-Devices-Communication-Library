@@ -61,6 +61,7 @@ SCOPE_MEASUREMENTS = ("Vpp", "Vrms", "Frequency", "Period", "Vmax", "Vmin")
 ON_OFF_VALUES = ("ON", "OFF")
 CHANNEL_VALUES = ("1", "2", "3", "4")
 POINT_MODE_VALUES = ("RAW", "NORMAL", "MAXIMUM")
+PICOSCOPE_RANGE_VALUES = ("100MV", "200MV", "500MV", "1V", "2V", "5V", "10V", "20V")
 CUSTOM_SEQUENCE_ACTIONS = (
     ("Signalgenerator: Frequenz setzen", "generator_set_frequency", ("device", "frequency", "power", "max_power_dbm", "rf")),
     ("Signalgenerator: Pegel setzen", "generator_set_power", ("device", "power", "max_power_dbm", "rf", "rf_off_before_change")),
@@ -74,6 +75,8 @@ CUSTOM_SEQUENCE_ACTIONS = (
     ("Screenshot erfassen", "capture_screenshot", ("device",)),
     ("Seriellen Log aufzeichnen", "serial_log", ("device", "duration_s", "baudrate", "serial_format")),
     ("Parallel-Messphase", "parallel_phase", ("device", "duration_s", "interval_s", "tasks")),
+    ("PicoScope: Analog erfassen", "picoscope_analog", ("device", "channels", "range", "samples", "interval_us")),
+    ("PicoScope: Digital erfassen", "picoscope_digital", ("device", "channels", "logic_level_mv", "samples", "interval_us")),
     ("Warten", "wait", ("device", "seconds")),
 )
 CUSTOM_SEQUENCE_FILE_VERSION = 1
@@ -88,7 +91,7 @@ CUSTOM_SEQUENCE_EXAMPLES = (
     ("Netzgerät + Oszilloskop", "supply_scope"),
     ("Netzgerät schalten", "supply_switch"),
 )
-SEQUENCE_DEVICE_ROLES = ("Multimeter", "Netzgerät", "Oszilloskop", "Signalgenerator", "Spektrumanalysator", "Netzwerkanalysator", "Seriell", "Gerät")
+SEQUENCE_DEVICE_ROLES = ("Multimeter", "Netzgerät", "Oszilloskop", "Signalgenerator", "Spektrumanalysator", "Netzwerkanalysator", "Seriell", "PicoScope", "Gerät")
 SERIAL_FORMAT_VALUES = ("8N1", "7E1", "7O1", "8E1", "8O1", "8N2")
 
 
@@ -667,8 +670,8 @@ class InstrumentVisaApp(tk.Tk):
         window = tk.Toplevel(self)
         self.custom_sequence_window = window
         window.title("Freier Ablauf-Editor")
-        window.geometry("1280x820")
-        window.minsize(1100, 740)
+        window.geometry("1400x860")
+        window.minsize(1250, 780)
         window.columnconfigure(0, weight=1)
         window.rowconfigure(1, weight=1)
 
@@ -694,8 +697,8 @@ class InstrumentVisaApp(tk.Tk):
 
         body = ttk.Frame(window)
         body.grid(row=1, column=0, sticky="nsew", padx=12, pady=6)
-        body.columnconfigure(0, weight=1)
-        body.columnconfigure(1, weight=2)
+        body.columnconfigure(0, weight=2, minsize=600)
+        body.columnconfigure(1, weight=3, minsize=620)
         body.rowconfigure(0, weight=1)
 
         left = ttk.Frame(body)
@@ -743,7 +746,7 @@ class InstrumentVisaApp(tk.Tk):
         footer.columnconfigure(1, weight=1)
         self.custom_sequence_example_var = tk.StringVar(value=CUSTOM_SEQUENCE_EXAMPLES[0][0])
         ttk.Label(footer, text="Beispiel").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=(0, 6))
-        example_combo = ttk.Combobox(footer, textvariable=self.custom_sequence_example_var, values=tuple(label for label, _key in CUSTOM_SEQUENCE_EXAMPLES), state="readonly", width=24)
+        example_combo = ttk.Combobox(footer, textvariable=self.custom_sequence_example_var, values=tuple(label for label, _key in CUSTOM_SEQUENCE_EXAMPLES), state="readonly", width=34)
         example_combo.grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=(0, 6))
         ttk.Button(footer, text="Laden", command=self.load_selected_custom_sequence_example).grid(row=0, column=2, sticky="ew", padx=(0, 8), pady=(0, 6))
         ttk.Button(footer, text="Import", command=self.import_custom_sequence).grid(row=0, column=3, sticky="ew", padx=(0, 8), pady=(0, 6))
@@ -764,12 +767,12 @@ class InstrumentVisaApp(tk.Tk):
         self.custom_sequence_device_address_var = tk.StringVar(value=self.address_var.get().strip())
         self.custom_sequence_device_role_var = tk.StringVar(value="Signalgenerator")
         ttk.Label(devices, text="Gefundenes Gerät").grid(row=0, column=0, sticky="w", padx=8, pady=8)
-        self.custom_sequence_device_select_combo = ttk.Combobox(devices, textvariable=self.custom_sequence_device_select_var, state="readonly")
+        self.custom_sequence_device_select_combo = ttk.Combobox(devices, textvariable=self.custom_sequence_device_select_var, state="readonly", width=52)
         self.custom_sequence_device_select_combo.grid(row=0, column=1, sticky="ew", padx=8, pady=8)
         self.custom_sequence_device_select_combo.bind("<<ComboboxSelected>>", self._apply_selected_resource_as_custom_sequence_device)
         ttk.Button(devices, text="übernehmen", command=self._apply_selected_resource_as_custom_sequence_device).grid(row=0, column=2, sticky="ew", padx=8, pady=8)
         ttk.Label(devices, text="Gerätetyp").grid(row=1, column=0, sticky="w", padx=8, pady=(0, 8))
-        role_combo = ttk.Combobox(devices, textvariable=self.custom_sequence_device_role_var, values=SEQUENCE_DEVICE_ROLES, state="readonly", width=18)
+        role_combo = ttk.Combobox(devices, textvariable=self.custom_sequence_device_role_var, values=SEQUENCE_DEVICE_ROLES, state="readonly", width=24)
         role_combo.grid(row=1, column=1, sticky="ew", padx=8, pady=(0, 8))
         role_combo.bind("<<ComboboxSelected>>", lambda _event: self._apply_custom_sequence_device_role())
         ttk.Label(devices, text="Name").grid(row=2, column=0, sticky="w", padx=8, pady=(0, 8))
@@ -779,7 +782,7 @@ class InstrumentVisaApp(tk.Tk):
         ttk.Button(devices, text="aktuelle Adresse", command=lambda: self.custom_sequence_device_address_var.set(self.address_var.get().strip()) if self.custom_sequence_device_address_var else None).grid(row=3, column=2, sticky="ew", padx=8, pady=(0, 8))
         self.custom_sequence_serial_port_var = tk.StringVar(value="")
         ttk.Label(devices, text="COM-Port").grid(row=4, column=0, sticky="w", padx=8, pady=(0, 8))
-        self.custom_sequence_serial_port_combo = ttk.Combobox(devices, textvariable=self.custom_sequence_serial_port_var, state="readonly")
+        self.custom_sequence_serial_port_combo = ttk.Combobox(devices, textvariable=self.custom_sequence_serial_port_var, state="readonly", width=42)
         self.custom_sequence_serial_port_combo.grid(row=4, column=1, sticky="ew", padx=8, pady=(0, 8))
         self.custom_sequence_serial_port_combo.bind("<<ComboboxSelected>>", self._apply_selected_serial_port_as_custom_sequence_device)
         serial_buttons = ttk.Frame(devices)
@@ -804,7 +807,7 @@ class InstrumentVisaApp(tk.Tk):
         action_values = tuple(label for label, _action, _params in CUSTOM_SEQUENCE_ACTIONS)
         self.custom_sequence_action_var = tk.StringVar(value=action_values[0])
         ttk.Label(steps, text="Aktion").grid(row=0, column=0, sticky="w", padx=8, pady=8)
-        action_combo = ttk.Combobox(steps, textvariable=self.custom_sequence_action_var, values=action_values, state="readonly")
+        action_combo = ttk.Combobox(steps, textvariable=self.custom_sequence_action_var, values=action_values, state="readonly", width=52)
         action_combo.grid(row=0, column=1, sticky="ew", padx=8, pady=8)
         action_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_custom_sequence_param_defaults())
         self.custom_sequence_param_vars = {
@@ -818,10 +821,10 @@ class InstrumentVisaApp(tk.Tk):
             label_widget = ttk.Label(steps, text=label)
             label_widget.grid(row=row, column=0, sticky="w", padx=8, pady=(0, 8))
             self.custom_sequence_param_labels[key] = label_widget
-            entry = ttk.Entry(steps, textvariable=self.custom_sequence_param_vars[key])
+            entry = ttk.Entry(steps, textvariable=self.custom_sequence_param_vars[key], width=52)
             entry.grid(row=row, column=1, sticky="ew", padx=8, pady=(0, 8))
             self.custom_sequence_param_widgets[key] = entry
-        ttk.Label(steps, text="Variablen werden mit ${name} genutzt, z. B. ${frequency}.", wraplength=360).grid(row=6, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8))
+        ttk.Label(steps, text="Variablen werden mit ${name} genutzt, z. B. ${frequency}.", wraplength=500).grid(row=6, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8))
         self.custom_sequence_step_button = ttk.Button(steps, text="Schritt hinzufügen", command=self._add_custom_sequence_step)
         self.custom_sequence_step_button.grid(row=7, column=1, sticky="ew", padx=8, pady=(0, 8))
         ttk.Button(steps, text="Bearbeiten abbrechen", command=self._cancel_custom_sequence_step_edit).grid(row=8, column=1, sticky="ew", padx=8, pady=(0, 8))
@@ -844,6 +847,8 @@ class InstrumentVisaApp(tk.Tk):
             "capture_screenshot": (self._default_sequence_device_name("Oszilloskop"), "", "", "", ""),
             "serial_log": (self._default_sequence_device_name("Seriell"), "10", "115200", "8N1", ""),
             "parallel_phase": ("", "10", "1", "Multimeter1:dmm; Oszilloskop1:scope:Vpp:1; Seriell1:serial:115200:8N1", ""),
+            "picoscope_analog": (self._default_sequence_device_name("PicoScope"), "A,B", "5V", "10000", "1"),
+            "picoscope_digital": (self._default_sequence_device_name("PicoScope"), "D0-D7", "1500", "10000", "1"),
             "wait": ("", "0.5", "", "", ""),
         }.get(action, ("", "", "", "", ""))
         for key, value in zip(("device", "value1", "value2", "value3", "value4"), defaults):
@@ -872,6 +877,8 @@ class InstrumentVisaApp(tk.Tk):
             "capture_screenshot": {"device": "Gerät"},
             "serial_log": {"device": "Serielles Gerät", "value1": "Dauer [s]", "value2": "Baudrate", "value3": "Format"},
             "parallel_phase": {"device": "", "value1": "Dauer [s]", "value2": "Intervall [s]", "value3": "Aufgaben"},
+            "picoscope_analog": {"device": "PicoScope", "value1": "Kanäle", "value2": "Bereich", "value3": "Samples", "value4": "Intervall [us]"},
+            "picoscope_digital": {"device": "PicoScope", "value1": "Kanäle", "value2": "Logikpegel [mV]", "value3": "Samples", "value4": "Intervall [us]"},
             "wait": {"device": "", "value1": "Sekunden"},
         }.get(action, {})
 
@@ -885,9 +892,9 @@ class InstrumentVisaApp(tk.Tk):
             current.destroy()
             values = combo_values.get(key)
             if values:
-                widget = ttk.Combobox(current.master, textvariable=self.custom_sequence_param_vars[key], values=values, state="readonly")
+                widget = ttk.Combobox(current.master, textvariable=self.custom_sequence_param_vars[key], values=values, state="readonly", width=52)
             else:
-                widget = ttk.Entry(current.master, textvariable=self.custom_sequence_param_vars[key])
+                widget = ttk.Entry(current.master, textvariable=self.custom_sequence_param_vars[key], width=52)
             widget.grid(**grid_info)
             self.custom_sequence_param_widgets[key] = widget
 
@@ -910,6 +917,8 @@ class InstrumentVisaApp(tk.Tk):
             return {"value2": POINT_MODE_VALUES}
         if action == "serial_log":
             return {"value3": SERIAL_FORMAT_VALUES}
+        if action == "picoscope_analog":
+            return {"value2": PICOSCOPE_RANGE_VALUES}
         return {}
 
     def _apply_custom_sequence_variable_unit_defaults(self) -> None:
@@ -1077,6 +1086,8 @@ class InstrumentVisaApp(tk.Tk):
             return "Spektrumanalysator"
         if normalized in {"serial", "seriell", "com", "comport", "com-port"}:
             return "Seriell"
+        if normalized in {"pico", "picoscope"}:
+            return "PicoScope"
         return role.strip() or "Gerät"
 
     def _remove_custom_sequence_device(self) -> None:
@@ -1340,6 +1351,8 @@ class InstrumentVisaApp(tk.Tk):
         self._refresh_custom_sequence_tree()
 
     def _example_address(self, role: str, fallback: str) -> str:
+        if self._sequence_device_role_name(role) == "PicoScope":
+            return "PICO2000A::AUTO"
         for address in self._known_device_addresses():
             saved = self._saved_device_for_address(address)
             if isinstance(saved, dict) and self._saved_device_matches_example_role(saved, role):

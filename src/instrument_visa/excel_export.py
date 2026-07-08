@@ -71,7 +71,7 @@ def append_result(workbook_path: Path, address: str, idn: str, result: Acquisiti
         data_sheet.append(["FileType", result.file_type])
         data_sheet.append([])
         _append_csv(data_sheet, result.content)
-        if result.kind == "waveform":
+        if result.kind in {"waveform", "picoscope analog", "picoscope digital"}:
             _add_waveform_chart(data_sheet)
         elif result.kind in {"frequency sweep", "voltage sweep"}:
             _add_sweep_chart(data_sheet, result.kind)

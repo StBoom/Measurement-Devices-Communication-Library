@@ -152,7 +152,7 @@ Die folgenden Geräteprofile sind als best-effort implementiert, aber noch nicht
 - Rohde & Schwarz RT-Series-Oszilloskope, falls IDN `RTB`, `RTA`, `RTM`, `RTE`, `RTO` oder `RTP` enthält: Scope-Messwert, Screenshot und Waveform mit RTB2000-Manual-SCPI (`MEASurement...`, `HCOPy:DATA?`, `CHANnel:DATA?`)
 - Teledyne LeCroy WavePro/WaveRunner/SDA/Zi: Scope-Messwert, Screenshot und Waveform-Export mit X-Stream/WaveRunner-Remote-Control-SCPI (`PAVA?`, `SCREEN_DUMP`, `INSPECT? "SIMPLE"`)
 
-PicoScope-Geräte wie PicoScope 2206BMSO oder 2406B sind bewusst nicht integriert, da sie typischerweise nicht per VISA/SCPI angesprochen werden, sondern über PicoSDK.
+PicoScope 2206BMSO und PicoScope 2406B können im freien Ablauf über `PICO2000A::AUTO` oder `PICO2000A::SERIAL::<seriennummer>` angesprochen werden. Dafür muss auf dem Ziel-PC das PicoSDK 64-bit mit ps2000a-Treiber installiert sein; ohne PicoSDK bleibt das Programm startfähig, PicoScope-Schritte melden dann eine klare Fehlermeldung. Unterstützt sind zunächst analoge Block-Aufnahmen über `PicoScope: Analog erfassen` mit Bereich, Sample-Anzahl und Intervall in Mikrosekunden. Beim 2206BMSO sind typischerweise `A,B` analog und zusätzlich digitale MSO-Kanäle `D0-D15` nutzbar; beim 2406B sind typischerweise `A,B,C,D` analog nutzbar, aber keine MSO-Digitalkanäle. Digitale Aufnahmen laufen über `PicoScope: Digital erfassen` mit Kanälen, Logikpegel, Samples und Intervall. Die Ergebnisse werden als CSV/Excel-Waveform exportiert.
 
 ## Geräte-Testabläufe
 
@@ -668,15 +668,16 @@ Statuswerte:
     Status:            commands from manual, untested
     Notizen:           LeCroy-Firmware/Schnittstelle kann variieren; noch mit Laborgerät testen
 
-### Nicht Integriert
+### PicoSDK-Geräte
 
 #### Pico Technology PicoScope 2206BMSO/2406B
 
-    Profil-Key:        keines
-    IDN-Erkennung:     keine
-    Funktionen:        keine
-    Status:            nicht integriert
-    Notizen:           Bewusst ausgelassen, da typischerweise PicoSDK statt VISA/SCPI nötig ist
+    Profil-Key:        pico2000a
+    IDN-Erkennung:     keine VISA-IDN; Adresse `PICO2000A::AUTO` oder `PICO2000A::SERIAL::<seriennummer>`
+    Funktionen:        analoge Block-Aufnahme ja; digitale MSO-Aufnahme beim 2206BMSO
+    Nicht unterstützt: SCPI/VISA-IDN, komplexe Trigger, Streaming; digitale Kanäle beim 2406B
+    Status:            PicoSDK-2000A vorbereitet, mit Hardware noch zu testen
+    Notizen:           Zielgeräte PicoScope 2206BMSO und 2406B; PicoSDK 64-bit/ps2000a auf Ziel-PC erforderlich
 
 Für neue Rückmeldungen reicht es, den Status und die Notizen im jeweiligen Geräteblock zu aktualisieren. Sinnvoll sind kurze Einträge wie `getestet: IDN, Messwert, Screenshot ok; Waveform Fehler ...`.
 

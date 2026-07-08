@@ -24,6 +24,7 @@ from instrument_visa.acquisition import (  # noqa: E402
 )
 from instrument_visa.excel_export import append_result  # noqa: E402
 from instrument_visa.cli import _load_sequence_config  # noqa: E402
+from instrument_visa.picoscope_client import parse_pico_analog_channels, parse_pico_digital_channels  # noqa: E402
 from instrument_visa.profiles import detect_profile  # noqa: E402
 from instrument_visa.sequence import (  # noqa: E402
     CustomSequenceConfig,
@@ -54,6 +55,8 @@ class FakeInstrument:
         self.binary_responses = binary_responses or {}
         self.raw_responses: dict[str, bytes] = {}
         self.serial_log_responses: dict[float, str] = {}
+        self.pico_analog_configs: list[object] = []
+        self.pico_digital_configs: list[object] = []
         self.writes: list[str] = []
         self.queries: list[str] = []
         self.binary_queries: list[str] = []
@@ -94,6 +97,14 @@ class FakeInstrument:
         from instrument_visa.visa_client import InstrumentInfo
 
         return InstrumentInfo(address=self.address, idn=self.query("*IDN?").strip())
+
+    def capture_analog(self, config, stop_requested=None):
+        self.pico_analog_configs.append(config)
+        return AcquisitionResult(kind="picoscope analog", file_type="csv", content="Time_s,A_V\n0,1.0\n")
+
+    def capture_digital(self, config, stop_requested=None):
+        self.pico_digital_configs.append(config)
+        return AcquisitionResult(kind="picoscope digital", file_type="csv", content="Time_s,D0\n0,1\n")
 
 
 class AcquisitionTests(unittest.TestCase):
@@ -641,6 +652,54 @@ class AcquisitionTests(unittest.TestCase):
             self.assertTrue(workbook_path.exists())
             self.assertIsNotNone(export.artifact_path)
             self.assertEqual(export.artifact_path.read_text(encoding="utf-8"), "line 1\nline 2")
+
+    def test_picoscope_channel_parsers(self) -> None:
+        self.assertEqual(parse_pico_analog_channels("A,B,CHC"), ["A", "B", "C"])
+        self.assertEqual(parse_pico_digital_channels("D0-D3,D7"), [0, 1, 2, 3, 7])
+
+        with self.assertRaises(ValueError):
+            parse_pico_analog_channels("Z")
+        with self.assertRaises(ValueError):
+            parse_pico_digital_channels("D16")
+
+    def test_custom_sequence_picoscope_analog_step(self) -> None:
+        pico = FakeInstrument(query_responses={"*IDN?": "PicoScope 2000A"})
+        pico.address = "PICO2000A::AUTO"
+        exports: list[tuple[str, str]] = []
+
+        def export_step(device: str, info, result: AcquisitionResult) -> str:
+            exports.append((device, result.file_type))
+            return "Tabellenblatt: PicoAnalog"
+
+        result = run_custom_sequence(
+            {"Pico1": pico},  # type: ignore[dict-item]
+            CustomSequenceConfig(
+                devices={"Pico1": pico.address},
+                steps=[SequenceStep("Pico1", "picoscope_analog", {"channels": "A,B", "range": "5V", "samples": "100", "interval_us": "2"})],
+                end_rf_off=False,
+            ),
+            step_result_export=export_step,
+        )
+
+        self.assertEqual(result.ok_count, 1)
+        self.assertEqual(pico.pico_analog_configs[0].channels, "A,B")
+        self.assertEqual(exports, [("Pico1", "csv")])
+
+    def test_custom_sequence_picoscope_digital_step(self) -> None:
+        pico = FakeInstrument(query_responses={"*IDN?": "PicoScope 2000A"})
+        pico.address = "PICO2000A::AUTO"
+
+        result = run_custom_sequence(
+            {"Pico1": pico},  # type: ignore[dict-item]
+            CustomSequenceConfig(
+                devices={"Pico1": pico.address},
+                steps=[SequenceStep("Pico1", "picoscope_digital", {"channels": "D0-D7", "logic_level_mv": "1500", "samples": "100", "interval_us": "2"})],
+                end_rf_off=False,
+            ),
+        )
+
+        self.assertEqual(result.ok_count, 1)
+        self.assertEqual(pico.pico_digital_configs[0].channels, "D0-D7")
 
     def test_custom_sequence_power_supply_uses_configured_safety_limits(self) -> None:
         supply = FakeInstrument(query_responses={"*IDN?": "HAMEG,HMP4030,123,1.0"})
