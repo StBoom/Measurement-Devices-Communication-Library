@@ -10,7 +10,7 @@ from dataclasses import asdict
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
-from time import monotonic
+from time import monotonic, sleep
 from tkinter import filedialog, messagebox, ttk
 
 from .acquisition import (
@@ -36,6 +36,7 @@ from .picoscope_client import list_picoscope_resources
 from .saleae_client import list_saleae_resources
 from .sequence import (
     CustomSequenceConfig,
+    DataLogger34970AConfig,
     FrequencySweepConfig,
     SequenceStep,
     SequenceVariable,
@@ -48,10 +49,14 @@ from .sequence import (
     parse_ampere,
     parse_dbm,
     parse_voltage,
+    read_34970a_data_logger,
+    read_34970a_measurement_plan,
+    parse_34970a_measurement_plan,
     run_frequency_sweep,
     run_custom_sequence,
     run_timed_switch,
     run_voltage_sweep,
+    set_preferred_serial_scpi_settings,
     voltage_points,
 )
 from .visa_client import VisaInstrument, list_resources
@@ -133,6 +138,13 @@ class InstrumentVisaApp(tk.Tk):
         self.sparameter_format_var = tk.StringVar(value=self.settings.get("sparameter_format", "AUTO"))
         sparameter_ports = set(self.settings.get("sparameter_ports", [1, 2]))
         self.sparameter_port_vars = {port: tk.BooleanVar(value=port in sparameter_ports) for port in range(1, 5)}
+        self.data_logger_34970a_measurement_var = tk.StringVar(value=self.settings.get("data_logger_34970a_measurement", "TEMP"))
+        self.data_logger_34970a_channels_var = tk.StringVar(value=self.settings.get("data_logger_34970a_channels", "1-20"))
+        self.data_logger_34970a_plan_var = tk.StringVar(value=self.settings.get("data_logger_34970a_plan", "1-20:TEMP; 21-22:CURR_DC"))
+        self.data_logger_34970a_baudrate_var = tk.StringVar(value=str(self.settings.get("data_logger_34970a_baudrate", "19200")))
+        self.data_logger_34970a_serial_format_var = tk.StringVar(value=self.settings.get("data_logger_34970a_serial_format", "8N1"))
+        self.data_logger_34970a_interval_var = tk.StringVar(value=str(self.settings.get("data_logger_34970a_interval", "5")))
+        self.data_logger_34970a_count_var = tk.StringVar(value=str(self.settings.get("data_logger_34970a_count", "0")))
         self.generator_frequency_var = tk.StringVar(value=self.settings.get("generator_frequency", "100 MHz"))
         self.generator_power_var = tk.StringVar(value=self.settings.get("generator_power", "-30 dBm"))
         self.generator_rf_var = tk.StringVar(value=self.settings.get("generator_rf", "OFF"))
@@ -200,6 +212,10 @@ class InstrumentVisaApp(tk.Tk):
         self._scope_widgets: list[tk.Widget] = []
         self._dmm_widgets: list[tk.Widget] = []
         self._vna_widgets: list[tk.Widget] = []
+        self._data_logger_widgets: list[tk.Widget] = []
+        self._data_logger_stop_widgets: list[tk.Widget] = []
+        self._spectrum_widgets: list[tk.Widget] = []
+        self._spectrum_screenshot_widgets: list[tk.Widget] = []
         self._screenshot_widgets: list[tk.Widget] = []
         self._timed_widgets: list[tk.Widget] = []
         self._timed_dmm_widgets: list[tk.Widget] = []
@@ -215,9 +231,11 @@ class InstrumentVisaApp(tk.Tk):
         self._device_sections: dict[str, tk.Widget] = {}
         self._power_supply_channel_spinbox: ttk.Spinbox | None = None
         self.timed_stop_event = threading.Event()
+        self.operation_stop_event = threading.Event()
         self.sequence_stop_event = threading.Event()
         self.switch_stop_event = threading.Event()
         self.timed_running = False
+        self.operation_running = False
         self.sequence_running = False
         self.switch_running = False
         self.current_profile: DeviceProfile = UNKNOWN_PROFILE
@@ -310,10 +328,9 @@ class InstrumentVisaApp(tk.Tk):
         measurement_area = ttk.Frame(controls_frame)
         measurement_area.grid(row=2, column=0, sticky="ew", padx=12, pady=6)
         measurement_area.columnconfigure(0, weight=1)
-        measurement_area.columnconfigure(1, weight=1)
 
         scope = ttk.LabelFrame(measurement_area, text="Oszilloskop")
-        scope.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        scope.grid(row=0, column=0, sticky="ew")
 
         scope_measurement = ttk.Frame(scope)
         scope_measurement.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
@@ -360,13 +377,13 @@ class InstrumentVisaApp(tk.Tk):
         point_mode_combo.pack(side="left", padx=(0, 8))
 
         dmm = ttk.LabelFrame(measurement_area, text="Multimeter")
-        dmm.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        dmm.grid(row=1, column=0, sticky="ew", pady=(12, 0))
         dmm_value_button = ttk.Button(dmm, text="DMM Messwert", command=self.read_value)
         dmm_value_button.grid(row=0, column=0, sticky="w", padx=8, pady=8)
         ttk.Label(dmm, text="Für Geräte mit :READ? Unterstützung").grid(row=1, column=0, sticky="w", padx=8, pady=(0, 8))
 
         timed = ttk.LabelFrame(measurement_area, text="Getimtes Messen")
-        timed.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        timed.grid(row=2, column=0, sticky="ew", pady=(12, 0))
         timed.grid_remove()
 
         timed_controls = ttk.Frame(timed)
@@ -385,7 +402,7 @@ class InstrumentVisaApp(tk.Tk):
         timed_count_entry.pack(side="left", padx=(0, 8))
 
         vna = ttk.LabelFrame(measurement_area, text="Netzwerkanalysator")
-        vna.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        vna.grid(row=3, column=0, sticky="ew", pady=(12, 0))
 
         sparameter_controls = ttk.Frame(vna)
         sparameter_controls.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
@@ -407,8 +424,57 @@ class InstrumentVisaApp(tk.Tk):
             checkbutton.pack(side="left", padx=(0, 8))
             sparameter_checkbuttons.append(checkbutton)
 
+        data_logger = ttk.LabelFrame(measurement_area, text="34970A Datenlogger")
+        data_logger.grid(row=4, column=0, sticky="ew", pady=(12, 0))
+        data_logger.columnconfigure(0, weight=1)
+        data_logger_controls = ttk.Frame(data_logger)
+        data_logger_controls.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
+        data_logger_read_button = ttk.Button(data_logger_controls, text="Kanäle messen", command=self.read_data_logger_34970a)
+        data_logger_read_button.pack(side="left", padx=(0, 8))
+        ttk.Label(data_logger_controls, text="Messart").pack(side="left", padx=(0, 4))
+        data_logger_measurement_combo = ttk.Combobox(data_logger_controls, textvariable=self.data_logger_34970a_measurement_var, values=DATA_LOGGER_34970A_MEASUREMENTS, width=10, state="readonly")
+        data_logger_measurement_combo.pack(side="left", padx=(0, 8))
+        ttk.Label(data_logger_controls, text="Kanäle").pack(side="left", padx=(0, 4))
+        data_logger_channels_entry = ttk.Entry(data_logger_controls, textvariable=self.data_logger_34970a_channels_var, width=12)
+        data_logger_channels_entry.pack(side="left", padx=(0, 8))
+        ttk.Label(data_logger_controls, text="Baud").pack(side="left", padx=(0, 4))
+        data_logger_baudrate_entry = ttk.Entry(data_logger_controls, textvariable=self.data_logger_34970a_baudrate_var, width=7)
+        data_logger_baudrate_entry.pack(side="left", padx=(0, 8))
+        ttk.Label(data_logger_controls, text="Format").pack(side="left", padx=(0, 4))
+        data_logger_serial_format_combo = ttk.Combobox(data_logger_controls, textvariable=self.data_logger_34970a_serial_format_var, values=SERIAL_FORMAT_VALUES, width=6, state="readonly")
+        data_logger_serial_format_combo.pack(side="left", padx=(0, 8))
+
+        data_logger_plan = ttk.Frame(data_logger)
+        data_logger_plan.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
+        data_logger_plan.columnconfigure(2, weight=1)
+        data_logger_plan_button = ttk.Button(data_logger_plan, text="Messplan messen", command=self.read_data_logger_34970a_plan)
+        data_logger_plan_button.grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(data_logger_plan, text="Plan").grid(row=0, column=1, sticky="w", padx=(0, 4))
+        data_logger_plan_entry = ttk.Entry(data_logger_plan, textvariable=self.data_logger_34970a_plan_var)
+        data_logger_plan_entry.grid(row=0, column=2, sticky="ew", padx=(0, 8))
+        data_logger_timing = ttk.Frame(data_logger)
+        data_logger_timing.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
+        ttk.Label(data_logger_timing, text="Intervall [s]").pack(side="left", padx=(0, 4))
+        data_logger_interval_entry = ttk.Entry(data_logger_timing, textvariable=self.data_logger_34970a_interval_var, width=8)
+        data_logger_interval_entry.pack(side="left", padx=(0, 8))
+        ttk.Label(data_logger_timing, text="Anzahl (0=endlos)").pack(side="left", padx=(0, 4))
+        data_logger_count_entry = ttk.Entry(data_logger_timing, textvariable=self.data_logger_34970a_count_var, width=8)
+        data_logger_count_entry.pack(side="left", padx=(0, 8))
+        data_logger_stop_button = ttk.Button(data_logger_timing, text="Stop", command=self.stop_current_operation)
+        data_logger_stop_button.pack(side="left", padx=(8, 0))
+        ttk.Label(data_logger, text="Vorher einmal IDN testen, damit die funktionierenden COM-Settings gecacht werden.").grid(row=3, column=0, sticky="w", padx=8, pady=(0, 8))
+
+        spectrum = ttk.LabelFrame(measurement_area, text="Spektrumanalysator")
+        spectrum.grid(row=5, column=0, sticky="ew", pady=(12, 0))
+        spectrum_controls = ttk.Frame(spectrum)
+        spectrum_controls.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
+        spectrum_trace_button = ttk.Button(spectrum_controls, text="Trace exportieren", command=self.capture_spectrum_trace)
+        spectrum_trace_button.pack(side="left", padx=(0, 8))
+        spectrum_screenshot_button = ttk.Button(spectrum_controls, text="Screenshot", command=self.capture_screenshot)
+        spectrum_screenshot_button.pack(side="left", padx=(0, 8))
+
         generator = ttk.LabelFrame(measurement_area, text="Signalgenerator")
-        generator.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        generator.grid(row=6, column=0, sticky="ew", pady=(12, 0))
         generator.columnconfigure(0, weight=1)
 
         generator_controls = ttk.Frame(generator)
@@ -440,7 +506,7 @@ class InstrumentVisaApp(tk.Tk):
         generator_rf_off_check.grid(row=1, column=2, columnspan=4, sticky="w")
 
         power_supply = ttk.LabelFrame(measurement_area, text="Netzgerät")
-        power_supply.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        power_supply.grid(row=7, column=0, sticky="ew", pady=(12, 0))
         power_supply.columnconfigure(0, weight=1)
         power_supply_controls = ttk.Frame(power_supply)
         power_supply_controls.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
@@ -531,6 +597,10 @@ class InstrumentVisaApp(tk.Tk):
         self._connection_widgets = [self.resource_combo, search_button, idn_button, address_entry]
         self._dmm_widgets = [dmm_value_button]
         self._vna_widgets = [sparameter_button, sparameter_format_combo, *sparameter_checkbuttons]
+        self._data_logger_widgets = [data_logger_read_button, data_logger_measurement_combo, data_logger_channels_entry, data_logger_baudrate_entry, data_logger_serial_format_combo, data_logger_plan_button, data_logger_plan_entry, data_logger_interval_entry, data_logger_count_entry]
+        self._data_logger_stop_widgets = [data_logger_stop_button]
+        self._spectrum_widgets = [spectrum_trace_button]
+        self._spectrum_screenshot_widgets = [spectrum_screenshot_button]
         self._screenshot_widgets = [screenshot_button]
         self._timed_widgets = [timed_dmm_button, timed_scope_button, timed_interval_entry, timed_count_entry]
         self._timed_dmm_widgets = [timed_dmm_button]
@@ -564,6 +634,8 @@ class InstrumentVisaApp(tk.Tk):
             "dmm": dmm,
             "timed": timed,
             "vna": vna,
+            "data_logger": data_logger,
+            "spectrum": spectrum,
             "generator": generator,
             "power_supply": power_supply,
         }
@@ -621,6 +693,17 @@ class InstrumentVisaApp(tk.Tk):
     def read_value(self) -> None:
         self._run_worker("DMM-Messwert wird gelesen...", self._read_value)
 
+    def read_data_logger_34970a(self) -> None:
+        self._run_worker("34970A-Kanäle werden gemessen...", self._read_data_logger_34970a)
+
+    def read_data_logger_34970a_plan(self) -> None:
+        self._run_worker("34970A-Messplan wird gemessen...", self._read_data_logger_34970a_plan)
+
+    def stop_current_operation(self) -> None:
+        self.operation_stop_event.set()
+        self.status_var.set("Stop angefordert...")
+        self._append_log("Stop angefordert...")
+
     def read_scope_measurement(self) -> None:
         self._run_worker("Scope-Messwert wird gelesen...", self._read_scope_measurement)
 
@@ -629,6 +712,9 @@ class InstrumentVisaApp(tk.Tk):
 
     def capture_waveform(self) -> None:
         self._run_worker("Waveform wird erfasst...", self._capture_waveform)
+
+    def capture_spectrum_trace(self) -> None:
+        self._run_worker("Spektrum-Trace wird exportiert...", self._capture_spectrum_trace)
 
     def capture_sparameters(self) -> None:
         self._run_worker("S-Parameter werden exportiert...", self._capture_sparameters)
@@ -679,6 +765,7 @@ class InstrumentVisaApp(tk.Tk):
             return
         window = tk.Toplevel(self)
         self.custom_sequence_window = window
+        window.protocol("WM_DELETE_WINDOW", self._close_custom_sequence_window)
         window.title("Freier Ablauf-Editor")
         window.geometry("1400x860")
         window.minsize(1250, 780)
@@ -764,9 +851,24 @@ class InstrumentVisaApp(tk.Tk):
         ttk.Button(footer, text="Vorschau", command=self.preview_custom_sequence).grid(row=1, column=0, sticky="ew", padx=(0, 8))
         ttk.Button(footer, text="Ablauf starten", command=self.start_custom_sequence).grid(row=1, column=1, sticky="ew", padx=(0, 8))
         ttk.Button(footer, text="Stop", command=self.stop_sequence).grid(row=1, column=2, sticky="ew", padx=(0, 8))
-        ttk.Button(footer, text="Schließen", command=window.destroy).grid(row=1, column=4, sticky="ew")
+        ttk.Button(footer, text="Schließen", command=self._close_custom_sequence_window).grid(row=1, column=4, sticky="ew")
         self._refresh_custom_sequence_device_tree()
         self._refresh_custom_sequence_tree()
+
+    def _close_custom_sequence_window(self) -> None:
+        if self.custom_sequence_window is not None and self.custom_sequence_window.winfo_exists():
+            self.custom_sequence_window.destroy()
+        self.custom_sequence_window = None
+        self.custom_sequence_tree = None
+        self.custom_sequence_device_tree = None
+        self.custom_sequence_device_select_combo = None
+        self.custom_sequence_serial_port_combo = None
+        self.custom_sequence_action_var = None
+        self.custom_sequence_example_var = None
+        self.custom_sequence_param_labels = {}
+        self.custom_sequence_param_widgets = {}
+        self.custom_sequence_step_button = None
+        self.custom_sequence_edit_index = None
 
     def _build_custom_sequence_device_panel(self, parent: ttk.Frame) -> None:
         devices = ttk.LabelFrame(parent, text="Geräte")
@@ -859,8 +961,8 @@ class InstrumentVisaApp(tk.Tk):
             "parallel_phase": ("", "10", "1", "Multimeter1:dmm; Oszilloskop1:scope:Vpp:1; Seriell1:serial:115200:8N1", ""),
             "picoscope_analog": (self._default_sequence_device_name("PicoScope"), "A,B", "5V", "10000", "1"),
             "picoscope_digital": (self._default_sequence_device_name("PicoScope"), "D0-D7", "1500", "10000", "1"),
-            "data_logger_34970a_read": (self._default_sequence_device_name("Datenlogger"), "VOLT_DC", "1-22", "9600", "8N1"),
-            "data_logger_34970a_plan": (self._default_sequence_device_name("Datenlogger"), "1-4:VOLT_DC; 5-8:TEMP; 9-12:RES", "9600", "8N1", ""),
+            "data_logger_34970a_read": (self._default_sequence_device_name("Datenlogger"), "TEMP", "1-20", "19200", "8N1"),
+            "data_logger_34970a_plan": (self._default_sequence_device_name("Datenlogger"), "1-20:TEMP; 21-22:CURR_DC", "19200", "8N1", ""),
             "saleae_capture": (self._default_sequence_device_name("Saleae"), "D0-D7", "5", "10000000", "3.3"),
             "saleae_uart": (self._default_sequence_device_name("Saleae"), "0", "115200", "5", "10000000"),
             "saleae_i2c": (self._default_sequence_device_name("Saleae"), "0", "1", "5", "10000000"),
@@ -996,19 +1098,21 @@ class InstrumentVisaApp(tk.Tk):
             return
         labels: list[str] = []
         self.custom_sequence_device_select_map = {}
-        known_display_addresses = [self._display_address_for_known_device(address) for address in self._known_device_addresses()]
-        resource_addresses = list(dict.fromkeys(self.last_found_resources))
-        numbering = self._resource_numbering_for_addresses([*known_display_addresses, *resource_addresses])
-        for display_address in known_display_addresses:
-            label = self._resource_display_label(display_address, numbering)
-            labels.append(label)
-            self.custom_sequence_device_select_map[label] = display_address
+        resource_addresses = self._resource_display_addresses(self.last_found_resources)
+        numbering = self._resource_numbering_for_addresses(resource_addresses)
         for address in resource_addresses:
             label = self._resource_display_label(address, numbering)
             if label not in self.custom_sequence_device_select_map:
                 labels.append(label)
             self.custom_sequence_device_select_map[label] = address
-        self.custom_sequence_device_select_combo.configure(values=labels)
+        try:
+            if not self.custom_sequence_device_select_combo.winfo_exists():
+                self.custom_sequence_device_select_combo = None
+                return
+            self.custom_sequence_device_select_combo.configure(values=labels)
+        except tk.TclError:
+            self.custom_sequence_device_select_combo = None
+            return
         if labels and not self.custom_sequence_device_select_var.get():
             self.custom_sequence_device_select_var.set(labels[0])
 
@@ -1035,7 +1139,14 @@ class InstrumentVisaApp(tk.Tk):
             label = self._serial_port_display_label(port)
             labels.append(label)
             self.custom_sequence_serial_port_map[label] = port.device
-        self.custom_sequence_serial_port_combo.configure(values=labels)
+        try:
+            if not self.custom_sequence_serial_port_combo.winfo_exists():
+                self.custom_sequence_serial_port_combo = None
+                return
+            self.custom_sequence_serial_port_combo.configure(values=labels)
+        except tk.TclError:
+            self.custom_sequence_serial_port_combo = None
+            return
         if labels:
             self.custom_sequence_serial_port_var.set(labels[0])
             self.status_var.set(f"COM-Ports gefunden: {len(labels)}")
@@ -1702,7 +1813,10 @@ class InstrumentVisaApp(tk.Tk):
         with self._open_instrument() as instrument:
             idn = instrument.info().idn
         profile = detect_profile(idn)
-        self._messages.put(("profile", (profile, address, idn)))
+        serial_settings = getattr(instrument, "last_serial_settings", None)
+        self._messages.put(("profile", (profile, address, idn, serial_settings)))
+        if serial_settings is not None:
+            self.logger.info("IDN serial settings address=%s baudrate=%s format=%s flow_control=%s terminator=%r", address, *serial_settings)
         self.logger.info("IDN address=%s idn=%s device_type=%s profile=%s %s", address, idn, profile.device_type, profile.manufacturer, profile.model_family)
         return f"{idn}\nGerätetyp: {profile.device_type}\nProfil: {profile.manufacturer} {profile.model_family}"
 
@@ -1713,6 +1827,57 @@ class InstrumentVisaApp(tk.Tk):
         export = append_result(self._output_path(), self.address_var.get().strip(), info.idn, result)
         self.logger.info("DMM value exported workbook=%s value=%s", export.workbook_path, result.content)
         return f"Messwert gespeichert: {export.workbook_path}\n{result.content}"
+
+    def _read_data_logger_34970a(self) -> str:
+        measurement = self.data_logger_34970a_measurement_var.get().strip()
+        channels = self.data_logger_34970a_channels_var.get().strip()
+        baudrate = int(self.data_logger_34970a_baudrate_var.get().strip())
+        serial_format = self.data_logger_34970a_serial_format_var.get().strip()
+        interval_s, count = self._data_logger_timing()
+        completed = 0
+        with self._open_instrument() as instrument:
+            info = instrument.info()
+            while not self.operation_stop_event.is_set() and (count == 0 or completed < count):
+                result = read_34970a_data_logger(
+                    instrument,
+                    DataLogger34970AConfig(
+                        measurement=measurement,
+                        channels=channels,
+                        baudrate=baudrate,
+                        serial_format=serial_format,
+                    ),
+                    stop_requested=self.operation_stop_event.is_set,
+                )
+                export = append_result(self._output_path(), self.address_var.get().strip(), info.idn, result)
+                completed += 1
+                self.logger.info("34970A data exported workbook=%s sheet=%s measurement=%s channels=%s baudrate=%s serial_format=%s index=%s", export.workbook_path, export.sheet_name, measurement, channels, baudrate, serial_format, completed)
+                if count and completed >= count:
+                    break
+                if self.operation_stop_event.wait(interval_s):
+                    break
+        stopped_text = " gestoppt" if self.operation_stop_event.is_set() else " abgeschlossen"
+        return f"34970A-Kanäle{stopped_text}: {self._output_path()}\nMessungen: {completed}\nMessart: {measurement}\nKanäle: {channels}"
+
+    def _read_data_logger_34970a_plan(self) -> str:
+        plan = self.data_logger_34970a_plan_var.get().strip()
+        baudrate = int(self.data_logger_34970a_baudrate_var.get().strip())
+        serial_format = self.data_logger_34970a_serial_format_var.get().strip()
+        interval_s, count = self._data_logger_timing()
+        tasks = parse_34970a_measurement_plan(plan)
+        completed = 0
+        with self._open_instrument() as instrument:
+            info = instrument.info()
+            while not self.operation_stop_event.is_set() and (count == 0 or completed < count):
+                result = read_34970a_measurement_plan(instrument, tasks, baudrate=baudrate, serial_format_value=serial_format, stop_requested=self.operation_stop_event.is_set)
+                export = append_result(self._output_path(), self.address_var.get().strip(), info.idn, result)
+                completed += 1
+                self.logger.info("34970A plan exported workbook=%s sheet=%s plan=%s baudrate=%s serial_format=%s index=%s", export.workbook_path, export.sheet_name, plan, baudrate, serial_format, completed)
+                if count and completed >= count:
+                    break
+                if self.operation_stop_event.wait(interval_s):
+                    break
+        stopped_text = " gestoppt" if self.operation_stop_event.is_set() else " abgeschlossen"
+        return f"34970A-Messplan{stopped_text}: {self._output_path()}\nMessungen: {completed}\nPlan: {plan}"
 
     def _read_scope_measurement(self) -> str:
         measurement = self.measurement_var.get()
@@ -1747,6 +1912,15 @@ class InstrumentVisaApp(tk.Tk):
         channel_text = ", ".join(f"CH{channel}" for channel in channels)
         sheet_text = f"\nTabellenblatt: {export.sheet_name}" if export.sheet_name else ""
         return f"Waveform gespeichert: {export.workbook_path}{sheet_text}\nKanäle: {channel_text}\nPunktmodus: {self.point_mode_var.get()}"
+
+    def _capture_spectrum_trace(self) -> str:
+        with self._open_instrument() as instrument:
+            info = instrument.info()
+            result = capture_waveform(instrument, info.idn, None, self.point_mode_var.get())
+        export = append_result(self._output_path(), self.address_var.get().strip(), info.idn, result)
+        self.logger.info("Spectrum trace exported workbook=%s sheet=%s", export.workbook_path, export.sheet_name)
+        sheet_text = f"\nTabellenblatt: {export.sheet_name}" if export.sheet_name else ""
+        return f"Spektrum-Trace gespeichert: {export.workbook_path}{sheet_text}"
 
     def _capture_sparameters(self) -> str:
         ports = [port for port, variable in self.sparameter_port_vars.items() if variable.get()]
@@ -2074,6 +2248,18 @@ class InstrumentVisaApp(tk.Tk):
             raise ValueError("Max. V und Max. A müssen größer als 0 sein.")
         return max_voltage, max_current
 
+    def _data_logger_timing(self) -> tuple[float, int]:
+        try:
+            interval_s = float(self.data_logger_34970a_interval_var.get().replace(",", "."))
+            count = int(self.data_logger_34970a_count_var.get())
+        except ValueError as exc:
+            raise ValueError("34970A-Intervall muss eine Zahl und Anzahl eine ganze Zahl sein.") from exc
+        if interval_s < 0:
+            raise ValueError("34970A-Intervall darf nicht negativ sein.")
+        if count < 0:
+            raise ValueError("34970A-Anzahl darf nicht negativ sein.")
+        return interval_s, count
+
     def _power_supply_channel(self) -> int:
         try:
             channel = int(self.power_supply_channel_var.get())
@@ -2251,6 +2437,8 @@ class InstrumentVisaApp(tk.Tk):
         address = self.address_var.get().strip()
         if not address:
             raise ValueError("Bitte eine VISA-Adresse eintragen.")
+        if address.upper().startswith("ASRL"):
+            return create_sequence_instrument(self._canonical_address(address), timeout_ms=10000)
         if address.upper().startswith(("COM", "PICO::", "PICO2000A::", "SALEAE::")):
             return create_sequence_instrument(address, timeout_ms=10000)
         return VisaInstrument(address=address, timeout_ms=10000)
@@ -2262,6 +2450,8 @@ class InstrumentVisaApp(tk.Tk):
         return Path(output)
 
     def _run_worker(self, status: str, action) -> None:
+        self.operation_stop_event.clear()
+        self._set_operation_running(True)
         self.status_var.set(status)
         self._append_log(status)
         self.logger.info(status)
@@ -2278,6 +2468,8 @@ class InstrumentVisaApp(tk.Tk):
         else:
             self.logger.info(message)
             self._messages.put(("success", message))
+        finally:
+            self._messages.put(("operation_done", ""))
 
     def _process_messages(self) -> None:
         while True:
@@ -2312,12 +2504,16 @@ class InstrumentVisaApp(tk.Tk):
                 self._set_sequence_running(False)
             elif kind == "switch_done":
                 self._set_switch_running(False)
+            elif kind == "operation_done":
+                self._set_operation_running(False)
             elif kind == "error":
+                self._set_operation_running(False)
                 self.status_var.set("Fehler")
                 error_message = str(message)
                 self._append_log(f"Fehler: {error_message}")
                 messagebox.showerror("Fehler", error_message)
             else:
+                self._set_operation_running(False)
                 self.status_var.set("Bereit")
                 self._append_log(str(message))
         self.after(100, self._process_messages)
@@ -2394,13 +2590,8 @@ class InstrumentVisaApp(tk.Tk):
         resources = self.last_found_resources if resources is None else resources
         values: list[str] = []
         self.resource_display_map = {}
-        known_display_addresses = [self._display_address_for_known_device(address) for address in self._known_device_addresses()]
-        resource_addresses = list(dict.fromkeys(resources or []))
-        numbering = self._resource_numbering_for_addresses([*known_display_addresses, *resource_addresses])
-        for display_address in known_display_addresses:
-            label = self._resource_display_label(display_address, numbering)
-            values.append(label)
-            self.resource_display_map[label] = display_address
+        resource_addresses = self._resource_display_addresses(resources or [])
+        numbering = self._resource_numbering_for_addresses(resource_addresses)
         for address in resource_addresses:
             label = self._resource_display_label(address, numbering)
             if label not in self.resource_display_map:
@@ -2426,6 +2617,25 @@ class InstrumentVisaApp(tk.Tk):
 
     def _known_device_addresses(self) -> list[str]:
         return sorted(self.saved_devices, key=lambda address: self._resource_display_label(address).lower())
+
+    def _resource_display_addresses(self, resources: list[str]) -> list[str]:
+        addresses: list[str] = []
+        seen: dict[str, int] = {}
+        for address in [*(self._display_address_for_known_device(address) for address in self._known_device_addresses()), *dict.fromkeys(resources)]:
+            canonical_address = self._canonical_address(address)
+            existing_index = seen.get(canonical_address)
+            if existing_index is not None:
+                if self._prefer_resource_address(address, addresses[existing_index]):
+                    addresses[existing_index] = address
+                continue
+            seen[canonical_address] = len(addresses)
+            addresses.append(address)
+        return addresses
+
+    def _prefer_resource_address(self, candidate: str, current: str) -> bool:
+        candidate_normalized = candidate.strip().upper()
+        current_normalized = current.strip().upper()
+        return candidate_normalized.startswith("COM") and current_normalized.startswith("ASRL")
 
     def _resource_display_label(self, address: str, numbering: dict[str, str] | None = None) -> str:
         saved = self._saved_device_for_address(address)
@@ -2476,6 +2686,13 @@ class InstrumentVisaApp(tk.Tk):
         return None
 
     def _canonical_address(self, address: str) -> str:
+        normalized = address.strip().upper()
+        if normalized.startswith("COM") and normalized[3:].isdigit():
+            return normalized
+        if normalized.startswith("ASRL") and normalized.endswith("::INSTR"):
+            port = normalized[4:-7]
+            if port.isdigit():
+                return f"COM{port}"
         parts = address.split("::")
         if len(parts) >= 6 and parts[-1] == "INSTR" and parts[-2].isdigit():
             return "::".join([*parts[:-2], parts[-1]])
@@ -2496,6 +2713,8 @@ class InstrumentVisaApp(tk.Tk):
         dmm_enabled = profile.supports_dmm_read
         timed_enabled = scope_measurement_enabled or dmm_enabled
         vna_enabled = profile.supports_sparameters
+        data_logger_enabled = profile.key == "keysight_34970a" or "34970" in profile.model_family or profile.device_type == "Datenlogger"
+        spectrum_enabled = "spektrum" in profile.device_type.lower() or profile.key in {"hp_4395a", "hp_8591a", "hp_e740", "hp_agilent_e4402b", "rs_hameg_hms"}
         screenshot_enabled = profile.supports_screenshot
         generator_enabled = profile.supports_signal_generator
         power_supply_enabled = profile.supports_power_supply
@@ -2515,6 +2734,8 @@ class InstrumentVisaApp(tk.Tk):
         self._set_section_visible("dmm", dmm_enabled)
         self._set_section_visible("timed", timed_enabled)
         self._set_section_visible("vna", vna_enabled)
+        self._set_section_visible("data_logger", data_logger_enabled)
+        self._set_section_visible("spectrum", spectrum_enabled)
         self._set_section_visible("generator", generator_enabled)
         self._set_section_visible("power_supply", power_supply_enabled)
         self._set_widgets_enabled(self._scope_widgets, scope_enabled)
@@ -2524,6 +2745,10 @@ class InstrumentVisaApp(tk.Tk):
         self._set_widgets_enabled(self._timed_scope_widgets, scope_measurement_enabled and not self.timed_running)
         self._set_widgets_enabled(self._timed_stop_widgets, self.timed_running)
         self._set_widgets_enabled(self._vna_widgets, vna_enabled)
+        self._set_widgets_enabled(self._data_logger_widgets, data_logger_enabled and not self.operation_running)
+        self._set_widgets_enabled(self._data_logger_stop_widgets, data_logger_enabled and self.operation_running)
+        self._set_widgets_enabled(self._spectrum_widgets, spectrum_enabled)
+        self._set_widgets_enabled(self._spectrum_screenshot_widgets, spectrum_enabled and screenshot_enabled)
         self._set_widgets_enabled(self._screenshot_widgets, screenshot_enabled)
         self._set_widgets_enabled(self._generator_widgets, generator_enabled)
         self._set_widgets_enabled(self._power_supply_widgets, power_supply_enabled)
@@ -2533,10 +2758,13 @@ class InstrumentVisaApp(tk.Tk):
             self._set_switch_running(True)
 
     def _apply_profile_message(self, message: object) -> None:
-        if isinstance(message, tuple) and len(message) == 3:
-            profile, address, idn = message
+        if isinstance(message, tuple) and len(message) in {3, 4}:
+            profile, address, idn = message[:3]
+            serial_settings = message[3] if len(message) == 4 else None
             if isinstance(profile, DeviceProfile) and isinstance(address, str) and isinstance(idn, str):
                 self._remember_device(address, idn, profile)
+                if self._is_serial_settings(serial_settings):
+                    self._remember_serial_settings(address, serial_settings)
                 self._apply_profile(profile)
                 return
         if isinstance(message, DeviceProfile):
@@ -2546,6 +2774,9 @@ class InstrumentVisaApp(tk.Tk):
         address = self.address_var.get().strip()
         saved = self._saved_device_for_address(address)
         if isinstance(saved, dict):
+            serial_settings = self._serial_settings_from_saved_device(saved)
+            if serial_settings is not None:
+                set_preferred_serial_scpi_settings(serial_settings)
             self._apply_profile(self._profile_from_settings(saved))
         else:
             self._apply_profile(self._profile_for_manual_address(address) or UNKNOWN_PROFILE)
@@ -2559,6 +2790,12 @@ class InstrumentVisaApp(tk.Tk):
         if normalized.startswith("COM") and normalized[3:].isdigit():
             return DeviceProfile("Unbekannt", "Direkter COM-Port", "Seriell", key="direct_serial")
         return None
+
+    def _set_operation_running(self, running: bool) -> None:
+        self.operation_running = running
+        data_logger_enabled = self.current_profile.key == "keysight_34970a" or "34970" in self.current_profile.model_family or self.current_profile.device_type == "Datenlogger"
+        self._set_widgets_enabled(self._data_logger_widgets, data_logger_enabled and not running)
+        self._set_widgets_enabled(self._data_logger_stop_widgets, data_logger_enabled and running)
 
     def _remember_device(self, address: str, idn: str, profile: DeviceProfile) -> None:
         if not address:
@@ -2585,6 +2822,40 @@ class InstrumentVisaApp(tk.Tk):
         self._refresh_resource_combo(self.last_found_resources)
         self._refresh_custom_sequence_resource_combo()
         self._save_settings()
+
+    def _remember_serial_settings(self, address: str, settings: tuple[int, str, str, str]) -> None:
+        saved = self._saved_device_for_address(address)
+        if not isinstance(saved, dict):
+            return
+        baudrate, serial_format, flow_control, terminator = settings
+        saved["serial_settings"] = {
+            "baudrate": baudrate,
+            "format": serial_format,
+            "flow_control": flow_control,
+            "terminator": terminator,
+        }
+        self.saved_devices[self._canonical_address(address)] = saved
+        if str(saved.get("key", "")) == "keysight_34970a":
+            self.data_logger_34970a_baudrate_var.set(str(baudrate))
+            self.data_logger_34970a_serial_format_var.set(serial_format)
+        set_preferred_serial_scpi_settings(settings)
+        self._save_settings()
+
+    def _serial_settings_from_saved_device(self, saved: dict[str, object]) -> tuple[int, str, str, str] | None:
+        settings = saved.get("serial_settings")
+        if not isinstance(settings, dict):
+            return None
+        try:
+            baudrate = int(settings.get("baudrate", 9600))
+            serial_format = str(settings.get("format", "8N1"))
+            flow_control = str(settings.get("flow_control", "none"))
+            terminator = str(settings.get("terminator", "\n"))
+        except (TypeError, ValueError):
+            return None
+        return (baudrate, serial_format, flow_control, terminator)
+
+    def _is_serial_settings(self, value: object) -> bool:
+        return isinstance(value, tuple) and len(value) == 4 and isinstance(value[0], int) and all(isinstance(part, str) for part in value[1:])
 
     def _profile_from_settings(self, saved: dict) -> DeviceProfile:
         return DeviceProfile(
@@ -2628,6 +2899,10 @@ class InstrumentVisaApp(tk.Tk):
             self._set_widgets_enabled(self._timed_dmm_widgets, False)
             self._set_widgets_enabled(self._timed_scope_widgets, False)
             self._set_widgets_enabled(self._vna_widgets, False)
+            self._set_widgets_enabled(self._data_logger_widgets, False)
+            self._set_widgets_enabled(self._data_logger_stop_widgets, False)
+            self._set_widgets_enabled(self._spectrum_widgets, False)
+            self._set_widgets_enabled(self._spectrum_screenshot_widgets, False)
             self._set_widgets_enabled(self._screenshot_widgets, False)
             self._set_widgets_enabled(self._generator_widgets, False)
             self._set_widgets_enabled(self._power_supply_widgets, False)
@@ -2652,6 +2927,10 @@ class InstrumentVisaApp(tk.Tk):
             self._set_widgets_enabled(self._timed_dmm_widgets, False)
             self._set_widgets_enabled(self._timed_scope_widgets, False)
             self._set_widgets_enabled(self._vna_widgets, False)
+            self._set_widgets_enabled(self._data_logger_widgets, False)
+            self._set_widgets_enabled(self._data_logger_stop_widgets, False)
+            self._set_widgets_enabled(self._spectrum_widgets, False)
+            self._set_widgets_enabled(self._spectrum_screenshot_widgets, False)
             self._set_widgets_enabled(self._screenshot_widgets, False)
             self._set_widgets_enabled(self._generator_widgets, False)
             self._set_widgets_enabled(self._power_supply_widgets, False)
@@ -2717,6 +2996,13 @@ class InstrumentVisaApp(tk.Tk):
             "waveform_channels": [channel for channel, variable in self.waveform_channel_vars.items() if variable.get()],
             "sparameter_format": self.sparameter_format_var.get(),
             "sparameter_ports": [port for port, variable in self.sparameter_port_vars.items() if variable.get()],
+            "data_logger_34970a_measurement": self.data_logger_34970a_measurement_var.get(),
+            "data_logger_34970a_channels": self.data_logger_34970a_channels_var.get(),
+            "data_logger_34970a_plan": self.data_logger_34970a_plan_var.get(),
+            "data_logger_34970a_baudrate": self.data_logger_34970a_baudrate_var.get(),
+            "data_logger_34970a_serial_format": self.data_logger_34970a_serial_format_var.get(),
+            "data_logger_34970a_interval": self.data_logger_34970a_interval_var.get(),
+            "data_logger_34970a_count": self.data_logger_34970a_count_var.get(),
             "generator_frequency": self.generator_frequency_var.get(),
             "generator_power": self.generator_power_var.get(),
             "generator_rf": self.generator_rf_var.get(),

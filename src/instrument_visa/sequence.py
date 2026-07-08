@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import csv
+import logging
 from io import StringIO
 from time import monotonic, sleep
 from typing import Callable, Literal
@@ -35,6 +36,7 @@ from .visa_client import InstrumentInfo, VisaInstrument
 
 
 MAX_SWEEP_POINTS = 10000
+LOGGER = logging.getLogger("instrument_visa")
 ProgressCallback = Callable[[str], None]
 StopCallback = Callable[[], bool]
 StepResultExportCallback = Callable[[str, InstrumentInfo, AcquisitionResult], str]
@@ -784,6 +786,7 @@ class DirectSerialInstrument:
         self.timeout_ms = timeout_ms
         self.baudrate = 9600
         self.serial_format = "8N1"
+        self.last_serial_settings: tuple[int, str, str, str] | None = None
 
     def open(self) -> None:
         return
@@ -802,6 +805,10 @@ class DirectSerialInstrument:
         try:
             idn = self.query("*IDN?").strip()
         except Exception:
+            idn = ""
+        if not idn:
+            idn = _probe_direct_serial_idn(self.address, self.timeout_ms)
+        if not idn:
             idn = "Direkter COM-Port"
         return InstrumentInfo(address=self.address, idn=idn)
 
@@ -816,9 +823,11 @@ class DirectSerialInstrument:
             _serial_write_line(serial_port, command)
 
     def query(self, command: str) -> str:
-        with _open_direct_serial_for_scpi(self.address, self.timeout_ms, self.baudrate, self.serial_format) as serial_port:
-            _serial_write_line(serial_port, command)
-            return _serial_read_text(serial_port)
+        response, settings = _query_direct_serial_scpi_with_settings(self.address, command, self.timeout_ms, self.baudrate, self.serial_format)
+        if settings is not None:
+            self.baudrate, self.serial_format, _flow_control, _terminator = settings
+            self.last_serial_settings = settings
+        return response
 
 
 def create_sequence_instrument(address: str, timeout_ms: int = 10000) -> VisaInstrument | DirectSerialInstrument:
@@ -955,7 +964,8 @@ def _execute_custom_sequence_step(
                 thermocouple_type=str(params.get("thermocouple_type", "K")).strip() or "K",
                 baudrate=_int_param(params, "baudrate", 9600),
                 serial_format=str(params.get("serial_format", "8N1")).strip() or "8N1",
-            )
+            ),
+            stop_requested=stop_requested,
         )
     if step.action == "data_logger_34970a_plan":
         return read_34970a_measurement_plan(
@@ -963,6 +973,7 @@ def _execute_custom_sequence_step(
             parse_34970a_measurement_plan(_string_param(params, "plan")),
             baudrate=_int_param(params, "baudrate", 9600),
             serial_format_value=str(params.get("serial_format", "8N1")).strip() or "8N1",
+            stop_requested=stop_requested,
         )
     if step.action == "picoscope_analog":
         return instrument.capture_analog(
@@ -1230,41 +1241,67 @@ def _bool_param(params: dict[str, object], name: str, default: bool) -> bool:
     return str(value).strip().upper() in {"1", "TRUE", "JA", "YES", "ON"}
 
 
-def read_34970a_data_logger(instrument: object, config: DataLogger34970AConfig) -> AcquisitionResult:
+def read_34970a_data_logger(instrument: object, config: DataLogger34970AConfig, stop_requested: StopCallback | None = None) -> AcquisitionResult:
+    stop_requested = stop_requested or (lambda: False)
     measurement = _normalize_34970a_measurement(config.measurement)
     channels = parse_34970a_channels(config.channels)
-    channel_list = _format_34970a_channel_list(channels)
     if config.baudrate <= 0:
         raise ValueError("Baudrate muss größer als 0 sein.")
     bytesize, parity, stopbits = parse_serial_format(config.serial_format)
     if hasattr(instrument, "configure_serial"):
         instrument.configure_serial(config.baudrate, bytesize, parity, stopbits)
 
-    command = _34970a_read_command(measurement, channel_list, config.range_value, config.resolution, config.thermocouple_type)
-    raw = str(instrument.query(command)).strip()
-    values = _parse_34970a_values(raw)
-    rows: list[list[object]] = [["Channel", "Measurement", "Value", "Unit"]]
-    unit = _34970a_unit(measurement)
-    for index, channel in enumerate(channels):
-        value = values[index] if index < len(values) else ""
-        rows.append([channel, measurement, value, unit])
-    return AcquisitionResult(kind="34970A data logger", file_type="csv", content=_csv_rows(rows))
+    if stop_requested():
+        return AcquisitionResult(kind="34970A data logger", file_type="csv", content=_34970a_wide_csv([], stopped=True))
+    values: list[str] = []
+    for channel_group in _chunks(channels, 11):
+        if stop_requested():
+            break
+        command = _34970a_read_command(measurement, _format_34970a_channel_list(channel_group), config.range_value, config.resolution, config.thermocouple_type)
+        LOGGER.info("SCPI action=34970a_read measurement=%s channels=%s command=%s", measurement, channel_group, command)
+        raw = str(instrument.query(command)).strip()
+        values.extend(_parse_34970a_values(raw))
+    return AcquisitionResult(kind="34970A data logger", file_type="csv", content=_34970a_wide_csv([(measurement, channels, values)], stop_requested()))
 
 
-def read_34970a_measurement_plan(instrument: object, tasks: list[DataLogger34970ATask], baudrate: int = 9600, serial_format_value: str = "8N1") -> AcquisitionResult:
-    rows: list[list[object]] = [["Channel", "Measurement", "Value", "Unit"]]
+def read_34970a_measurement_plan(instrument: object, tasks: list[DataLogger34970ATask], baudrate: int = 9600, serial_format_value: str = "8N1", stop_requested: StopCallback | None = None) -> AcquisitionResult:
+    stop_requested = stop_requested or (lambda: False)
+    results: list[tuple[str, list[int], list[str]]] = []
     for task in tasks:
+        if stop_requested():
+            break
+        measurement = _normalize_34970a_measurement(task.measurement)
+        channels = parse_34970a_channels(task.channels)
         result = read_34970a_data_logger(
             instrument,
             DataLogger34970AConfig(
-                measurement=task.measurement,
+                measurement=measurement,
                 channels=task.channels,
                 baudrate=baudrate,
                 serial_format=serial_format_value,
             ),
+            stop_requested=stop_requested,
         )
-        rows.extend(_csv_text_rows(str(result.content))[1:])
-    return AcquisitionResult(kind="34970A measurement plan", file_type="csv", content=_csv_rows(rows))
+        rows = _csv_text_rows(str(result.content))
+        values = rows[1][1:] if len(rows) > 1 else []
+        results.append((measurement, channels, values))
+        if stop_requested():
+            break
+    return AcquisitionResult(kind="34970A measurement plan", file_type="csv", content=_34970a_wide_csv(results, stop_requested()))
+
+
+def _34970a_wide_csv(results: list[tuple[str, list[int], list[str]]], stopped: bool = False) -> str:
+    headers: list[object] = ["Timestamp"]
+    row: list[object] = [datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
+    for measurement, channels, values in results:
+        unit = _34970a_unit(measurement)
+        for index, channel in enumerate(channels):
+            headers.append(f"CH{channel} {measurement} [{unit}]")
+            row.append(values[index] if index < len(values) else "")
+    if stopped:
+        headers.append("StoppedByUser")
+        row.append("Yes")
+    return _csv_rows([headers, row])
 
 
 def parse_34970a_measurement_plan(value: str) -> list[DataLogger34970ATask]:
@@ -1340,20 +1377,33 @@ def _normalize_34970a_measurement(value: str) -> str:
 
 def _34970a_read_command(measurement: str, channel_list: str, range_value: str, resolution: str, thermocouple_type: str) -> str:
     if measurement == "TEMP":
-        sensor_type = thermocouple_type.strip().upper() or "K"
+        sensor_type = thermocouple_type.strip().upper()
+        if not sensor_type or sensor_type in {"AUTO", "DEF", "DEFAULT"}:
+            return f"MEAS:TEMP? (@{channel_list})"
         return f"MEAS:TEMP? TC,{sensor_type},(@{channel_list})"
     function = {"VOLT_DC": "VOLT:DC", "CURR_DC": "CURR:DC", "RES": "RES", "FRES": "FRES"}[measurement]
-    range_part = _34970a_optional_numeric_param(range_value)
-    resolution_part = _34970a_optional_numeric_param(resolution)
+    default_range, default_resolution = _34970a_default_params(measurement)
+    range_part = _34970a_optional_numeric_param(range_value, default_range)
+    resolution_part = _34970a_optional_numeric_param(resolution, default_resolution)
     params = ",".join(part for part in (range_part, resolution_part) if part)
     return f"MEAS:{function}? {params},(@{channel_list})" if params else f"MEAS:{function}? (@{channel_list})"
 
 
-def _34970a_optional_numeric_param(value: str) -> str:
+def _34970a_default_params(measurement: str) -> tuple[str, str]:
+    if measurement == "VOLT_DC":
+        return "10", "0.003"
+    return "", ""
+
+
+def _34970a_optional_numeric_param(value: str, default: str = "") -> str:
     normalized = value.strip().upper().replace(",", ".")
     if not normalized or normalized in {"AUTO", "DEF", "DEFAULT"}:
-        return ""
+        return default
     return normalized
+
+
+def _chunks(values: list[int], size: int) -> list[list[int]]:
+    return [values[index : index + size] for index in range(0, len(values), size)]
 
 
 def _format_34970a_channel_list(channels: list[int]) -> str:
@@ -1546,11 +1596,101 @@ def read_direct_serial_log(
     return b"".join(chunks).decode("utf-8", errors="replace")
 
 
-def _open_direct_serial_for_scpi(port: str, timeout_ms: int, baudrate: int = 9600, serial_format_value: str = "8N1"):
+_SERIAL_SCPI_SETTINGS: dict[str, tuple[int, str, str, str]] = {}
+_SERIAL_SCPI_PREFERRED_SETTINGS: list[tuple[int, str, str, str]] = []
+
+
+def set_preferred_serial_scpi_settings(settings: tuple[int, str, str, str] | None) -> None:
+    if settings is None:
+        return
+    baudrate, serial_format_value, flow_control, terminator = settings
+    normalized = (int(baudrate), str(serial_format_value), str(flow_control), str(terminator))
+    if normalized in _SERIAL_SCPI_PREFERRED_SETTINGS:
+        _SERIAL_SCPI_PREFERRED_SETTINGS.remove(normalized)
+    _SERIAL_SCPI_PREFERRED_SETTINGS.insert(0, normalized)
+
+
+def _query_direct_serial_scpi(port: str, command: str, timeout_ms: int = 10000, baudrate: int = 9600, serial_format_value: str = "8N1") -> str:
+    response, _settings = _query_direct_serial_scpi_with_settings(port, command, timeout_ms, baudrate, serial_format_value)
+    return response
+
+
+def _query_direct_serial_scpi_with_settings(port: str, command: str, timeout_ms: int = 10000, baudrate: int = 9600, serial_format_value: str = "8N1") -> tuple[str, tuple[int, str, str, str] | None]:
+    cached_settings = _SERIAL_SCPI_SETTINGS.get(port.upper())
+    if cached_settings is not None:
+        response = _try_direct_serial_scpi(port, command, timeout_ms, cached_settings)
+        cleaned_response = _serial_response_without_echo(response, command)
+        if _is_meaningful_serial_response(cleaned_response, command):
+            return cleaned_response, cached_settings
+
+    last_response = b""
+    for settings in _serial_scpi_candidate_settings(baudrate, serial_format_value):
+        response = _try_direct_serial_scpi(port, command, timeout_ms, settings)
+        cleaned_response = _serial_response_without_echo(response, command)
+        if _is_meaningful_serial_response(cleaned_response, command):
+            _SERIAL_SCPI_SETTINGS[port.upper()] = settings
+            set_preferred_serial_scpi_settings(settings)
+            return cleaned_response, settings
+        last_response = response
+    return last_response.decode("ascii", errors="replace"), None
+
+
+def _serial_scpi_candidate_settings(baudrate: int, serial_format_value: str) -> list[tuple[int, str, str, str]]:
+    candidates: list[tuple[int, str, str, str]] = []
+    for settings in _SERIAL_SCPI_PREFERRED_SETTINGS:
+        candidates.append(settings)
+    for flow_control in ("none", "xonxoff", "rtscts", "dsrdtr"):
+        for terminator in ("\n", "\r\n", "\r"):
+            candidates.append((baudrate, serial_format_value, flow_control, terminator))
+    return list(dict.fromkeys(candidates))
+
+
+def _try_direct_serial_scpi(port: str, command: str, timeout_ms: int, settings: tuple[int, str, str, str]) -> bytes:
+    baudrate, serial_format_value, flow_control, terminator = settings
+    with _open_direct_serial_for_scpi(port, timeout_ms, baudrate, serial_format_value, flow_control=flow_control) as serial_port:
+        _serial_prepare_port(serial_port)
+        serial_port.write((command.rstrip("\r\n") + terminator).encode("ascii"))
+        return _serial_read_until_quiet(serial_port)
+
+
+def _probe_direct_serial_idn(port: str, timeout_ms: int) -> str:
+    probe_timeout_ms = min(max(500, timeout_ms // 4), 1500)
+    for baudrate, serial_format_value in ((9600, "8N1"), (9600, "7E1"), (9600, "8N2"), (19200, "8N1")):
+        idn, _settings = _query_direct_serial_scpi_with_settings(port, "*IDN?", probe_timeout_ms, baudrate, serial_format_value)
+        idn = idn.strip()
+        if idn and idn.upper() != "*IDN?":
+            return idn
+    return ""
+
+
+def _open_direct_serial_for_scpi(port: str, timeout_ms: int, baudrate: int = 9600, serial_format_value: str = "8N1", flow_control: str = "none"):
     if serial is None:
         raise RuntimeError("Direkter COM-Port-Zugriff benötigt pyserial. Bitte Abhängigkeiten neu installieren.")
     bytesize, parity, stopbits = parse_serial_format(serial_format_value)
-    return serial.Serial(port=port, baudrate=baudrate, bytesize=bytesize, parity=parity, stopbits=stopbits, timeout=max(0.1, timeout_ms / 1000.0), write_timeout=max(0.1, timeout_ms / 1000.0))
+    flow_control = flow_control.strip().lower()
+    return serial.Serial(
+        port=port,
+        baudrate=baudrate,
+        bytesize=bytesize,
+        parity=parity,
+        stopbits=stopbits,
+        timeout=max(0.1, timeout_ms / 1000.0),
+        write_timeout=max(0.1, timeout_ms / 1000.0),
+        xonxoff=flow_control == "xonxoff",
+        rtscts=flow_control == "rtscts",
+        dsrdtr=flow_control == "dsrdtr",
+    )
+
+
+def _serial_prepare_port(serial_port) -> None:
+    try:
+        serial_port.dtr = True
+        serial_port.rts = True
+    except Exception:
+        pass
+    sleep(0.05)
+    serial_port.reset_input_buffer()
+    serial_port.reset_output_buffer()
 
 
 def _serial_write_line(serial_port, command: str) -> None:
@@ -1562,6 +1702,35 @@ def _serial_read_text(serial_port) -> str:
     if data:
         return bytes(data).decode("ascii", errors="replace")
     return ""
+
+
+def _serial_read_until_quiet(serial_port, quiet_s: float = 0.2) -> bytes:
+    chunks: list[bytes] = []
+    deadline = monotonic() + max(0.1, float(getattr(serial_port, "timeout", 1.0) or 1.0))
+    quiet_deadline = monotonic() + quiet_s
+    while monotonic() < deadline:
+        waiting = int(getattr(serial_port, "in_waiting", 0) or 0)
+        data = serial_port.read(waiting or 1)
+        if data:
+            chunks.append(bytes(data))
+            quiet_deadline = monotonic() + quiet_s
+            continue
+        if chunks and monotonic() >= quiet_deadline:
+            break
+    return b"".join(chunks)
+
+
+def _serial_response_without_echo(response: bytes, command: str) -> str:
+    text = response.decode("ascii", errors="replace").strip()
+    command_text = command.strip().upper()
+    lines = [line.strip() for line in text.replace("\r", "\n").split("\n") if line.strip()]
+    non_echo_lines = [line for line in lines if line.upper() != command_text]
+    return "\n".join(non_echo_lines or lines)
+
+
+def _is_meaningful_serial_response(response: str, command: str) -> bool:
+    text = response.strip()
+    return bool(text) and text.upper() != command.strip().upper()
 
 
 def _channels_param(value: object) -> list[int]:

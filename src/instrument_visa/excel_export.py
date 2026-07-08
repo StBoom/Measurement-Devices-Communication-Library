@@ -61,16 +61,22 @@ def append_result(workbook_path: Path, address: str, idn: str, result: Acquisiti
         target = f"sheet:{image_sheet_name}" if image_sheet_name else str(artifact)
         sheet.append([timestamp, address, idn, result.kind, result.file_type, target])
     elif result.file_type == "csv":
-        data_sheet = workbook.create_sheet(_unique_sheet_name(workbook, result.kind))
+        if result.kind in {"34970A data logger", "34970A measurement plan"}:
+            data_sheet = _get_or_create_sheet(workbook, "34970A Measurements")
+        else:
+            data_sheet = workbook.create_sheet(_unique_sheet_name(workbook, result.kind))
         result_sheet_name = data_sheet.title
         sheet.append([timestamp, address, idn, result.kind, result.file_type, f"sheet:{result_sheet_name}"])
-        data_sheet.append(["Timestamp", timestamp])
-        data_sheet.append(["Address", address])
-        data_sheet.append(["IDN", idn])
-        data_sheet.append(["Kind", result.kind])
-        data_sheet.append(["FileType", result.file_type])
-        data_sheet.append([])
-        _append_csv(data_sheet, result.content)
+        if result.kind in {"34970A data logger", "34970A measurement plan"}:
+            _append_34970a_csv(data_sheet, result.content)
+        else:
+            data_sheet.append(["Timestamp", timestamp])
+            data_sheet.append(["Address", address])
+            data_sheet.append(["IDN", idn])
+            data_sheet.append(["Kind", result.kind])
+            data_sheet.append(["FileType", result.file_type])
+            data_sheet.append([])
+            _append_csv(data_sheet, result.content)
         if result.kind in {"waveform", "picoscope analog", "picoscope digital"}:
             _add_waveform_chart(data_sheet)
         elif result.kind in {"frequency sweep", "voltage sweep"}:
@@ -95,6 +101,24 @@ def append_result(workbook_path: Path, address: str, idn: str, result: Acquisiti
 def _append_csv(sheet, content: str) -> None:
     for row in csv.reader(StringIO(content)):
         sheet.append([_coerce_excel_value(value) for value in row])
+
+
+def _append_34970a_csv(sheet, content: str) -> None:
+    rows = [[_coerce_excel_value(value) for value in row] for row in csv.reader(StringIO(content))]
+    if not rows:
+        return
+    header = rows[0]
+    if not any(cell.value is not None for row in sheet.iter_rows() for cell in row):
+        for column, value in enumerate(header, start=1):
+            sheet.cell(row=1, column=column).value = value
+    for row in rows[1:]:
+        sheet.append(row)
+
+
+def _get_or_create_sheet(workbook, name: str):
+    if name in workbook.sheetnames:
+        return workbook[name]
+    return workbook.create_sheet(name[:31])
 
 
 def _coerce_excel_value(value: str) -> str | float:

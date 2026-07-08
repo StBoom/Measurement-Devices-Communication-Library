@@ -747,21 +747,58 @@ class AcquisitionTests(unittest.TestCase):
             parse_34970a_channels("23")
 
     def test_34970a_voltage_read_uses_channel_list(self) -> None:
-        instrument = FakeInstrument(query_responses={"MEAS:VOLT:DC? (@101,102,103)": "1.0,2.0,3.0"})
+        instrument = FakeInstrument(query_responses={"MEAS:VOLT:DC? 10,0.003,(@101,102,103)": "1.0,2.0,3.0"})
 
         result = read_34970a_data_logger(instrument, DataLogger34970AConfig(measurement="VOLT_DC", channels="1-3"))
 
         self.assertEqual(result.file_type, "csv")
         self.assertIn("101", instrument.queries[0])
-        self.assertIn("1,VOLT_DC,1.0,V", str(result.content))
+        self.assertIn("Timestamp,CH1 VOLT_DC [V],CH2 VOLT_DC [V],CH3 VOLT_DC [V]", str(result.content))
+        self.assertIn(",1.0,2.0,3.0", str(result.content))
+
+    def test_34970a_voltage_read_splits_large_channel_lists(self) -> None:
+        instrument = FakeInstrument(
+            query_responses={
+                "MEAS:VOLT:DC? 10,0.003,(@101,102,103,104,105,106,107,108,109,110,111)": "1,2,3,4,5,6,7,8,9,10,11",
+                "MEAS:VOLT:DC? 10,0.003,(@112)": "12",
+            }
+        )
+
+        result = read_34970a_data_logger(instrument, DataLogger34970AConfig(measurement="VOLT_DC", channels="1-12"))
+
+        self.assertEqual(len(instrument.queries), 2)
+        self.assertIn("CH12 VOLT_DC [V]", str(result.content))
+        self.assertIn(",1,2,3,4,5,6,7,8,9,10,11,12", str(result.content))
 
     def test_34970a_temperature_read_sets_serial_and_tc_type(self) -> None:
         instrument = FakeInstrument(query_responses={"MEAS:TEMP? TC,K,(@101)": "23.5"})
 
         result = read_34970a_data_logger(instrument, DataLogger34970AConfig(measurement="TEMP", channels="1", thermocouple_type="K", baudrate=19200, serial_format="7E1"))
 
-        self.assertIn("1,TEMP,23.5,degC", str(result.content))
+        self.assertIn("Timestamp,CH1 TEMP [degC]", str(result.content))
+        self.assertIn(",23.5", str(result.content))
         self.assertEqual(instrument.serial_configs, [(19200, 7, "E", 1.0)])
+
+    def test_34970a_excel_export_appends_wide_rows_to_same_sheet(self) -> None:
+        from openpyxl import load_workbook
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "results.xlsx"
+            first = AcquisitionResult(kind="34970A measurement plan", file_type="csv", content="Timestamp,CH1 TEMP [degC],CH21 CURR_DC [A]\n2026-07-08 14:00:00,23.5,0.1\n")
+            second = AcquisitionResult(kind="34970A measurement plan", file_type="csv", content="Timestamp,CH1 TEMP [degC],CH21 CURR_DC [A]\n2026-07-08 14:00:05,23.6,0.2\n")
+
+            first_export = append_result(workbook_path, "COM7", "HEWLETT-PACKARD,34970A", first)
+            second_export = append_result(workbook_path, "COM7", "HEWLETT-PACKARD,34970A", second)
+            workbook = load_workbook(workbook_path)
+            sheet = workbook["34970A Measurements"]
+
+            self.assertEqual(first_export.sheet_name, "34970A Measurements")
+            self.assertEqual(second_export.sheet_name, "34970A Measurements")
+            self.assertEqual(sheet.max_row, 3)
+            self.assertEqual(sheet["A1"].value, "Timestamp")
+            self.assertEqual(sheet["B1"].value, "CH1 TEMP [degC]")
+            self.assertEqual(sheet["A2"].value, "2026-07-08 14:00:00")
+            self.assertEqual(sheet["B3"].value, 23.6)
 
     def test_parse_34970a_measurement_plan(self) -> None:
         tasks = parse_34970a_measurement_plan("1-4:VOLT_DC; 5:TEMP; 6-7:RES")
@@ -791,7 +828,7 @@ class AcquisitionTests(unittest.TestCase):
         instrument = FakeInstrument(
             query_responses={
                 "*IDN?": "HEWLETT-PACKARD,34970A,0,1",
-                "MEAS:VOLT:DC? (@101,102)": "1,2",
+                "MEAS:VOLT:DC? 10,0.003,(@101,102)": "1,2",
                 "MEAS:TEMP? TC,K,(@103)": "23",
             }
         )

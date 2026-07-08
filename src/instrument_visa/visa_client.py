@@ -33,6 +33,8 @@ class VisaInstrument:
         self._instrument.timeout = self.timeout_ms
         self._instrument.write_termination = "\n"
         self._instrument.read_termination = "\n"
+        if _is_asrl_address(self.address):
+            _configure_default_serial(self._instrument)
         if self.address.startswith(("ASRL", "USB")):
             sleep(2.5)
 
@@ -145,6 +147,8 @@ class VisaInstrument:
                 instrument.stop_bits = original_stop_bits
 
     def info(self) -> InstrumentInfo:
+        if _is_asrl_address(self.address):
+            return InstrumentInfo(address=self.address, idn=self._query_serial_idn().strip())
         return InstrumentInfo(address=self.address, idn=self.query("*IDN?").strip())
 
     def system_error(self) -> str:
@@ -155,6 +159,40 @@ class VisaInstrument:
             raise RuntimeError("VISA instrument is not open")
         return self._instrument
 
+    def _query_serial_idn(self) -> str:
+        instrument = self._require_open()
+        original_timeout = instrument.timeout
+        original_write_termination = instrument.write_termination
+        original_read_termination = instrument.read_termination
+        last_timeout: pyvisa.errors.VisaIOError | None = None
+        attempts = (("\n", "\n"), ("\r\n", "\n"), ("\r", "\n"), ("\r\n", "\r\n"), ("\r", "\r"))
+        try:
+            instrument.timeout = max(1000, min(int(original_timeout), 3000))
+            for write_termination, read_termination in attempts:
+                instrument.write_termination = write_termination
+                instrument.read_termination = read_termination
+                try:
+                    if hasattr(instrument, "clear"):
+                        instrument.clear()
+                except pyvisa.errors.VisaIOError:
+                    pass
+                try:
+                    response = str(instrument.query("*IDN?"))
+                except pyvisa.errors.VisaIOError as exc:
+                    if getattr(exc, "error_code", None) == pyvisa.constants.StatusCode.error_timeout:
+                        last_timeout = exc
+                        continue
+                    raise
+                if response.strip():
+                    return response
+        finally:
+            instrument.timeout = original_timeout
+            instrument.write_termination = original_write_termination
+            instrument.read_termination = original_read_termination
+        if last_timeout is not None:
+            raise last_timeout
+        return self.query("*IDN?")
+
 
 def list_resources() -> list[str]:
     resource_manager = pyvisa.ResourceManager()
@@ -162,6 +200,21 @@ def list_resources() -> list[str]:
         return list(resource_manager.list_resources())
     finally:
         resource_manager.close()
+
+
+def _is_asrl_address(address: str) -> bool:
+    return address.strip().upper().startswith("ASRL")
+
+
+def _configure_default_serial(instrument: Any) -> None:
+    if hasattr(instrument, "baud_rate"):
+        instrument.baud_rate = 9600
+    if hasattr(instrument, "data_bits"):
+        instrument.data_bits = 8
+    if hasattr(instrument, "parity"):
+        instrument.parity = pyvisa.constants.Parity.none
+    if hasattr(instrument, "stop_bits"):
+        instrument.stop_bits = pyvisa.constants.StopBits.one
 
 
 def _bytes_in_buffer(instrument: Any) -> int:

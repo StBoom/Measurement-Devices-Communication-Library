@@ -140,7 +140,7 @@ def detect_profile(idn: str) -> DeviceProfile:
             supports_dmm_read=True,
         )
 
-    if "34970A" in compact or "34972A" in compact:
+    if "34970A" in compact or "34972A" in compact or "HP34970" in compact or "HEWLETTPACKARD34970" in compact:
         return DeviceProfile(
             manufacturer="Keysight/Agilent/HP",
             model_family="34970A/34972A",
