@@ -39,7 +39,9 @@ from .sequence import (
     SequenceVariable,
     TimedSwitchConfig,
     VoltageSweepConfig,
+    create_sequence_instrument,
     frequency_points,
+    list_direct_serial_ports,
     parse_json_bool,
     parse_ampere,
     parse_dbm,
@@ -70,6 +72,8 @@ CUSTOM_SEQUENCE_ACTIONS = (
     ("Oszilloskop: Messwert lesen", "scope_measure", ("device", "measurement", "channel")),
     ("Oszilloskop/Spektrum: Kurve erfassen", "capture_waveform", ("device", "channels", "point_mode")),
     ("Screenshot erfassen", "capture_screenshot", ("device",)),
+    ("Seriellen Log aufzeichnen", "serial_log", ("device", "duration_s", "baudrate", "serial_format")),
+    ("Parallel-Messphase", "parallel_phase", ("device", "duration_s", "interval_s", "tasks")),
     ("Warten", "wait", ("device", "seconds")),
 )
 CUSTOM_SEQUENCE_FILE_VERSION = 1
@@ -84,7 +88,8 @@ CUSTOM_SEQUENCE_EXAMPLES = (
     ("Netzgerät + Oszilloskop", "supply_scope"),
     ("Netzgerät schalten", "supply_switch"),
 )
-SEQUENCE_DEVICE_ROLES = ("Multimeter", "Netzgerät", "Oszilloskop", "Signalgenerator", "Spektrumanalysator", "Netzwerkanalysator", "Gerät")
+SEQUENCE_DEVICE_ROLES = ("Multimeter", "Netzgerät", "Oszilloskop", "Signalgenerator", "Spektrumanalysator", "Netzwerkanalysator", "Seriell", "Gerät")
+SERIAL_FORMAT_VALUES = ("8N1", "7E1", "7O1", "8E1", "8O1", "8N2")
 
 
 class InstrumentVisaApp(tk.Tk):
@@ -157,6 +162,9 @@ class InstrumentVisaApp(tk.Tk):
         self.custom_sequence_device_select_var: tk.StringVar | None = None
         self.custom_sequence_device_select_combo: ttk.Combobox | None = None
         self.custom_sequence_device_select_map: dict[str, str] = {}
+        self.custom_sequence_serial_port_var: tk.StringVar | None = None
+        self.custom_sequence_serial_port_combo: ttk.Combobox | None = None
+        self.custom_sequence_serial_port_map: dict[str, str] = {}
         self.custom_sequence_device_name_var: tk.StringVar | None = None
         self.custom_sequence_device_address_var: tk.StringVar | None = None
         self.custom_sequence_device_role_var: tk.StringVar | None = None
@@ -769,15 +777,25 @@ class InstrumentVisaApp(tk.Tk):
         ttk.Label(devices, text="Adresse").grid(row=3, column=0, sticky="w", padx=8, pady=(0, 8))
         ttk.Entry(devices, textvariable=self.custom_sequence_device_address_var).grid(row=3, column=1, sticky="ew", padx=8, pady=(0, 8))
         ttk.Button(devices, text="aktuelle Adresse", command=lambda: self.custom_sequence_device_address_var.set(self.address_var.get().strip()) if self.custom_sequence_device_address_var else None).grid(row=3, column=2, sticky="ew", padx=8, pady=(0, 8))
-        ttk.Button(devices, text="Gerät hinzufügen", command=self._add_custom_sequence_device).grid(row=4, column=1, sticky="ew", padx=8, pady=(0, 8))
-        ttk.Button(devices, text="Gerät entfernen", command=self._remove_custom_sequence_device).grid(row=4, column=2, sticky="ew", padx=8, pady=(0, 8))
+        self.custom_sequence_serial_port_var = tk.StringVar(value="")
+        ttk.Label(devices, text="COM-Port").grid(row=4, column=0, sticky="w", padx=8, pady=(0, 8))
+        self.custom_sequence_serial_port_combo = ttk.Combobox(devices, textvariable=self.custom_sequence_serial_port_var, state="readonly")
+        self.custom_sequence_serial_port_combo.grid(row=4, column=1, sticky="ew", padx=8, pady=(0, 8))
+        self.custom_sequence_serial_port_combo.bind("<<ComboboxSelected>>", self._apply_selected_serial_port_as_custom_sequence_device)
+        serial_buttons = ttk.Frame(devices)
+        serial_buttons.grid(row=4, column=2, sticky="ew", padx=8, pady=(0, 8))
+        ttk.Button(serial_buttons, text="suchen", command=self._refresh_custom_sequence_serial_ports).pack(side="left", fill="x", expand=True)
+        ttk.Button(serial_buttons, text="übernehmen", command=self._apply_selected_serial_port_as_custom_sequence_device).pack(side="left", fill="x", expand=True, padx=(6, 0))
+        ttk.Button(devices, text="Gerät hinzufügen", command=self._add_custom_sequence_device).grid(row=5, column=1, sticky="ew", padx=8, pady=(0, 8))
+        ttk.Button(devices, text="Gerät entfernen", command=self._remove_custom_sequence_device).grid(row=5, column=2, sticky="ew", padx=8, pady=(0, 8))
         self.custom_sequence_device_tree = ttk.Treeview(devices, columns=("name", "address"), show="headings", height=4)
         self.custom_sequence_device_tree.heading("name", text="Name")
         self.custom_sequence_device_tree.heading("address", text="Adresse")
         self.custom_sequence_device_tree.column("name", width=110)
         self.custom_sequence_device_tree.column("address", width=260)
-        self.custom_sequence_device_tree.grid(row=5, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        self.custom_sequence_device_tree.grid(row=6, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
         self._refresh_custom_sequence_resource_combo()
+        self._refresh_custom_sequence_serial_ports()
 
     def _build_custom_sequence_step_panel(self, parent: ttk.Frame) -> None:
         steps = ttk.LabelFrame(parent, text="Schritt hinzufügen")
@@ -824,6 +842,8 @@ class InstrumentVisaApp(tk.Tk):
             "scope_measure": (self._default_sequence_device_name("Oszilloskop"), self.measurement_var.get(), str(self.channel_var.get()), "", ""),
             "capture_waveform": (self._default_sequence_device_name("Oszilloskop"), "1", self.point_mode_var.get(), "", ""),
             "capture_screenshot": (self._default_sequence_device_name("Oszilloskop"), "", "", "", ""),
+            "serial_log": (self._default_sequence_device_name("Seriell"), "10", "115200", "8N1", ""),
+            "parallel_phase": ("", "10", "1", "Multimeter1:dmm; Oszilloskop1:scope:Vpp:1; Seriell1:serial:115200:8N1", ""),
             "wait": ("", "0.5", "", "", ""),
         }.get(action, ("", "", "", "", ""))
         for key, value in zip(("device", "value1", "value2", "value3", "value4"), defaults):
@@ -850,6 +870,8 @@ class InstrumentVisaApp(tk.Tk):
             "scope_measure": {"device": "Oszilloskop", "value1": "Messwert", "value2": "Kanal"},
             "capture_waveform": {"device": "Oszilloskop/Spektrum", "value1": "Kanäle", "value2": "Punktmodus"},
             "capture_screenshot": {"device": "Gerät"},
+            "serial_log": {"device": "Serielles Gerät", "value1": "Dauer [s]", "value2": "Baudrate", "value3": "Format"},
+            "parallel_phase": {"device": "", "value1": "Dauer [s]", "value2": "Intervall [s]", "value3": "Aufgaben"},
             "wait": {"device": "", "value1": "Sekunden"},
         }.get(action, {})
 
@@ -886,6 +908,8 @@ class InstrumentVisaApp(tk.Tk):
             return {"value1": SCOPE_MEASUREMENTS, "value2": CHANNEL_VALUES}
         if action == "capture_waveform":
             return {"value2": POINT_MODE_VALUES}
+        if action == "serial_log":
+            return {"value3": SERIAL_FORMAT_VALUES}
         return {}
 
     def _apply_custom_sequence_variable_unit_defaults(self) -> None:
@@ -965,6 +989,39 @@ class InstrumentVisaApp(tk.Tk):
             self.custom_sequence_device_role_var.set(role)
         self.custom_sequence_device_name_var.set(self._next_sequence_device_name(role))
 
+    def _refresh_custom_sequence_serial_ports(self) -> None:
+        if self.custom_sequence_serial_port_combo is None or self.custom_sequence_serial_port_var is None:
+            return
+        labels: list[str] = []
+        self.custom_sequence_serial_port_map = {}
+        for port in list_direct_serial_ports():
+            label = self._serial_port_display_label(port)
+            labels.append(label)
+            self.custom_sequence_serial_port_map[label] = port.device
+        self.custom_sequence_serial_port_combo.configure(values=labels)
+        if labels:
+            self.custom_sequence_serial_port_var.set(labels[0])
+            self.status_var.set(f"COM-Ports gefunden: {len(labels)}")
+        else:
+            self.custom_sequence_serial_port_var.set("")
+            self.status_var.set("Keine COM-Ports gefunden.")
+
+    def _serial_port_display_label(self, port) -> str:
+        description = str(getattr(port, "description", "")).strip()
+        return f"{port.device} - {description}" if description else str(port.device)
+
+    def _apply_selected_serial_port_as_custom_sequence_device(self, event: tk.Event | None = None) -> None:
+        if self.custom_sequence_serial_port_var is None or self.custom_sequence_device_address_var is None or self.custom_sequence_device_name_var is None:
+            return
+        label = self.custom_sequence_serial_port_var.get().strip()
+        port = self.custom_sequence_serial_port_map.get(label, label.split(" - ", 1)[0].strip())
+        if not port:
+            return
+        self.custom_sequence_device_address_var.set(port)
+        if self.custom_sequence_device_role_var is not None:
+            self.custom_sequence_device_role_var.set("Seriell")
+        self.custom_sequence_device_name_var.set(self._next_sequence_device_name("Seriell"))
+
     def _sequence_role_from_saved_device(self, saved: dict) -> str:
         profile = self._profile_from_settings(saved)
         return self._sequence_role_from_profile(profile)
@@ -1018,6 +1075,8 @@ class InstrumentVisaApp(tk.Tk):
             return "Signalgenerator"
         if normalized in {"spectrum", "spektrum", "spektrumanalysator"}:
             return "Spektrumanalysator"
+        if normalized in {"serial", "seriell", "com", "comport", "com-port"}:
+            return "Seriell"
         return role.strip() or "Gerät"
 
     def _remove_custom_sequence_device(self) -> None:
@@ -1044,7 +1103,7 @@ class InstrumentVisaApp(tk.Tk):
             values_by_name = dict(zip(param_names, raw_values))
             device = values_by_name.pop("device", "")
             params = {name: value for name, value in values_by_name.items() if value != ""}
-            if action != "wait" and not device:
+            if action not in {"wait", "parallel_phase"} and not device:
                 raise ValueError("Bitte Gerätename für den Schritt eintragen.")
             step = SequenceStep(device=device, action=action, params=params)
             if self.custom_sequence_edit_index is None:
@@ -1154,10 +1213,11 @@ class InstrumentVisaApp(tk.Tk):
     def _custom_sequence_wait_seconds(self, config: CustomSequenceConfig) -> float:
         total = 0.0
         for step in config.steps:
-            if step.action != "wait":
-                continue
             try:
-                total += float(str(step.params.get("seconds", "0")).replace(",", "."))
+                if step.action == "wait":
+                    total += float(str(step.params.get("seconds", "0")).replace(",", "."))
+                elif step.action == "serial_log":
+                    total += float(str(step.params.get("duration_s", "0")).replace(",", "."))
             except ValueError:
                 pass
         return total
@@ -1788,10 +1848,10 @@ class InstrumentVisaApp(tk.Tk):
             self._messages.put(("sequence_done", ""))
 
     def _run_custom_sequence(self, config: CustomSequenceConfig) -> str:
-        instruments: dict[str, VisaInstrument] = {}
+        instruments: dict[str, object] = {}
         try:
             for name, address in config.devices.items():
-                instruments[name] = VisaInstrument(address, timeout_ms=10000)
+                instruments[name] = create_sequence_instrument(address, timeout_ms=10000)
                 instruments[name].open()
             result_data = run_custom_sequence(
                 instruments,

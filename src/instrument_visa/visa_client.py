@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from time import sleep
+from time import monotonic, sleep
 from typing import Any
 
 import pyvisa
@@ -69,6 +69,70 @@ class VisaInstrument:
         finally:
             instrument.read_termination = original_termination
 
+    def read_serial_log(
+        self,
+        duration_s: float,
+        chunk_timeout_ms: int = 200,
+        baudrate: int | None = None,
+        bytesize: int | None = None,
+        parity: str | None = None,
+        stopbits: float | None = None,
+        stop_requested=None,
+    ) -> str:
+        instrument = self._require_open()
+        if duration_s < 0:
+            raise ValueError("Log-Dauer darf nicht negativ sein.")
+        if baudrate is not None and baudrate <= 0:
+            raise ValueError("Baudrate muss größer als 0 sein.")
+        stop_requested = stop_requested or (lambda: False)
+        original_timeout = instrument.timeout
+        original_read_termination = instrument.read_termination
+        original_baud_rate = getattr(instrument, "baud_rate", None)
+        original_data_bits = getattr(instrument, "data_bits", None)
+        original_parity = getattr(instrument, "parity", None)
+        original_stop_bits = getattr(instrument, "stop_bits", None)
+        instrument.timeout = max(1, int(chunk_timeout_ms))
+        instrument.read_termination = None
+        if baudrate is not None and hasattr(instrument, "baud_rate"):
+            instrument.baud_rate = int(baudrate)
+        if bytesize is not None and hasattr(instrument, "data_bits"):
+            instrument.data_bits = int(bytesize)
+        if parity is not None and hasattr(instrument, "parity"):
+            instrument.parity = _pyvisa_parity(parity)
+        if stopbits is not None and hasattr(instrument, "stop_bits"):
+            instrument.stop_bits = _pyvisa_stop_bits(stopbits)
+        deadline = monotonic() + duration_s
+        chunks: list[bytes] = []
+        try:
+            while monotonic() < deadline and not stop_requested():
+                buffered = _bytes_in_buffer(instrument)
+                if buffered > 0 and hasattr(instrument, "read_bytes"):
+                    chunks.append(bytes(instrument.read_bytes(buffered, break_on_termchar=False)))
+                    continue
+                if buffered == 0:
+                    sleep(min(0.05, max(0.0, deadline - monotonic())))
+                    continue
+                try:
+                    data = bytes(instrument.read_raw())
+                except pyvisa.errors.VisaIOError as exc:
+                    if getattr(exc, "error_code", None) == pyvisa.constants.StatusCode.error_timeout:
+                        continue
+                    raise
+                if data:
+                    chunks.append(data)
+            return b"".join(chunks).decode("utf-8", errors="replace")
+        finally:
+            instrument.timeout = original_timeout
+            instrument.read_termination = original_read_termination
+            if baudrate is not None and original_baud_rate is not None and hasattr(instrument, "baud_rate"):
+                instrument.baud_rate = original_baud_rate
+            if bytesize is not None and original_data_bits is not None and hasattr(instrument, "data_bits"):
+                instrument.data_bits = original_data_bits
+            if parity is not None and original_parity is not None and hasattr(instrument, "parity"):
+                instrument.parity = original_parity
+            if stopbits is not None and original_stop_bits is not None and hasattr(instrument, "stop_bits"):
+                instrument.stop_bits = original_stop_bits
+
     def info(self) -> InstrumentInfo:
         return InstrumentInfo(address=self.address, idn=self.query("*IDN?").strip())
 
@@ -87,3 +151,29 @@ def list_resources() -> list[str]:
         return list(resource_manager.list_resources())
     finally:
         resource_manager.close()
+
+
+def _bytes_in_buffer(instrument: Any) -> int:
+    try:
+        value = getattr(instrument, "bytes_in_buffer")
+    except Exception:
+        return -1
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return -1
+
+
+def _pyvisa_parity(value: str):
+    name = {"N": "none", "O": "odd", "E": "even", "M": "mark", "S": "space"}[value.strip().upper()]
+    return getattr(pyvisa.constants.Parity, name)
+
+
+def _pyvisa_stop_bits(value: float):
+    if value == 1:
+        return pyvisa.constants.StopBits.one
+    if value == 1.5:
+        return pyvisa.constants.StopBits.one_and_a_half
+    if value == 2:
+        return pyvisa.constants.StopBits.two
+    raise ValueError("Stopbits müssen 1, 1.5 oder 2 sein.")

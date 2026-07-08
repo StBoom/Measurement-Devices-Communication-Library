@@ -18,7 +18,7 @@ from .acquisition import (
 from .config import load_config
 from .excel_export import append_result
 from .logging_utils import setup_logging
-from .sequence import CustomSequenceConfig, SequenceStep, SequenceVariable, parse_json_bool, run_custom_sequence
+from .sequence import CustomSequenceConfig, SequenceStep, SequenceVariable, create_sequence_instrument, parse_json_bool, run_custom_sequence
 from .visa_client import VisaInstrument, list_resources
 
 
@@ -131,10 +131,10 @@ def _generator_settings_result(settings) -> AcquisitionResult:
 
 def _run_sequence_file(sequence_file: Path, output: Path, timeout_ms: int, logger) -> int:
     config = _load_sequence_config(sequence_file)
-    instruments: dict[str, VisaInstrument] = {}
+    instruments: dict[str, object] = {}
     try:
         for name, address in config.devices.items():
-            instruments[name] = VisaInstrument(address, timeout_ms=timeout_ms)
+            instruments[name] = create_sequence_instrument(address, timeout_ms=timeout_ms)
             instruments[name].open()
         result_data = run_custom_sequence(
             instruments,

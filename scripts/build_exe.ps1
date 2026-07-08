@@ -17,6 +17,7 @@ if (-not (Test-Path -LiteralPath $entryPoint)) {
 }
 
 if (-not $SkipInstall) {
+    py -m pip install -e $projectRoot
     py -m pip install --upgrade pyinstaller
 }
 
@@ -43,6 +44,7 @@ try {
         --collect-all pyvisa_py `
         --collect-all openpyxl `
         --collect-all PIL `
+        --collect-all serial `
         $entryPoint
 }
 finally {

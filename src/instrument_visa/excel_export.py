@@ -80,6 +80,10 @@ def append_result(workbook_path: Path, address: str, idn: str, result: Acquisiti
         artifact = _artifact_path(workbook_path, result.file_type)
         artifact.write_text(result.content, encoding="utf-8")
         sheet.append([timestamp, address, idn, result.kind, result.file_type, str(artifact)])
+    elif result.file_type == "txt":
+        artifact = _artifact_path(workbook_path, result.file_type)
+        artifact.write_text(str(result.content), encoding="utf-8")
+        sheet.append([timestamp, address, idn, result.kind, result.file_type, str(artifact)])
     else:
         sheet.append([timestamp, address, idn, result.kind, result.file_type, result.content])
 

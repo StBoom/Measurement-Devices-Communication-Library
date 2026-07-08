@@ -2,8 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from time import monotonic, sleep
 from typing import Callable, Literal
+
+try:
+    import serial
+    import serial.tools.list_ports as serial_list_ports
+except ImportError:  # pragma: no cover - dependency error is reported at runtime
+    serial = None  # type: ignore[assignment]
+    serial_list_ports = None  # type: ignore[assignment]
 
 from .acquisition import (
     AcquisitionResult,
@@ -160,6 +168,22 @@ class CustomSequenceResult:
     ok_count: int
     error_count: int
     stopped: bool
+
+
+@dataclass(frozen=True)
+class SerialPortInfo:
+    device: str
+    description: str
+
+
+@dataclass(frozen=True)
+class ParallelTask:
+    device: str
+    action: Literal["dmm", "scope", "serial"]
+    measurement: str = "Vpp"
+    channel: int = 1
+    baudrate: int = 115200
+    serial_format: str = "8N1"
 
 
 def run_frequency_sweep(
@@ -583,7 +607,7 @@ def run_timed_switch(
 
 
 def run_custom_sequence(
-    instruments: dict[str, VisaInstrument],
+    instruments: dict[str, object],
     config: CustomSequenceConfig,
     stop_requested: StopCallback | None = None,
     progress: ProgressCallback | None = None,
@@ -596,7 +620,7 @@ def run_custom_sequence(
     if missing_devices:
         raise ValueError("Fehlende geöffnete Geräte: " + ", ".join(missing_devices))
 
-    device_infos = {name: instruments[name].info() for name in config.devices}
+    device_infos = {name: _custom_sequence_device_info(name, config, instruments[name]) for name in config.devices}
     rows: list[list[object]] = [["Run", "Step", "Timestamp", "ElapsedSeconds", "Device", "Address", "IDN", "Action", "Parameters", "Value", "Status"]]
     started_at = datetime.now()
     started = monotonic()
@@ -619,7 +643,7 @@ def run_custom_sequence(
                 address = ""
                 idn = ""
                 try:
-                    value = _execute_custom_sequence_step(step, params, instruments, device_infos, config, stop_requested)
+                    value = _execute_custom_sequence_step(step, params, instruments, device_infos, config, stop_requested, step_result_export)
                     if isinstance(value, AcquisitionResult):
                         value = _custom_step_result_value(step, value, device_infos, step_result_export)
                     ok_count += 1
@@ -724,7 +748,7 @@ def _validate_custom_sequence(config: CustomSequenceConfig) -> None:
         if not address.strip():
             raise ValueError(f"Adresse für {name} darf nicht leer sein.")
     for step in config.steps:
-        if step.action != "wait" and step.device not in config.devices:
+        if step.action not in {"wait", "parallel_phase"} and step.device not in config.devices:
             raise ValueError(f"Unbekanntes Gerät im Ablauf: {step.device}")
         _validate_custom_sequence_step(step)
     for variable in config.variables:
@@ -733,13 +757,63 @@ def _validate_custom_sequence(config: CustomSequenceConfig) -> None:
         _variable_value_for_run(variable, 1)
 
 
+class DirectSerialInstrument:
+    def __init__(self, address: str, timeout_ms: int = 10000) -> None:
+        self.address = address
+        self.timeout_ms = timeout_ms
+
+    def open(self) -> None:
+        return
+
+    def close(self) -> None:
+        return
+
+    def info(self) -> InstrumentInfo:
+        return InstrumentInfo(address=self.address, idn="Direkter COM-Port")
+
+
+def create_sequence_instrument(address: str, timeout_ms: int = 10000) -> VisaInstrument | DirectSerialInstrument:
+    if _is_direct_serial_address(address):
+        return DirectSerialInstrument(address, timeout_ms)
+    return VisaInstrument(address, timeout_ms=timeout_ms)
+
+
+def _custom_sequence_device_info(name: str, config: CustomSequenceConfig, instrument: object) -> InstrumentInfo:
+    try:
+        return instrument.info()
+    except Exception:
+        if _device_only_uses_serial_log(name, config):
+            return InstrumentInfo(address=str(getattr(instrument, "address", config.devices.get(name, ""))), idn="Serieller Log ohne IDN")
+        raise
+
+
+def _device_only_uses_serial_log(name: str, config: CustomSequenceConfig) -> bool:
+    device_steps = [step for step in config.steps if step.device == name]
+    return bool(device_steps) and all(step.action == "serial_log" for step in device_steps)
+
+
+def _is_direct_serial_address(address: str) -> bool:
+    normalized = address.strip().upper()
+    return normalized.startswith("COM") and normalized[3:].isdigit()
+
+
+def list_direct_serial_ports() -> list[SerialPortInfo]:
+    if serial_list_ports is None:
+        return []
+    try:
+        return [SerialPortInfo(device=str(port.device), description=str(port.description or "")) for port in serial_list_ports.comports()]
+    except Exception:
+        return []
+
+
 def _execute_custom_sequence_step(
     step: SequenceStep,
     params: dict[str, object],
-    instruments: dict[str, VisaInstrument],
+    instruments: dict[str, object],
     device_infos: dict[str, InstrumentInfo],
     config: CustomSequenceConfig,
     stop_requested: StopCallback,
+    step_result_export: StepResultExportCallback | None,
 ) -> object:
     if step.action == "wait":
         seconds = _float_param(params, "seconds", 0.0)
@@ -747,6 +821,11 @@ def _execute_custom_sequence_step(
             raise ValueError("Wartezeit darf nicht negativ sein.")
         _sleep_interruptible(seconds, stop_requested)
         return f"{seconds:.3f} s"
+    if step.action == "parallel_phase":
+        duration_s = _float_param(params, "duration_s", 1.0)
+        interval_s = _float_param(params, "interval_s", 1.0)
+        tasks = parse_parallel_tasks(str(params.get("tasks", "")))
+        return run_parallel_phase(instruments, device_infos, duration_s, interval_s, tasks, stop_requested, step_result_export)
 
     instrument = instruments[step.device]
     info = device_infos[step.device]
@@ -801,6 +880,17 @@ def _execute_custom_sequence_step(
         return capture_waveform(instrument, info.idn, channels or None, point_mode)
     if step.action == "capture_screenshot":
         return capture_screenshot(instrument, info.idn)
+    if step.action == "serial_log":
+        duration_s = _float_param(params, "duration_s", 1.0)
+        if duration_s < 0:
+            raise ValueError("Log-Dauer darf nicht negativ sein.")
+        baudrate = _int_param(params, "baudrate", 115200)
+        bytesize, parity, stopbits = parse_serial_format(str(params.get("serial_format", "8N1")))
+        if _is_direct_serial_address(info.address):
+            content = read_direct_serial_log(info.address, duration_s, baudrate, bytesize, parity, stopbits, stop_requested)
+        else:
+            content = instrument.read_serial_log(duration_s, baudrate=baudrate, bytesize=bytesize, parity=parity, stopbits=stopbits, stop_requested=stop_requested)
+        return AcquisitionResult(kind="serial log", file_type="txt", content=content)
     raise ValueError(f"Unbekannte Aktion: {step.action}")
 
 
@@ -824,6 +914,8 @@ def _acquisition_result_summary(result: AcquisitionResult) -> str:
     text = str(content)
     if result.file_type == "csv":
         return f"{result.kind}: {len(text.splitlines())} Zeilen, {len(text)} Zeichen"
+    if result.file_type == "txt":
+        return f"{result.kind}: {len(text.splitlines())} Zeilen, {len(text)} Zeichen"
     return f"{result.kind}: {text}"
 
 
@@ -839,6 +931,8 @@ def _validate_custom_sequence_step(step: SequenceStep) -> None:
         "scope_measure": {"measurement", "channel"},
         "capture_waveform": set(),
         "capture_screenshot": set(),
+        "serial_log": {"duration_s", "baudrate", "serial_format"},
+        "parallel_phase": {"duration_s", "interval_s", "tasks"},
         "wait": {"seconds"},
     }
     if step.action not in required_params:
@@ -882,7 +976,7 @@ def _resolve_param_value(value: object, variables: dict[str, str]) -> object:
 
 def _custom_sequence_cleanup(
     config: CustomSequenceConfig,
-    instruments: dict[str, VisaInstrument],
+    instruments: dict[str, object],
     device_infos: dict[str, InstrumentInfo],
     started: float,
     stop_requested: StopCallback,
@@ -892,6 +986,8 @@ def _custom_sequence_cleanup(
     if not (config.end_rf_off or config.end_power_supply_off or stop_requested()):
         return rows, errors
     for device, info in device_infos.items():
+        if _device_only_uses_serial_log(device, config):
+            continue
         try:
             profile_idn = info.idn
             if config.end_rf_off:
@@ -969,6 +1065,167 @@ def _bool_param(params: dict[str, object], name: str, default: bool) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().upper() in {"1", "TRUE", "JA", "YES", "ON"}
+
+
+def parse_serial_format(value: str) -> tuple[int, str, float]:
+    compact = value.strip().upper().replace(" ", "").replace("-", "").replace("_", "")
+    if len(compact) < 3:
+        raise ValueError("Serielles Format muss z. B. 8N1 oder 7E1 sein.")
+    try:
+        bytesize = int(compact[0])
+        parity = compact[1]
+        stopbits = float(compact[2:])
+    except ValueError as exc:
+        raise ValueError("Serielles Format muss z. B. 8N1 oder 7E1 sein.") from exc
+    if bytesize not in {5, 6, 7, 8}:
+        raise ValueError("Datenbits müssen 5, 6, 7 oder 8 sein.")
+    if parity not in {"N", "E", "O", "M", "S"}:
+        raise ValueError("Parität muss N, E, O, M oder S sein.")
+    if stopbits not in {1.0, 1.5, 2.0}:
+        raise ValueError("Stopbits müssen 1, 1.5 oder 2 sein.")
+    return bytesize, parity, stopbits
+
+
+def parse_parallel_tasks(value: str) -> list[ParallelTask]:
+    tasks: list[ParallelTask] = []
+    for part in value.replace("\n", ";").split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        fields = [field.strip() for field in part.split(":")]
+        if len(fields) < 2:
+            raise ValueError("Parallel-Aufgabe muss z. B. DMM1:dmm oder Scope1:scope:Vpp:1 sein.")
+        device = fields[0]
+        action = fields[1].lower()
+        if action == "dmm":
+            tasks.append(ParallelTask(device=device, action="dmm"))
+        elif action == "scope":
+            measurement = fields[2] if len(fields) >= 3 and fields[2] else "Vpp"
+            channel = int(fields[3]) if len(fields) >= 4 and fields[3] else 1
+            tasks.append(ParallelTask(device=device, action="scope", measurement=measurement, channel=channel))
+        elif action in {"serial", "log"}:
+            baudrate = int(fields[2]) if len(fields) >= 3 and fields[2] else 115200
+            serial_format = fields[3] if len(fields) >= 4 and fields[3] else "8N1"
+            parse_serial_format(serial_format)
+            tasks.append(ParallelTask(device=device, action="serial", baudrate=baudrate, serial_format=serial_format))
+        else:
+            raise ValueError(f"Unbekannte Parallel-Aufgabe: {action}")
+    if not tasks:
+        raise ValueError("Parallel-Messphase benötigt mindestens eine Aufgabe.")
+    return tasks
+
+
+def run_parallel_phase(
+    instruments: dict[str, object],
+    device_infos: dict[str, InstrumentInfo],
+    duration_s: float,
+    interval_s: float,
+    tasks: list[ParallelTask],
+    stop_requested: StopCallback,
+    step_result_export: StepResultExportCallback | None,
+) -> str:
+    if duration_s <= 0:
+        raise ValueError("Parallel-Dauer muss größer als 0 sein.")
+    if interval_s <= 0:
+        raise ValueError("Parallel-Intervall muss größer als 0 sein.")
+    for task in tasks:
+        if task.device not in instruments:
+            raise ValueError(f"Unbekanntes Gerät in Parallel-Aufgabe: {task.device}")
+
+    rows: list[list[object]] = [["Index", "Timestamp", "ElapsedSeconds", "Device", "Action", "Value", "Status"]]
+    serial_exports: list[str] = []
+    started = monotonic()
+    measurement_tasks = [task for task in tasks if task.action in {"dmm", "scope"}]
+    serial_tasks = [task for task in tasks if task.action == "serial"]
+
+    with ThreadPoolExecutor(max_workers=max(1, len(tasks))) as executor:
+        futures = [executor.submit(_parallel_serial_task, task, instruments[task.device], device_infos[task.device], duration_s, stop_requested, step_result_export) for task in serial_tasks]
+        index = 1
+        next_sample = started
+        while monotonic() - started < duration_s and not stop_requested():
+            wait_s = next_sample - monotonic()
+            if wait_s > 0:
+                _sleep_interruptible(wait_s, stop_requested)
+            if stop_requested() or monotonic() - started > duration_s:
+                break
+            sample_futures = [executor.submit(_parallel_measurement_task, task, instruments[task.device], device_infos[task.device]) for task in measurement_tasks]
+            for future in as_completed(sample_futures):
+                task, value, status = future.result()
+                rows.append([index, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), f"{monotonic() - started:.3f}", task.device, task.action, value, status])
+            index += 1
+            next_sample += interval_s
+        for future in as_completed(futures):
+            serial_exports.append(future.result())
+
+    summary_rows = len(rows) - 1
+    result = AcquisitionResult(kind="parallel phase", file_type="csv", content=_csv_rows(rows))
+    export_text = ""
+    first_task = tasks[0]
+    if step_result_export is not None:
+        export_text = step_result_export(first_task.device, device_infos[first_task.device], result)
+    serial_text = "; ".join(text for text in serial_exports if text)
+    parts = [f"parallel phase: {summary_rows} Messwerte"]
+    if export_text:
+        parts.append(export_text)
+    if serial_text:
+        parts.append(serial_text)
+    return "; ".join(parts)
+
+
+def _parallel_measurement_task(task: ParallelTask, instrument: object, info: InstrumentInfo) -> tuple[ParallelTask, object, str]:
+    try:
+        if task.action == "dmm":
+            return task, read_value(instrument).content, "OK"
+        if task.action == "scope":
+            return task, read_scope_measurement(instrument, task.measurement, task.channel, info.idn).content, "OK"
+        return task, "", f"ERROR: Unsupported task {task.action}"
+    except Exception as exc:
+        return task, "", f"ERROR: {exc}"
+
+
+def _parallel_serial_task(
+    task: ParallelTask,
+    instrument: object,
+    info: InstrumentInfo,
+    duration_s: float,
+    stop_requested: StopCallback,
+    step_result_export: StepResultExportCallback | None,
+) -> str:
+    bytesize, parity, stopbits = parse_serial_format(task.serial_format)
+    if _is_direct_serial_address(info.address):
+        content = read_direct_serial_log(info.address, duration_s, task.baudrate, bytesize, parity, stopbits, stop_requested)
+    else:
+        content = instrument.read_serial_log(duration_s, baudrate=task.baudrate, bytesize=bytesize, parity=parity, stopbits=stopbits, stop_requested=stop_requested)
+    if step_result_export is None:
+        return f"{task.device}: serial log {len(content)} Zeichen"
+    result = AcquisitionResult(kind="serial log", file_type="txt", content=content)
+    return f"{task.device}: {step_result_export(task.device, info, result)}"
+
+
+def read_direct_serial_log(
+    port: str,
+    duration_s: float,
+    baudrate: int,
+    bytesize: int = 8,
+    parity: str = "N",
+    stopbits: float = 1,
+    stop_requested: StopCallback | None = None,
+) -> str:
+    stop_requested = stop_requested or (lambda: False)
+    if duration_s < 0:
+        raise ValueError("Log-Dauer darf nicht negativ sein.")
+    if baudrate <= 0:
+        raise ValueError("Baudrate muss größer als 0 sein.")
+    if serial is None:
+        raise RuntimeError("Direkter COM-Port-Zugriff benötigt pyserial. Bitte Abhängigkeiten neu installieren.")
+    chunks: list[bytes] = []
+    deadline = monotonic() + duration_s
+    with serial.Serial(port=port, baudrate=baudrate, bytesize=bytesize, parity=parity, stopbits=stopbits, timeout=0.2) as serial_port:
+        while monotonic() < deadline and not stop_requested():
+            data = serial_port.read(serial_port.in_waiting or 1)
+            if data:
+                chunks.append(data)
+    return b"".join(chunks).decode("utf-8", errors="replace")
 
 
 def _channels_param(value: object) -> list[int]:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -35,6 +36,9 @@ from instrument_visa.sequence import (  # noqa: E402
     frequency_points,
     parse_json_bool,
     parse_frequency_hz,
+    parse_serial_format,
+    parse_parallel_tasks,
+    read_direct_serial_log,
     run_custom_sequence,
     run_frequency_sweep,
     run_timed_switch,
@@ -49,10 +53,13 @@ class FakeInstrument:
         self.query_responses = query_responses or {}
         self.binary_responses = binary_responses or {}
         self.raw_responses: dict[str, bytes] = {}
+        self.serial_log_responses: dict[float, str] = {}
         self.writes: list[str] = []
         self.queries: list[str] = []
         self.binary_queries: list[str] = []
         self.raw_writes: list[str] = []
+        self.serial_log_durations: list[float] = []
+        self.serial_log_baudrates: list[int | None] = []
 
     def write(self, command: str) -> None:
         self.writes.append(command)
@@ -68,6 +75,20 @@ class FakeInstrument:
     def read_raw_after_write(self, command: str) -> bytes:
         self.raw_writes.append(command)
         return self.raw_responses.get(command, b"IN;SP1;PU0,0;PD100,100;")
+
+    def read_serial_log(
+        self,
+        duration_s: float,
+        chunk_timeout_ms: int = 200,
+        baudrate: int | None = None,
+        bytesize: int | None = None,
+        parity: str | None = None,
+        stopbits: float | None = None,
+        stop_requested=None,
+    ) -> str:
+        self.serial_log_durations.append(duration_s)
+        self.serial_log_baudrates.append(baudrate)
+        return self.serial_log_responses.get(duration_s, "serial line 1\nserial line 2")
 
     def info(self):
         from instrument_visa.visa_client import InstrumentInfo
@@ -493,6 +514,133 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(result.ok_count, 1)
         self.assertEqual(exports, [("Scope1", "USB::TEST", "png", b"PNGDATA")])
         self.assertIn("Datei: screenshot.png", result.csv_content)
+
+    def test_custom_sequence_exports_serial_log_step(self) -> None:
+        instrument = FakeInstrument(query_responses={"*IDN?": "SERIAL,LOGGER,1,1"})
+        instrument.address = "ASRL3::INSTR"
+        exports: list[tuple[str, str, str, bytes | str]] = []
+
+        def export_step(device: str, info, result: AcquisitionResult) -> str:
+            exports.append((device, info.address, result.file_type, result.content))
+            return "Datei: serial-log.txt"
+
+        result = run_custom_sequence(
+            {"Serial1": instrument},  # type: ignore[dict-item]
+            CustomSequenceConfig(devices={"Serial1": instrument.address}, steps=[SequenceStep("Serial1", "serial_log", {"duration_s": "2.5", "baudrate": "115200", "serial_format": "8N1"})], end_rf_off=False),
+            step_result_export=export_step,
+        )
+
+        self.assertEqual(result.ok_count, 1)
+        self.assertEqual(instrument.serial_log_durations, [2.5])
+        self.assertEqual(instrument.serial_log_baudrates, [115200])
+        self.assertEqual(exports, [("Serial1", "ASRL3::INSTR", "txt", "serial line 1\nserial line 2")])
+        self.assertIn("Datei: serial-log.txt", result.csv_content)
+        self.assertNotIn("serial line 1\nserial line 2", result.csv_content)
+
+    def test_custom_sequence_serial_log_device_does_not_require_idn(self) -> None:
+        instrument = FakeInstrument()
+        instrument.address = "ASRL4::INSTR"
+
+        def failing_query(command: str) -> str:
+            raise TimeoutError(command)
+
+        instrument.query = failing_query  # type: ignore[method-assign]
+
+        result = run_custom_sequence(
+            {"Serial1": instrument},  # type: ignore[dict-item]
+            CustomSequenceConfig(devices={"Serial1": instrument.address}, steps=[SequenceStep("Serial1", "serial_log", {"duration_s": "1", "baudrate": "9600", "serial_format": "8N1"})], end_rf_off=False),
+        )
+
+        self.assertEqual(result.ok_count, 1)
+        self.assertIn("Serieller Log ohne IDN", result.csv_content)
+        self.assertEqual(instrument.serial_log_durations, [1.0])
+
+    def test_read_direct_serial_log_decodes_bytes(self) -> None:
+        class FakeSerial:
+            def __init__(self, port: str, baudrate: int, bytesize: int, parity: str, stopbits: float, timeout: float) -> None:
+                self.port = port
+                self.baudrate = baudrate
+                self.bytesize = bytesize
+                self.parity = parity
+                self.stopbits = stopbits
+                self.timeout = timeout
+                self.reads = [b"boot ", b"ok\n", b""]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+                return None
+
+            @property
+            def in_waiting(self) -> int:
+                return len(self.reads[0]) if self.reads else 0
+
+            def read(self, size: int) -> bytes:
+                if self.reads:
+                    return self.reads.pop(0)
+                return b""
+
+        import instrument_visa.sequence as sequence_module
+
+        original_serial = sequence_module.serial
+        sequence_module.serial = SimpleNamespace(Serial=FakeSerial)  # type: ignore[assignment]
+        try:
+            result = read_direct_serial_log("COM3", 0.01, 115200, 7, "E", 1)
+        finally:
+            sequence_module.serial = original_serial  # type: ignore[assignment]
+
+        self.assertEqual(result, "boot ok\n")
+
+    def test_parse_serial_format(self) -> None:
+        self.assertEqual(parse_serial_format("8N1"), (8, "N", 1.0))
+        self.assertEqual(parse_serial_format("7-E-1"), (7, "E", 1.0))
+        self.assertEqual(parse_serial_format("8N1.5"), (8, "N", 1.5))
+
+        with self.assertRaises(ValueError):
+            parse_serial_format("9N1")
+
+    def test_parse_parallel_tasks(self) -> None:
+        tasks = parse_parallel_tasks("DMM1:dmm; Scope1:scope:Vpp:2; Serial1:serial:9600:8N1")
+
+        self.assertEqual([task.device for task in tasks], ["DMM1", "Scope1", "Serial1"])
+        self.assertEqual(tasks[1].measurement, "Vpp")
+        self.assertEqual(tasks[1].channel, 2)
+        self.assertEqual(tasks[2].baudrate, 9600)
+
+    def test_custom_sequence_parallel_phase_runs_measurements(self) -> None:
+        dmm = FakeInstrument(query_responses={"*IDN?": "KEITHLEY INSTRUMENTS INC.,MODEL 2000,123,1.0", ":READ?": "4.2"})
+        dmm.address = "GPIB0::2::INSTR"
+        scope = FakeInstrument(query_responses={"*IDN?": "TEST,DSOX2024A,1,1", ":MEASure:VPP? CHANnel1": "1.1"})
+        scope.address = "USB::SCOPE"
+        exports: list[tuple[str, str, str]] = []
+
+        def export_step(device: str, info, result: AcquisitionResult) -> str:
+            exports.append((device, info.address, result.file_type))
+            return "Tabellenblatt: parallel"
+
+        result = run_custom_sequence(
+            {"DMM1": dmm, "Scope1": scope},  # type: ignore[dict-item]
+            CustomSequenceConfig(
+                devices={"DMM1": dmm.address, "Scope1": scope.address},
+                steps=[SequenceStep("", "parallel_phase", {"duration_s": "0.01", "interval_s": "0.01", "tasks": "DMM1:dmm; Scope1:scope:Vpp:1"})],
+                end_rf_off=False,
+            ),
+            step_result_export=export_step,
+        )
+
+        self.assertEqual(result.ok_count, 1)
+        self.assertIn("parallel phase", result.csv_content)
+        self.assertEqual(exports[0][2], "csv")
+
+    def test_append_result_writes_serial_log_text_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "results.xlsx"
+            export = append_result(workbook_path, "ASRL3::INSTR", "Serieller Log", AcquisitionResult(kind="serial log", file_type="txt", content="line 1\nline 2"))
+
+            self.assertTrue(workbook_path.exists())
+            self.assertIsNotNone(export.artifact_path)
+            self.assertEqual(export.artifact_path.read_text(encoding="utf-8"), "line 1\nline 2")
 
     def test_custom_sequence_power_supply_uses_configured_safety_limits(self) -> None:
         supply = FakeInstrument(query_responses={"*IDN?": "HAMEG,HMP4030,123,1.0"})
