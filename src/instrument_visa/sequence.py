@@ -1253,14 +1253,10 @@ def read_34970a_data_logger(instrument: object, config: DataLogger34970AConfig, 
 
     if stop_requested():
         return AcquisitionResult(kind="34970A data logger", file_type="csv", content=_34970a_wide_csv([], stopped=True))
-    values: list[str] = []
-    for channel_group in _chunks(channels, 11):
-        if stop_requested():
-            break
-        command = _34970a_read_command(measurement, _format_34970a_channel_list(channel_group), config.range_value, config.resolution, config.thermocouple_type)
-        LOGGER.info("SCPI action=34970a_read measurement=%s channels=%s command=%s", measurement, channel_group, command)
-        raw = str(instrument.query(command)).strip()
-        values.extend(_parse_34970a_values(raw))
+    command = _34970a_read_command(measurement, _format_34970a_channel_list(channels), config.range_value, config.resolution, config.thermocouple_type)
+    LOGGER.info("SCPI action=34970a_read measurement=%s channels=%s command=%s", measurement, channels, command)
+    raw = str(instrument.query(command)).strip()
+    values = _parse_34970a_values(raw)
     return AcquisitionResult(kind="34970A data logger", file_type="csv", content=_34970a_wide_csv([(measurement, channels, values)], stop_requested()))
 
 
@@ -1400,10 +1396,6 @@ def _34970a_optional_numeric_param(value: str, default: str = "") -> str:
     if not normalized or normalized in {"AUTO", "DEF", "DEFAULT"}:
         return default
     return normalized
-
-
-def _chunks(values: list[int], size: int) -> list[list[int]]:
-    return [values[index : index + size] for index in range(0, len(values), size)]
 
 
 def _format_34970a_channel_list(channels: list[int]) -> str:

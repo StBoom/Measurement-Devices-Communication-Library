@@ -756,17 +756,16 @@ class AcquisitionTests(unittest.TestCase):
         self.assertIn("Timestamp,CH1 VOLT_DC [V],CH2 VOLT_DC [V],CH3 VOLT_DC [V]", str(result.content))
         self.assertIn(",1.0,2.0,3.0", str(result.content))
 
-    def test_34970a_voltage_read_splits_large_channel_lists(self) -> None:
+    def test_34970a_voltage_read_uses_single_query_for_large_channel_lists(self) -> None:
         instrument = FakeInstrument(
             query_responses={
-                "MEAS:VOLT:DC? 10,0.003,(@101,102,103,104,105,106,107,108,109,110,111)": "1,2,3,4,5,6,7,8,9,10,11",
-                "MEAS:VOLT:DC? 10,0.003,(@112)": "12",
+                "MEAS:VOLT:DC? 10,0.003,(@101,102,103,104,105,106,107,108,109,110,111,112)": "1,2,3,4,5,6,7,8,9,10,11,12",
             }
         )
 
         result = read_34970a_data_logger(instrument, DataLogger34970AConfig(measurement="VOLT_DC", channels="1-12"))
 
-        self.assertEqual(len(instrument.queries), 2)
+        self.assertEqual(len(instrument.queries), 1)
         self.assertIn("CH12 VOLT_DC [V]", str(result.content))
         self.assertIn(",1,2,3,4,5,6,7,8,9,10,11,12", str(result.content))
 
