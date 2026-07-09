@@ -799,6 +799,22 @@ class AcquisitionTests(unittest.TestCase):
             self.assertEqual(sheet["A2"].value, "2026-07-08 14:00:00")
             self.assertEqual(sheet["B3"].value, 23.6)
 
+    def test_34970a_excel_export_adds_late_stopped_header(self) -> None:
+        from openpyxl import load_workbook
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "results.xlsx"
+            first = AcquisitionResult(kind="34970A data logger", file_type="csv", content="Timestamp,CH1 TEMP [degC]\n2026-07-08 14:00:00,23.5\n")
+            stopped = AcquisitionResult(kind="34970A data logger", file_type="csv", content="Timestamp,StoppedByUser\n2026-07-08 14:00:05,Yes\n")
+
+            append_result(workbook_path, "COM7", "HEWLETT-PACKARD,34970A", first)
+            append_result(workbook_path, "COM7", "HEWLETT-PACKARD,34970A", stopped)
+            workbook = load_workbook(workbook_path)
+            sheet = workbook["34970A Measurements"]
+
+            self.assertEqual(sheet["C1"].value, "StoppedByUser")
+            self.assertEqual(sheet["C3"].value, "Yes")
+
     def test_parse_34970a_measurement_plan(self) -> None:
         tasks = parse_34970a_measurement_plan("1-4:VOLT_DC; 5:TEMP; 6-7:RES")
 

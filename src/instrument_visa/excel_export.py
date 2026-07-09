@@ -111,8 +111,17 @@ def _append_34970a_csv(sheet, content: str) -> None:
     if not any(cell.value is not None for row in sheet.iter_rows() for cell in row):
         for column, value in enumerate(header, start=1):
             sheet.cell(row=1, column=column).value = value
+    existing_headers = [sheet.cell(row=1, column=column).value for column in range(1, sheet.max_column + 1)]
+    for value in header:
+        if value not in existing_headers:
+            existing_headers.append(value)
+            sheet.cell(row=1, column=len(existing_headers)).value = value
+    columns_by_header = {value: index for index, value in enumerate(existing_headers, start=1)}
     for row in rows[1:]:
-        sheet.append(row)
+        output_row = [""] * len(existing_headers)
+        for header_value, value in zip(header, row):
+            output_row[columns_by_header[header_value] - 1] = value
+        sheet.append(output_row)
 
 
 def _get_or_create_sheet(workbook, name: str):

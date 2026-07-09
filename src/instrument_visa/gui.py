@@ -1835,9 +1835,13 @@ class InstrumentVisaApp(tk.Tk):
         serial_format = self.data_logger_34970a_serial_format_var.get().strip()
         interval_s, count = self._data_logger_timing()
         completed = 0
+        started = monotonic()
         with self._open_instrument() as instrument:
             info = instrument.info()
             while not self.operation_stop_event.is_set() and (count == 0 or completed < count):
+                wait_s = started + completed * interval_s - monotonic()
+                if wait_s > 0 and self.operation_stop_event.wait(wait_s):
+                    break
                 result = read_34970a_data_logger(
                     instrument,
                     DataLogger34970AConfig(
@@ -1853,8 +1857,6 @@ class InstrumentVisaApp(tk.Tk):
                 self.logger.info("34970A data exported workbook=%s sheet=%s measurement=%s channels=%s baudrate=%s serial_format=%s index=%s", export.workbook_path, export.sheet_name, measurement, channels, baudrate, serial_format, completed)
                 if count and completed >= count:
                     break
-                if self.operation_stop_event.wait(interval_s):
-                    break
         stopped_text = " gestoppt" if self.operation_stop_event.is_set() else " abgeschlossen"
         return f"34970A-Kanäle{stopped_text}: {self._output_path()}\nMessungen: {completed}\nMessart: {measurement}\nKanäle: {channels}"
 
@@ -1865,16 +1867,18 @@ class InstrumentVisaApp(tk.Tk):
         interval_s, count = self._data_logger_timing()
         tasks = parse_34970a_measurement_plan(plan)
         completed = 0
+        started = monotonic()
         with self._open_instrument() as instrument:
             info = instrument.info()
             while not self.operation_stop_event.is_set() and (count == 0 or completed < count):
+                wait_s = started + completed * interval_s - monotonic()
+                if wait_s > 0 and self.operation_stop_event.wait(wait_s):
+                    break
                 result = read_34970a_measurement_plan(instrument, tasks, baudrate=baudrate, serial_format_value=serial_format, stop_requested=self.operation_stop_event.is_set)
                 export = append_result(self._output_path(), self.address_var.get().strip(), info.idn, result)
                 completed += 1
                 self.logger.info("34970A plan exported workbook=%s sheet=%s plan=%s baudrate=%s serial_format=%s index=%s", export.workbook_path, export.sheet_name, plan, baudrate, serial_format, completed)
                 if count and completed >= count:
-                    break
-                if self.operation_stop_event.wait(interval_s):
                     break
         stopped_text = " gestoppt" if self.operation_stop_event.is_set() else " abgeschlossen"
         return f"34970A-Messplan{stopped_text}: {self._output_path()}\nMessungen: {completed}\nPlan: {plan}"
@@ -2438,7 +2442,7 @@ class InstrumentVisaApp(tk.Tk):
         if not address:
             raise ValueError("Bitte eine VISA-Adresse eintragen.")
         if address.upper().startswith("ASRL"):
-            return create_sequence_instrument(self._canonical_address(address), timeout_ms=10000)
+            return create_sequence_instrument(address, timeout_ms=10000)
         if address.upper().startswith(("COM", "PICO::", "PICO2000A::", "SALEAE::")):
             return create_sequence_instrument(address, timeout_ms=10000)
         return VisaInstrument(address=address, timeout_ms=10000)
@@ -2635,7 +2639,7 @@ class InstrumentVisaApp(tk.Tk):
     def _prefer_resource_address(self, candidate: str, current: str) -> bool:
         candidate_normalized = candidate.strip().upper()
         current_normalized = current.strip().upper()
-        return candidate_normalized.startswith("COM") and current_normalized.startswith("ASRL")
+        return candidate_normalized.startswith("ASRL") and current_normalized.startswith("COM")
 
     def _resource_display_label(self, address: str, numbering: dict[str, str] | None = None) -> str:
         saved = self._saved_device_for_address(address)
