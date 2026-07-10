@@ -15,6 +15,7 @@ PS2000A_RATIO_MODE_NONE = 0
 PS2000A_TIME_UNITS_NS = 2
 PS2000A_TIMEBASE_NS = 8
 PS2000A_MAX_READY_WAIT_S = 30.0
+PS2000A_VARIANT_INFO = 3
 PICO_OK = 0
 
 PS2000A_RANGES = {
@@ -57,6 +58,7 @@ class PicoScope2000AInstrument:
         self._dll = None
         self._handle: int | None = None
         self._max_adc: int = 32767
+        self._variant_info: str = ""
 
     def open(self) -> None:
         self._dll = _load_ps2000a()
@@ -72,6 +74,7 @@ class PicoScope2000AInstrument:
             self._max_adc = int(max_adc.value)
         except AttributeError:
             self._max_adc = 32767
+        self._variant_info = _read_unit_info(self._dll, self._handle, PS2000A_VARIANT_INFO)
 
     def close(self) -> None:
         if self._dll is not None and self._handle is not None:
@@ -86,12 +89,17 @@ class PicoScope2000AInstrument:
         self.close()
 
     def info(self) -> InstrumentInfo:
-        return InstrumentInfo(address=self.address, idn="PicoScope 2000A")
+        variant = f" {self._variant_info}" if self._variant_info else ""
+        return InstrumentInfo(address=self.address, idn=f"PicoScope 2000A{variant}")
 
     def capture_analog(self, config: PicoScopeAnalogConfig, stop_requested=None) -> AcquisitionResult:
         dll, handle = self._require_open()
         stop_requested = stop_requested or (lambda: False)
         channels = parse_pico_analog_channels(config.channels)
+        available_channels = picoscope_analog_channels_for_variant(self._variant_info)
+        unavailable_channels = [channel for channel in channels if channel not in available_channels]
+        if unavailable_channels:
+            raise ValueError(f"PicoScope-Modell {self._variant_info or 'unbekannt'} unterstützt Analogkanal {', '.join(unavailable_channels)} nicht.")
         range_code, full_scale_v = _pico_range(config.voltage_range)
         coupling = PS2000A_COUPLING.get(config.coupling.strip().upper(), PS2000A_COUPLING["DC"])
         samples = _positive_int(config.samples, "Samples")
@@ -132,6 +140,8 @@ class PicoScope2000AInstrument:
         dll, handle = self._require_open()
         stop_requested = stop_requested or (lambda: False)
         digital_channels = parse_pico_digital_channels(config.channels)
+        if not picoscope_variant_supports_digital(self._variant_info):
+            raise ValueError(f"PicoScope-Modell {self._variant_info or 'unbekannt'} unterstützt keine digitalen MSO-Kanäle.")
         samples = _positive_int(config.samples, "Samples")
         timebase = _timebase_from_interval_us(config.interval_us)
         ports = sorted({channel // 8 for channel in digital_channels})
@@ -250,6 +260,19 @@ def parse_pico_digital_channels(value: str | list[int]) -> list[int]:
     return unique
 
 
+def picoscope_variant_supports_digital(variant_info: str) -> bool:
+    return "2206BMSO" in _compact_variant(variant_info)
+
+
+def picoscope_analog_channels_for_variant(variant_info: str) -> tuple[str, ...]:
+    compact = _compact_variant(variant_info)
+    if "2206BMSO" in compact or "2206B" in compact:
+        return ("A", "B")
+    if "2406B" in compact:
+        return ("A", "B", "C", "D")
+    raise ValueError(f"PicoScope-Variant konnte nicht eindeutig ermittelt werden: {variant_info or 'unbekannt'}")
+
+
 def _load_ps2000a():
     for name in ("ps2000a.dll", "ps2000a"):
         try:
@@ -270,6 +293,22 @@ def _serial_from_address(address: str):
     serial_index = upper.index("::SERIAL::") + len("::SERIAL::")
     serial = normalized[serial_index:].strip()
     return serial.encode("ascii") if serial else None
+
+
+def _read_unit_info(dll, handle: int, info: int) -> str:
+    try:
+        buffer = ctypes.create_string_buffer(256)
+        required_size = ctypes.c_int16()
+        status = dll.ps2000aGetUnitInfo(handle, buffer, ctypes.c_int16(len(buffer)), ctypes.byref(required_size), info)
+    except AttributeError:
+        return ""
+    if int(status) != PICO_OK:
+        raise RuntimeError(f"ps2000aGetUnitInfo fehlgeschlagen: PicoStatus {int(status)}")
+    return buffer.value.decode("ascii", errors="ignore").strip()
+
+
+def _compact_variant(variant_info: str) -> str:
+    return "".join(character for character in variant_info.upper() if character.isalnum())
 
 
 def _pico_range(value: str) -> tuple[int, float]:

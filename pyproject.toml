@@ -1,6 +1,6 @@
 [project]
 name = "measurement-devices-communication-library"
-version = "0.8.4"
+version = "0.8.5"
 description = "Measurement devices communication library and GUI for VISA/SCPI instruments."
 requires-python = ">=3.10"
 dependencies = [
@@ -14,6 +14,9 @@ dependencies = [
 [project.optional-dependencies]
 build = [
     "pyinstaller>=6.0.0",
+]
+saleae = [
+    "logic2-automation>=1.0.0",
 ]
 
 [project.scripts]

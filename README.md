@@ -16,7 +16,32 @@ Das Projekt kommuniziert per VISA/SCPI mit Messgeräten, liest Messwerte, Screen
 py -m pip install -e .
 ```
 
+Für Saleae-Unterstützung bei Python-Installationen zusätzlich das optionale Extra installieren:
+
+```powershell
+py -m pip install -e ".[saleae]"
+```
+
 Hinweis für GPIB: Der GPIB-Controller-Treiber sollte zur verwendeten VISA-Installation passen. Bei einem NI-GPIB-Adapter ist NI-VISA häufig die robustere Wahl.
+
+## Externe Runtime-Abhängigkeiten
+
+Externe Hersteller-Installer können lokal im Ordner `dependencies` gesammelt werden, z. B. R&S VISA Runtime, PicoSDK 64-bit mit ps2000a-Treiber und Saleae Logic 2. Das Paketier-Skript kopiert diesen Ordner automatisch in die EXE- und Python-Source-Verteilerordner, wenn er vorhanden ist.
+
+Empfohlene Struktur:
+
+```text
+dependencies\
+  RS_VISA_Setup_Win_<version>.exe
+  PicoSDK_x64_<version>.exe
+  Logic-<version>-windows-x64.exe
+  HO720-HO730-Interface-Driver-<version>.zip
+  HO732-USB-Driver-<version>.zip
+  CDM<version>_Setup.zip
+  Treiber USB-GPIB.7z
+```
+
+Wichtig: Vor dem Mitverteilen die Lizenzbedingungen der Hersteller prüfen. Die Installer werden wegen Dateigröße und Lizenzthemen nicht ins Git eingecheckt; nur `dependencies\README.md` ist versioniert. Auf Zielrechnern müssen diese Systemkomponenten weiterhin separat installiert werden, bevor die jeweilige Hardware genutzt werden kann.
 
 ## EXE-Build
 
@@ -26,13 +51,13 @@ Für die Weitergabe an Kollegen kann eine Windows-EXE mit PyInstaller gebaut wer
 scripts\build_exe.ps1
 ```
 
-Das Skript installiert bei Bedarf `pyinstaller`, entfernt alte Build-Artefakte und erzeugt eine Onedir-Anwendung unter:
+Das Skript installiert ohne `-SkipInstall` das Projekt per `py -m pip install -e ".[saleae]"` inklusive Abhängigkeiten und aktualisiert anschließend `pyinstaller`. Dadurch enthält die EXE auch das Python-Paket für Saleae Logic 2 Automation. Danach entfernt es alte Build-Artefakte und erzeugt eine Onedir-Anwendung unter:
 
 ```text
 dist\MeasurementDevicesCommunicationLibrary\MeasurementDevicesCommunicationLibrary.exe
 ```
 
-Der Ordner `dist\MeasurementDevicesCommunicationLibrary` kann anschließend als ZIP weitergegeben werden. `README.md` und `config.example.ini` werden mit in den Ordner kopiert, falls sie vorhanden sind.
+Der Ordner `dist\MeasurementDevicesCommunicationLibrary` kann anschließend als ZIP weitergegeben werden. `README.md`, `config.example.ini` und ein vorhandener Ordner `dependencies` werden mit in den Ordner kopiert.
 
 Für sauber benannte Verteilerordner kann das Paketier-Skript ausgeführt werden. Es baut standardmäßig zuerst die EXE neu und erzeugt danach beide Verteilerordner:
 
@@ -40,7 +65,7 @@ Für sauber benannte Verteilerordner kann das Paketier-Skript ausgeführt werden
 scripts\package_release.ps1
 ```
 
-Wenn `pyinstaller` bereits installiert ist, geht es schneller mit:
+Wenn Projektabhängigkeiten inklusive `logic2-automation` und `pyinstaller` bereits in der verwendeten Python-Umgebung vorhanden sind, geht es schneller mit:
 
 ```powershell
 scripts\package_release.ps1 -SkipInstall
@@ -58,6 +83,8 @@ Es erzeugt zwei Ordner unter `release\`:
 MeasurementDevicesCommunicationLibrary_EXE_Windows_<Datum>
 MeasurementDevicesCommunicationLibrary_Python_Source_<Datum>
 ```
+
+Existiert ein Release-Ordner für das Datum bereits, hängt das Skript automatisch einen Zeitstempel an den Ordnernamen an.
 
 Der EXE-Ordner ist für Kollegen ohne Python gedacht. Der Python-Source-Ordner enthält Quellcode, Tests, Skripte, `pyproject.toml`, README und Beispielkonfiguration.
 
@@ -160,9 +187,9 @@ Die folgenden Geräteprofile sind als best-effort implementiert, aber noch nicht
 
 PicoScope 2206BMSO und PicoScope 2406B können im freien Ablauf über `PICO2000A::AUTO` oder `PICO2000A::SERIAL::<seriennummer>` angesprochen werden. Dafür muss auf dem Ziel-PC das PicoSDK 64-bit mit ps2000a-Treiber installiert sein; ohne PicoSDK bleibt das Programm startfähig, PicoScope-Schritte melden dann eine klare Fehlermeldung. Unterstützt sind zunächst analoge Block-Aufnahmen über `PicoScope: Analog erfassen` mit Bereich, Sample-Anzahl und Intervall in Mikrosekunden. Beim 2206BMSO sind typischerweise `A,B` analog und zusätzlich digitale MSO-Kanäle `D0-D15` nutzbar; beim 2406B sind typischerweise `A,B,C,D` analog nutzbar, aber keine MSO-Digitalkanäle. Digitale Aufnahmen laufen über `PicoScope: Digital erfassen` mit Kanälen, Logikpegel, Samples und Intervall. Die Ergebnisse werden als CSV/Excel-Waveform exportiert.
 
-Agilent/HP/Keysight 34970A/34972A Datenlogger können im freien Ablauf über `Agilent 34970A: Kanäle messen` genutzt werden. Für USB-Seriell-Adapter kann direkt ein Windows-COM-Port wie `COM5` als Geräteadresse eingetragen werden; alternativ funktioniert eine VISA-ASRL-Adresse wie `ASRL5::INSTR`. Unterstützt sind Kanäle `1-22` sowie Messarten `VOLT_DC`, `RES`, `FRES`, `CURR_DC` und `TEMP`. Die Kanalangabe kann einzelne Kanäle und Bereiche enthalten, z. B. `1-4,7,10-12`; intern werden daraus die SCPI-Kanäle `101` bis `122`, die pro Messart in einem gemeinsamen SCPI-Query abgefragt werden. Der Schritt bietet Messart, Kanäle, Baudrate und serielles Format. Wenn pro Kanal oder Kanalgruppe unterschiedliche Messarten nötig sind, kann `Agilent 34970A: Messplan` verwendet werden, z. B. `1-4:VOLT_DC; 5-8:TEMP; 9-12:RES; 13-14:CURR_DC`. Bereich/Auflösung verwenden aktuell die Geräte-Defaults `AUTO`/`DEF`, Thermoelemente verwenden zunächst Typ `K`. Die Ergebnisse werden als CSV/Excel-Tabelle mit Kanal, Messart, Wert und Einheit exportiert. Die Implementierung basiert auf der 34970A/34972A Command Reference und wurde mit einem 34970A getestet.
+Agilent/HP/Keysight 34970A/34972A Datenlogger können im freien Ablauf über `Agilent 34970A: Kanäle messen` genutzt werden. Für USB-Seriell-Adapter kann direkt ein Windows-COM-Port wie `COM5` als Geräteadresse eingetragen werden; alternativ funktioniert eine VISA-ASRL-Adresse wie `ASRL5::INSTR`. Unterstützt sind Kanäle `1-22` sowie Messarten `VOLT_DC`, `RES`, `FRES`, `CURR_DC` und `TEMP`. Die Kanalangabe kann einzelne Kanäle und Bereiche enthalten, z. B. `1-4,7,10-12`; intern werden daraus die SCPI-Kanäle `101` bis `122`, die pro Messart in einem gemeinsamen SCPI-Query abgefragt werden. Der Schritt bietet Messart, Kanäle, Baudrate und serielles Format. Wenn pro Kanal oder Kanalgruppe unterschiedliche Messarten nötig sind, kann `Agilent 34970A: Messplan` verwendet werden, z. B. `1-4:VOLT_DC; 5-8:TEMP; 9-12:RES; 13-14:CURR_DC`. Thermoelemente verwenden zunächst Typ `K`. Für `VOLT_DC` werden bei `AUTO`/`DEF` die getesteten Parameter Bereich `10` und Auflösung `0.003` verwendet; andere Messarten senden ohne explizite Bereichs-/Auflösungsparameter die Geräte-Defaults. Die Ergebnisse werden als CSV/Excel-Tabelle mit Kanal, Messart, Wert und Einheit exportiert. Die Implementierung basiert auf der 34970A/34972A Command Reference und wurde mit einem 34970A getestet.
 
-Saleae Logic Analyzer können im freien Ablauf über `SALEAE::LOCAL` als Geräteadresse vorbereitet werden. Dafür muss Saleae Logic 2 installiert sein und die Automation-Schnittstelle aktiviert sein, entweder in der Logic-2-Oberfläche oder per Start mit `Logic.exe --automation`; der Standardport ist `10430`. Für Python-Installationen wird zusätzlich das Paket `logic2-automation` benötigt. Unterstützt sind `Saleae: Digital aufnehmen` mit Kanälen wie `D0-D7`, Dauer, Sample-Rate und Schwellwert sowie Analyzer-Schritte für `Saleae: UART dekodieren`, `Saleae: I2C dekodieren`, `Saleae: SPI dekodieren` und `Saleae: CAN dekodieren`. Die Saleae-Aufnahme wird als `.sal` gespeichert, Rohdaten bzw. Analyzer-Exporte werden als CSV in einem `saleae_output`-Ordner abgelegt und im Ablauf-Ergebnis referenziert. Die Dokumentation liegt lokal unter `Manuals\Saleae_Logic2_Automation_*.html`; die Integration ist mit Hardware noch zu testen.
+Saleae Logic Analyzer können im freien Ablauf über `SALEAE::LOCAL` als Geräteadresse vorbereitet werden. Dafür muss Saleae Logic 2 installiert sein und die Automation-Schnittstelle aktiviert sein, entweder in der Logic-2-Oberfläche oder per Start mit `Logic.exe --automation`; der Standardport ist `10430`. Für Python-Installationen wird zusätzlich das Extra `saleae` bzw. das Paket `logic2-automation` benötigt. EXE-Releases enthalten dieses Paket, sofern sie mit dem normalen Build-Skript ohne `-SkipInstall` gebaut wurden. Unterstützt sind `Saleae: Digital aufnehmen` mit Kanälen wie `D0-D7`, Dauer, Sample-Rate und Schwellwert sowie Analyzer-Schritte für `Saleae: UART dekodieren`, `Saleae: I2C dekodieren`, `Saleae: SPI dekodieren` und `Saleae: CAN dekodieren`. Die Saleae-Aufnahme wird als `.sal` gespeichert, Rohdaten bzw. Analyzer-Exporte werden als CSV in einem `saleae_output`-Ordner abgelegt und im Ablauf-Ergebnis referenziert. Die Saleae-Automation-Dokumentation ist extern bei Saleae verfügbar; lokal abgelegte Manual-Kopien unter `Manuals\...` sind optional und werden nicht versioniert oder in Releases mitverteilt. Die Integration ist mit Hardware noch zu testen.
 
 ## Geräte-Testabläufe
 
@@ -503,6 +530,15 @@ Statuswerte:
     Status:            getestet
     Notizen:           Neue getimte Messung wurde mit Scope positiv getestet
 
+#### Agilent/HP/Keysight 34970A/34972A
+
+    Profil-Key:        keysight_34970a
+    IDN-Erkennung:     34970A, 34972A, HP34970 oder HEWLETT-PACKARD 34970
+    Funktionen:        Datenlogger-Kanäle messen, Messplan, direkte COM- oder VISA-ASRL-Anbindung
+    Nicht unterstützt: DMM-READ?-Direktmessung, Screenshot, Waveform/Trace, S-Parameter
+    Status:            getestet
+    Notizen:           34970A mit seriellen Defaults 19200 8N1 getestet; USB-Seriell-Adapter benötigt passenden Windows-COM-Treiber
+
 ### Aus VBA Übernommen
 
 #### Keysight/Agilent E5071C
@@ -522,6 +558,15 @@ Statuswerte:
     Nicht unterstützt: DMM/Messwert, Scope-Messwert, getimtes Messen, Waveform/Trace
     Status:            VBA übernommen
     Notizen:           Screenshot und Touchstone/S-Parameter aus bestehender Logik übernommen
+
+#### Rohde & Schwarz FSW
+
+    Profil-Key:        rs_fsw
+    IDN-Erkennung:     FSW
+    Funktionen:        Screenshot PNG
+    Nicht unterstützt: DMM/Messwert, Scope-Messwert, getimtes Messen, Waveform/Trace, S-Parameter
+    Status:            VBA übernommen
+    Notizen:           Screenshot-Funktion aus bestehender Logik übernommen; Trace-Export aktuell nicht aktiviert
 
 #### Keysight/Agilent/HP E740
 
@@ -587,6 +632,15 @@ Statuswerte:
     Nicht unterstützt: DMM/Messwert, Scope-Messwert, getimtes Messen, S-Parameter
     Status:            commands from manual, untested
     Notizen:           ESA-family SCPI; nutzt zunächst E740-ähnliche MMEM-Trace-/Screenshot-Befehle, noch mit Laborgerät testen
+
+#### Keysight/Agilent PXA/MXA/EXA/CXA, N90xx
+
+    Profil-Key:        keysight_n90
+    IDN-Erkennung:     N90
+    Funktionen:        Screenshot PNG
+    Nicht unterstützt: DMM/Messwert, Scope-Messwert, getimtes Messen, Waveform/Trace, S-Parameter
+    Status:            commands from manual, untested
+    Notizen:           Spektrumanalysator-Familie PXA/MXA/EXA/CXA; aktuell nur Screenshot-Profil aktiviert, Trace-Export noch nicht implementiert
 
 #### Keithley 2000
 
@@ -682,12 +736,23 @@ Statuswerte:
 
 #### Pico Technology PicoScope 2206BMSO/2406B
 
-    Profil-Key:        pico2000a
+    Profil-Key:        picoscope
     IDN-Erkennung:     keine VISA-IDN; Adresse `PICO2000A::AUTO` oder `PICO2000A::SERIAL::<seriennummer>`
     Funktionen:        analoge Block-Aufnahme ja; digitale MSO-Aufnahme beim 2206BMSO
     Nicht unterstützt: SCPI/VISA-IDN, komplexe Trigger, Streaming; digitale Kanäle beim 2406B
     Status:            PicoSDK-2000A vorbereitet, mit Hardware noch zu testen
-    Notizen:           Zielgeräte PicoScope 2206BMSO und 2406B; PicoSDK 64-bit/ps2000a auf Ziel-PC erforderlich
+    Notizen:           Zielgeräte PicoScope 2206BMSO und 2406B; PicoSDK 64-bit/ps2000a auf Ziel-PC erforderlich. Das Programm liest die PicoSDK-Variant-Info: 2206BMSO wird auf Analog A/B plus Digital D0-D15 beschränkt, 2406B auf Analog A-D ohne Digitalaufnahme.
+
+### Saleae-Geräte
+
+#### Saleae Logic Analyzer mit Logic 2 Automation
+
+    Profil-Key:        saleae_logic2
+    IDN-Erkennung:     keine VISA-IDN; Adresse `SALEAE::LOCAL`
+    Funktionen:        digitale Aufnahme, UART/I2C/SPI/CAN-Analyzer-Export über Logic 2 Automation
+    Nicht unterstützt: analoge Saleae-Kanäle, SCPI/VISA-IDN
+    Status:            vorbereitet, mit Hardware noch zu testen
+    Notizen:           Benötigt installierte Saleae Logic 2, aktivierte Automation auf Port 10430 und Python-Paket `logic2-automation` bzw. eine damit gebaute EXE
 
 Für neue Rückmeldungen reicht es, den Status und die Notizen im jeweiligen Geräteblock zu aktualisieren. Sinnvoll sind kurze Einträge wie `getestet: IDN, Messwert, Screenshot ok; Waveform Fehler ...`.
 

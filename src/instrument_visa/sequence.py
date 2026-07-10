@@ -199,7 +199,7 @@ class DataLogger34970AConfig:
     range_value: str = "AUTO"
     resolution: str = "DEF"
     thermocouple_type: str = "K"
-    baudrate: int = 9600
+    baudrate: int = 19200
     serial_format: str = "8N1"
 
 
@@ -962,7 +962,7 @@ def _execute_custom_sequence_step(
                 range_value=str(params.get("range", "AUTO")).strip() or "AUTO",
                 resolution=str(params.get("resolution", "DEF")).strip() or "DEF",
                 thermocouple_type=str(params.get("thermocouple_type", "K")).strip() or "K",
-                baudrate=_int_param(params, "baudrate", 9600),
+                baudrate=_int_param(params, "baudrate", 19200),
                 serial_format=str(params.get("serial_format", "8N1")).strip() or "8N1",
             ),
             stop_requested=stop_requested,
@@ -971,7 +971,7 @@ def _execute_custom_sequence_step(
         return read_34970a_measurement_plan(
             instrument,
             parse_34970a_measurement_plan(_string_param(params, "plan")),
-            baudrate=_int_param(params, "baudrate", 9600),
+            baudrate=_int_param(params, "baudrate", 19200),
             serial_format_value=str(params.get("serial_format", "8N1")).strip() or "8N1",
             stop_requested=stop_requested,
         )
@@ -1260,7 +1260,7 @@ def read_34970a_data_logger(instrument: object, config: DataLogger34970AConfig, 
     return AcquisitionResult(kind="34970A data logger", file_type="csv", content=_34970a_wide_csv([(measurement, channels, values)], stop_requested()))
 
 
-def read_34970a_measurement_plan(instrument: object, tasks: list[DataLogger34970ATask], baudrate: int = 9600, serial_format_value: str = "8N1", stop_requested: StopCallback | None = None) -> AcquisitionResult:
+def read_34970a_measurement_plan(instrument: object, tasks: list[DataLogger34970ATask], baudrate: int = 19200, serial_format_value: str = "8N1", stop_requested: StopCallback | None = None) -> AcquisitionResult:
     stop_requested = stop_requested or (lambda: False)
     results: list[tuple[str, list[int], list[str]]] = []
     for task in tasks:

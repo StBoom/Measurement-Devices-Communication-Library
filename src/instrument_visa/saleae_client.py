@@ -280,7 +280,10 @@ def _saleae_automation():
 
 def _connect_saleae_manager():
     automation = _saleae_automation()
-    return automation.Manager.connect(port=10430, connect_timeout_seconds=5.0)
+    try:
+        return automation.Manager.connect(port=10430, connect_timeout_seconds=5.0)
+    except Exception as exc:
+        raise RuntimeError("Saleae Logic 2 läuft nicht oder die Automation-Schnittstelle ist nicht aktiv. Logic 2 starten und Automation aktivieren oder Logic.exe --automation verwenden.") from exc
 
 
 def _wait_saleae_capture(capture, duration_s: float, stop_requested) -> None:

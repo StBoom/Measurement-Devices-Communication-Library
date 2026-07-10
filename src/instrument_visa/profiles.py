@@ -146,7 +146,6 @@ def detect_profile(idn: str) -> DeviceProfile:
             model_family="34970A/34972A",
             device_type="Datenlogger",
             key="keysight_34970a",
-            supports_dmm_read=True,
         )
 
     if "PICOSCOPE" in compact:

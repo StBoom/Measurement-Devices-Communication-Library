@@ -24,7 +24,7 @@ from instrument_visa.acquisition import (  # noqa: E402
 )
 from instrument_visa.excel_export import append_result  # noqa: E402
 from instrument_visa.cli import _load_sequence_config  # noqa: E402
-from instrument_visa.picoscope_client import parse_pico_analog_channels, parse_pico_digital_channels  # noqa: E402
+from instrument_visa.picoscope_client import parse_pico_analog_channels, parse_pico_digital_channels, picoscope_analog_channels_for_variant, picoscope_variant_supports_digital  # noqa: E402
 from instrument_visa.saleae_client import SaleaeCanConfig, SaleaeCaptureConfig, SaleaeI2cConfig, SaleaeSpiConfig, SaleaeUartConfig, parse_saleae_channels  # noqa: E402
 from instrument_visa.profiles import detect_profile  # noqa: E402
 from instrument_visa.sequence import (  # noqa: E402
@@ -144,16 +144,26 @@ class FakeInstrument:
 class AcquisitionTests(unittest.TestCase):
     def test_profile_detection_for_new_manual_checked_devices(self) -> None:
         cases = {
+            "KEYSIGHT TECHNOLOGIES,DSOX2024A,MY123,1.0": "keysight_infinivision_x",
+            "AGILENT TECHNOLOGIES,34401A,MY123,1.0": "keysight_344_l44",
             "AGILENT TECHNOLOGIES,MSO6034A,MY123,1.0": "keysight_infinivision_6000",
             "AGILENT TECHNOLOGIES,DSO7034B,MY123,1.0": "keysight_infinivision_7000",
             "AGILENT TECHNOLOGIES,54622D,MY123,1.0": "agilent_54600",
             "TEKTRONIX,TDS420A,0,CF:91.1CT": "tektronix_tds400",
+            "TEKTRONIX,TDS3014B,0,CF:91.1CT": "tektronix_tds30",
+            "TEKTRONIX,MDO4104,0,CF:91.1CT": "tektronix_mdo",
             "KEITHLEY INSTRUMENTS INC.,MODEL 2000,123,1.0": "keithley_2000",
             "ROHDE&SCHWARZ,HMS-X,123,1.0": "rs_hameg_hms",
             "LECROY,WAVERUNNER 610ZI,123,1.0": "lecroy_xstream",
             "ROHDE&SCHWARZ,RTB2004,123,1.0": "rs_rt_scope",
+            "AGILENT TECHNOLOGIES,4395A,0,1.0": "hp_4395a",
             "HEWLETT-PACKARD,8591A,123,1.0": "hp_8591a",
+            "AGILENT TECHNOLOGIES,E7405A,US123,1.0": "hp_e740",
             "AGILENT TECHNOLOGIES,E4402B,US123,1.0": "hp_agilent_e4402b",
+            "KEYSIGHT TECHNOLOGIES,N9030A,US123,1.0": "keysight_n90",
+            "AGILENT TECHNOLOGIES,E5071C,MY123,1.0": "keysight_e5071c",
+            "Rohde&Schwarz,FSW26,123,1.0": "rs_fsw",
+            "Rohde&Schwarz,ZNB8,123,1.0": "rs_znb",
             "Rohde&Schwarz,SMIQ03B,123,1.0": "rs_sme_smt_smiq",
             "Rohde&Schwarz,SMHU,123,1.0": "rs_smg_legacy",
             "HAMEG,HMP4030,123,1.0": "rs_hmp_power_supply",
@@ -699,6 +709,19 @@ class AcquisitionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_pico_digital_channels("D16")
 
+    def test_picoscope_variant_capabilities(self) -> None:
+        self.assertEqual(picoscope_analog_channels_for_variant("2206BMSO"), ("A", "B"))
+        self.assertEqual(picoscope_analog_channels_for_variant("2206B MSO"), ("A", "B"))
+        self.assertEqual(picoscope_analog_channels_for_variant("2406B"), ("A", "B", "C", "D"))
+        self.assertTrue(picoscope_variant_supports_digital("2206BMSO"))
+        self.assertTrue(picoscope_variant_supports_digital("2206B MSO"))
+        self.assertFalse(picoscope_variant_supports_digital("2406B"))
+        self.assertFalse(picoscope_variant_supports_digital("unknown MSO"))
+        with self.assertRaises(ValueError):
+            picoscope_analog_channels_for_variant("")
+        with self.assertRaises(ValueError):
+            picoscope_analog_channels_for_variant("unknown")
+
     def test_custom_sequence_picoscope_analog_step(self) -> None:
         pico = FakeInstrument(query_responses={"*IDN?": "PicoScope 2000A"})
         pico.address = "PICO2000A::AUTO"
@@ -831,7 +854,7 @@ class AcquisitionTests(unittest.TestCase):
             {"Logger1": instrument},  # type: ignore[dict-item]
             CustomSequenceConfig(
                 devices={"Logger1": instrument.address},
-                steps=[SequenceStep("Logger1", "data_logger_34970a_read", {"measurement": "RES", "channels": "1-2", "range": "AUTO", "resolution": "DEF", "thermocouple_type": "K", "baudrate": "9600", "serial_format": "8N1"})],
+                steps=[SequenceStep("Logger1", "data_logger_34970a_read", {"measurement": "RES", "channels": "1-2", "range": "AUTO", "resolution": "DEF", "thermocouple_type": "K", "baudrate": "19200", "serial_format": "8N1"})],
                 end_rf_off=False,
             ),
         )
@@ -852,7 +875,7 @@ class AcquisitionTests(unittest.TestCase):
             {"Logger1": instrument},  # type: ignore[dict-item]
             CustomSequenceConfig(
                 devices={"Logger1": "COM5"},
-                steps=[SequenceStep("Logger1", "data_logger_34970a_plan", {"plan": "1-2:VOLT_DC; 3:TEMP", "baudrate": "9600", "serial_format": "8N1"})],
+                steps=[SequenceStep("Logger1", "data_logger_34970a_plan", {"plan": "1-2:VOLT_DC; 3:TEMP", "baudrate": "19200", "serial_format": "8N1"})],
                 end_rf_off=False,
             ),
         )

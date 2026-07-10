@@ -11,13 +11,15 @@ $distDir = Join-Path $projectRoot "dist"
 $buildDir = Join-Path $projectRoot "build"
 $specFile = Join-Path $projectRoot "$appName.spec"
 $appDistDir = Join-Path $distDir $appName
+$dependenciesDir = Join-Path $projectRoot "dependencies"
+$projectWithSaleae = "$projectRoot[saleae]"
 
 if (-not (Test-Path -LiteralPath $entryPoint)) {
     throw "Entry point not found: $entryPoint"
 }
 
 if (-not $SkipInstall) {
-    py -m pip install -e $projectRoot
+    py -m pip install -e $projectWithSaleae
     py -m pip install --upgrade pyinstaller
 }
 
@@ -45,6 +47,7 @@ try {
         --collect-all openpyxl `
         --collect-all PIL `
         --collect-all serial `
+        --collect-all saleae `
         $entryPoint
 }
 finally {
@@ -63,7 +66,11 @@ foreach ($file in $filesToCopy) {
     }
 }
 
+if (Test-Path -LiteralPath $dependenciesDir) {
+    Copy-Item -LiteralPath $dependenciesDir -Destination $appDistDir -Recurse -Force
+}
+
 New-Item -ItemType Directory -Path (Join-Path $appDistDir "logs") -Force | Out-Null
 
 "Build complete: $(Join-Path $appDistDir "$appName.exe")"
-"VISA runtime is not bundled. Install R&S VISA, NI-VISA, or Keysight VISA on target PCs."
+"Optional runtime installers from dependencies\ are bundled when that folder exists."

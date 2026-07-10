@@ -9,6 +9,7 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $releaseRoot = Join-Path $projectRoot "release"
 $exeSource = Join-Path $projectRoot "dist\MeasurementDevicesCommunicationLibrary"
+$dependenciesDir = Join-Path $projectRoot "dependencies"
 $buildScript = Join-Path $PSScriptRoot "build_exe.ps1"
 $exeReleaseBase = Join-Path $releaseRoot "MeasurementDevicesCommunicationLibrary_EXE_Windows_$ReleaseDate"
 $pythonReleaseBase = Join-Path $releaseRoot "MeasurementDevicesCommunicationLibrary_Python_Source_$ReleaseDate"
@@ -71,6 +72,10 @@ foreach ($file in @("README.md", "config.example.ini")) {
     }
 }
 
+if (Test-Path -LiteralPath $dependenciesDir) {
+    Copy-Item -LiteralPath $dependenciesDir -Destination $exeRelease -Recurse -Force
+}
+
 foreach ($folder in @("src", "tests", "scripts")) {
     $source = Join-Path $projectRoot $folder
     if (Test-Path -LiteralPath $source) {
@@ -83,6 +88,10 @@ foreach ($file in @("README.md", "pyproject.toml", "config.example.ini")) {
     if (Test-Path -LiteralPath $source) {
         Copy-Item -LiteralPath $source -Destination $pythonRelease -Force
     }
+}
+
+if (Test-Path -LiteralPath $dependenciesDir) {
+    Copy-Item -LiteralPath $dependenciesDir -Destination $pythonRelease -Recurse -Force
 }
 
 Get-ChildItem -LiteralPath $pythonRelease -Recurse -Directory -Filter "__pycache__" | ForEach-Object {

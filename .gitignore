@@ -31,6 +31,10 @@ startup_error.log
 Manuals/
 *.pdf
 
+# Locally collected third-party installers are packaged, not versioned
+dependencies/*
+!dependencies/README.md
+
 # OS/editor files
 .DS_Store
 Thumbs.db
