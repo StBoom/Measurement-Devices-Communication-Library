@@ -49,6 +49,7 @@ from .sequence import (
     parse_ampere,
     parse_dbm,
     parse_voltage,
+    probe_direct_serial_idn,
     read_34970a_data_logger,
     read_34970a_measurement_plan,
     parse_34970a_measurement_plan,
@@ -1803,10 +1804,68 @@ class InstrumentVisaApp(tk.Tk):
 
     def _search_devices(self) -> str:
         resources = list(dict.fromkeys([*list_resources(), *self._manual_device_resources()]))
+        identification_results = self._identify_discovered_resources(resources)
         if resources:
             self._messages.put(("resources", "\n".join(resources)))
-            return "Gefundene Geräte:\n" + "\n".join(resources)
+            result = "Gefundene Geräte:\n" + "\n".join(resources)
+            if identification_results:
+                result += "\n\nIDN-Prüfung:\n" + "\n".join(identification_results)
+            return result
         return "Keine VISA-Geräte gefunden. Bekannte Adresse kann manuell eingetragen werden."
+
+    def _identify_discovered_resources(self, resources: list[str]) -> list[str]:
+        results: list[str] = []
+        checked: set[str] = set()
+        for address in resources:
+            canonical_address = self._canonical_address(address)
+            if canonical_address in checked:
+                continue
+            checked.add(canonical_address)
+            port = self._serial_port_for_address(address)
+            idn = ""
+            serial_settings = None
+            if port is None:
+                try:
+                    instrument_factory = create_sequence_instrument if address.strip().upper().startswith(("PICO::", "PICO2000A::", "SALEAE::")) else VisaInstrument
+                    with instrument_factory(address=address, timeout_ms=1500) as instrument:
+                        idn = instrument.info().idn.strip()
+                except Exception as exc:
+                    self.logger.info("IDN probe failed address=%s error=%s", address, exc)
+                if idn:
+                    profile = detect_profile(idn)
+                    self._messages.put(("profile", (profile, address, idn, None)))
+                    results.append(f"{address}: IDN erkannt - {idn}")
+                else:
+                    results.append(f"{address}: keine IDN-Antwort")
+                continue
+
+            if not address.strip().upper().startswith("COM"):
+                try:
+                    with VisaInstrument(address=address, timeout_ms=1500) as instrument:
+                        idn = instrument.info().idn.strip()
+                except Exception as exc:
+                    self.logger.info("ASRL IDN probe failed address=%s port=%s error=%s", address, port, exc)
+                if idn:
+                    profile = detect_profile(idn)
+                    self._messages.put(("profile", (profile, port, idn, serial_settings)))
+                    results.append(f"{port}: IDN erkannt - {idn}")
+                    continue
+
+            try:
+                idn, serial_settings = probe_direct_serial_idn(port, timeout_ms=500, exhaustive=False)
+            except Exception as exc:
+                self.logger.info("Serial IDN probe failed address=%s port=%s error=%s", address, port, exc)
+                idn = ""
+                serial_settings = None
+            if idn:
+                profile = detect_profile(idn)
+                self._messages.put(("profile", (profile, port, idn, serial_settings)))
+                results.append(f"{port}: IDN erkannt - {idn}")
+                continue
+            if not self._saved_device_for_address(port):
+                self._messages.put(("serial_unknown", port))
+            results.append(f"{port}: Seriell, keine IDN-Antwort")
+        return results
 
     def _test_idn(self) -> str:
         address = self.address_var.get().strip()
@@ -2486,6 +2545,9 @@ class InstrumentVisaApp(tk.Tk):
                     self._apply_resources(message.splitlines())
             elif kind == "profile":
                 self._apply_profile_message(message)
+            elif kind == "serial_unknown":
+                if isinstance(message, str):
+                    self._remember_serial_unknown(message)
             elif kind == "generator_settings":
                 if isinstance(message, tuple) and len(message) == 3:
                     frequency, power, rf_output = message
@@ -2702,6 +2764,16 @@ class InstrumentVisaApp(tk.Tk):
             return "::".join([*parts[:-2], parts[-1]])
         return address
 
+    def _serial_port_for_address(self, address: str) -> str | None:
+        normalized = address.strip().upper()
+        if normalized.startswith("COM") and normalized[3:].isdigit():
+            return normalized
+        if normalized.startswith("ASRL") and normalized.endswith("::INSTR"):
+            port = normalized[4:-7]
+            if port.isdigit():
+                return f"COM{port}"
+        return None
+
     def _apply_device_type(self, device_type: str) -> None:
         if device_type == "Nicht erkannt":
             self._apply_profile(UNKNOWN_PROFILE)
@@ -2792,8 +2864,11 @@ class InstrumentVisaApp(tk.Tk):
         if normalized.startswith("SALEAE::"):
             return DeviceProfile("Saleae", "Logic 2 Automation", "Saleae", key="saleae_logic2")
         if normalized.startswith("COM") and normalized[3:].isdigit():
-            return DeviceProfile("Unbekannt", "Direkter COM-Port", "Seriell", key="direct_serial")
+            return self._serial_unknown_profile()
         return None
+
+    def _serial_unknown_profile(self) -> DeviceProfile:
+        return DeviceProfile("Unbekannt", "Direkter COM-Port", "Seriell", key="direct_serial")
 
     def _set_operation_running(self, running: bool) -> None:
         self.operation_running = running
@@ -2826,6 +2901,11 @@ class InstrumentVisaApp(tk.Tk):
         self._refresh_resource_combo(self.last_found_resources)
         self._refresh_custom_sequence_resource_combo()
         self._save_settings()
+
+    def _remember_serial_unknown(self, address: str) -> None:
+        if not address or self._saved_device_for_address(address):
+            return
+        self._remember_device(address, "Serielles Gerät ohne IDN", self._serial_unknown_profile())
 
     def _remember_serial_settings(self, address: str, settings: tuple[int, str, str, str]) -> None:
         saved = self._saved_device_for_address(address)

@@ -44,7 +44,7 @@ if (-not (Test-Path -LiteralPath $releaseRoot)) {
 function New-UniqueDirectory {
     param([string]$BasePath)
 
-    if (-not (Test-Path -LiteralPath $BasePath)) {
+    if (-not (Test-Path -LiteralPath $BasePath) -and -not (Test-Path -LiteralPath "$BasePath.zip")) {
         New-Item -ItemType Directory -Path $BasePath | Out-Null
         return $BasePath
     }
@@ -52,12 +52,23 @@ function New-UniqueDirectory {
     $timestamp = Get-Date -Format "HHmmss"
     $candidate = "${BasePath}_$timestamp"
     $counter = 2
-    while (Test-Path -LiteralPath $candidate) {
+    while ((Test-Path -LiteralPath $candidate) -or (Test-Path -LiteralPath "$candidate.zip")) {
         $candidate = "${BasePath}_$timestamp-$counter"
         $counter++
     }
     New-Item -ItemType Directory -Path $candidate | Out-Null
     return $candidate
+}
+
+function New-ReleaseZip {
+    param([string]$DirectoryPath)
+
+    $zipPath = "$DirectoryPath.zip"
+    if (Test-Path -LiteralPath $zipPath) {
+        throw "Release ZIP already exists: $zipPath"
+    }
+    Compress-Archive -LiteralPath $DirectoryPath -DestinationPath $zipPath -Force
+    return $zipPath
 }
 
 $exeRelease = New-UniqueDirectory -BasePath $exeReleaseBase
@@ -101,8 +112,18 @@ if (Test-Path -LiteralPath $dependenciesDir) {
     Get-ChildItem -LiteralPath $dependenciesDir | Copy-Item -Destination $dependenciesRelease -Recurse -Force
 }
 
+$exeReleaseZip = New-ReleaseZip -DirectoryPath $exeRelease
+$pythonReleaseZip = New-ReleaseZip -DirectoryPath $pythonRelease
+$dependenciesReleaseZip = $null
+if ($dependenciesRelease) {
+    $dependenciesReleaseZip = New-ReleaseZip -DirectoryPath $dependenciesRelease
+}
+
 "EXE release: $exeRelease"
+"EXE release ZIP: $exeReleaseZip"
 "Python release: $pythonRelease"
+"Python release ZIP: $pythonReleaseZip"
 if ($dependenciesRelease) {
     "Dependencies release: $dependenciesRelease"
+    "Dependencies release ZIP: $dependenciesReleaseZip"
 }

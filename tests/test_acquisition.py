@@ -38,6 +38,7 @@ from instrument_visa.sequence import (  # noqa: E402
     frequency_points,
     parse_json_bool,
     parse_frequency_hz,
+    probe_direct_serial_idn,
     parse_serial_format,
     parse_parallel_tasks,
     read_direct_serial_log,
@@ -686,6 +687,128 @@ class AcquisitionTests(unittest.TestCase):
             sequence_module.serial = original_serial  # type: ignore[assignment]
 
         self.assertEqual(result, "boot ok\n")
+
+    def test_probe_direct_serial_idn_returns_idn_and_settings(self) -> None:
+        class FakeSerial:
+            writes: list[bytes] = []
+
+            def __init__(self, port: str, baudrate: int, bytesize: int, parity: str, stopbits: float, timeout: float, write_timeout: float, xonxoff: bool, rtscts: bool, dsrdtr: bool) -> None:
+                self.port = port
+                self.baudrate = baudrate
+                self.bytesize = bytesize
+                self.parity = parity
+                self.stopbits = stopbits
+                self.timeout = timeout
+                self.write_timeout = write_timeout
+                self.xonxoff = xonxoff
+                self.rtscts = rtscts
+                self.dsrdtr = dsrdtr
+                self.reads = [b"*IDN?\r\nTEST,MODEL,123,1\r\n", b""]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+                return None
+
+            @property
+            def in_waiting(self) -> int:
+                return len(self.reads[0]) if self.reads else 0
+
+            def reset_input_buffer(self) -> None:
+                return None
+
+            def reset_output_buffer(self) -> None:
+                return None
+
+            def write(self, data: bytes) -> None:
+                self.writes.append(data)
+
+            def read(self, size: int) -> bytes:
+                if self.reads:
+                    return self.reads.pop(0)
+                return b""
+
+        import instrument_visa.sequence as sequence_module
+
+        original_serial = sequence_module.serial
+        original_settings = list(sequence_module._SERIAL_SCPI_PREFERRED_SETTINGS)
+        original_cached_settings = dict(sequence_module._SERIAL_SCPI_SETTINGS)
+        sequence_module._SERIAL_SCPI_PREFERRED_SETTINGS.clear()
+        sequence_module._SERIAL_SCPI_SETTINGS.clear()
+        sequence_module.serial = SimpleNamespace(Serial=FakeSerial)  # type: ignore[assignment]
+        try:
+            idn, settings = probe_direct_serial_idn("COM3", 500)
+        finally:
+            sequence_module.serial = original_serial  # type: ignore[assignment]
+            sequence_module._SERIAL_SCPI_PREFERRED_SETTINGS[:] = original_settings
+            sequence_module._SERIAL_SCPI_SETTINGS.clear()
+            sequence_module._SERIAL_SCPI_SETTINGS.update(original_cached_settings)
+
+        self.assertEqual(idn, "TEST,MODEL,123,1")
+        self.assertEqual(settings, (9600, "8N1", "none", "\n"))
+        self.assertEqual(FakeSerial.writes, [b"*IDN?\n"])
+
+    def test_probe_direct_serial_idn_detects_34970a_with_short_probe(self) -> None:
+        class FakeSerial:
+            writes: list[tuple[int, bytes]] = []
+
+            def __init__(self, port: str, baudrate: int, bytesize: int, parity: str, stopbits: float, timeout: float, write_timeout: float, xonxoff: bool, rtscts: bool, dsrdtr: bool) -> None:
+                self.port = port
+                self.baudrate = baudrate
+                self.bytesize = bytesize
+                self.parity = parity
+                self.stopbits = stopbits
+                self.timeout = timeout
+                self.write_timeout = write_timeout
+                self.xonxoff = xonxoff
+                self.rtscts = rtscts
+                self.dsrdtr = dsrdtr
+                self.reads = [b"HEWLETT-PACKARD,34970A,0,13-2-2\r\n", b""] if baudrate == 19200 else [b""]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+                return None
+
+            @property
+            def in_waiting(self) -> int:
+                return len(self.reads[0]) if self.reads else 0
+
+            def reset_input_buffer(self) -> None:
+                return None
+
+            def reset_output_buffer(self) -> None:
+                return None
+
+            def write(self, data: bytes) -> None:
+                self.writes.append((self.baudrate, data))
+
+            def read(self, size: int) -> bytes:
+                if self.reads:
+                    return self.reads.pop(0)
+                return b""
+
+        import instrument_visa.sequence as sequence_module
+
+        original_serial = sequence_module.serial
+        original_settings = list(sequence_module._SERIAL_SCPI_PREFERRED_SETTINGS)
+        original_cached_settings = dict(sequence_module._SERIAL_SCPI_SETTINGS)
+        sequence_module._SERIAL_SCPI_PREFERRED_SETTINGS.clear()
+        sequence_module._SERIAL_SCPI_SETTINGS.clear()
+        sequence_module.serial = SimpleNamespace(Serial=FakeSerial)  # type: ignore[assignment]
+        try:
+            idn, settings = probe_direct_serial_idn("COM7", 500, exhaustive=False)
+        finally:
+            sequence_module.serial = original_serial  # type: ignore[assignment]
+            sequence_module._SERIAL_SCPI_PREFERRED_SETTINGS[:] = original_settings
+            sequence_module._SERIAL_SCPI_SETTINGS.clear()
+            sequence_module._SERIAL_SCPI_SETTINGS.update(original_cached_settings)
+
+        self.assertEqual(idn, "HEWLETT-PACKARD,34970A,0,13-2-2")
+        self.assertEqual(detect_profile(idn).key, "keysight_34970a")
+        self.assertEqual(settings, (19200, "8N1", "none", "\n"))
 
     def test_parse_serial_format(self) -> None:
         self.assertEqual(parse_serial_format("8N1"), (8, "N", 1.0))

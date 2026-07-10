@@ -31,6 +31,9 @@ startup_error.log
 Manuals/
 *.pdf
 
+# Local VBA exports are reference material, not part of the Python/EXE release
+vba/
+
 # Locally collected third-party installers are packaged, not versioned
 dependencies/*
 !dependencies/README.md

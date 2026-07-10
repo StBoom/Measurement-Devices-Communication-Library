@@ -804,10 +804,19 @@ class DirectSerialInstrument:
     def info(self) -> InstrumentInfo:
         try:
             idn = self.query("*IDN?").strip()
+            settings = self.last_serial_settings
         except Exception:
             idn = ""
-        if not idn:
-            idn = _probe_direct_serial_idn(self.address, self.timeout_ms)
+            settings = None
+        if not _is_meaningful_serial_response(idn, "*IDN?"):
+            try:
+                idn, settings = probe_direct_serial_idn(self.address, self.timeout_ms, self.baudrate, self.serial_format)
+            except Exception:
+                idn = ""
+                settings = None
+        if settings is not None:
+            self.baudrate, self.serial_format, _flow_control, _terminator = settings
+            self.last_serial_settings = settings
         if not idn:
             idn = "Direkter COM-Port"
         return InstrumentInfo(address=self.address, idn=idn)
@@ -1645,14 +1654,56 @@ def _try_direct_serial_scpi(port: str, command: str, timeout_ms: int, settings: 
         return _serial_read_until_quiet(serial_port)
 
 
+def probe_direct_serial_idn(
+    port: str,
+    timeout_ms: int = 1500,
+    baudrate: int = 9600,
+    serial_format_value: str = "8N1",
+    exhaustive: bool = True,
+) -> tuple[str, tuple[int, str, str, str] | None]:
+    probe_timeout_ms = min(max(300, int(timeout_ms)), 1500)
+    if exhaustive:
+        candidates = list(
+            dict.fromkeys(
+                [
+                    *_SERIAL_SCPI_PREFERRED_SETTINGS,
+                    *_serial_scpi_candidate_settings(baudrate, serial_format_value),
+                    (9600, "8N1", "none", "\n"),
+                    (9600, "8N1", "none", "\r\n"),
+                    (9600, "8N1", "none", "\r"),
+                    (9600, "7E1", "none", "\n"),
+                    (9600, "8N2", "none", "\n"),
+                    (19200, "8N1", "none", "\n"),
+                ]
+            )
+        )
+    else:
+        candidates = list(
+            dict.fromkeys(
+                [
+                    *_SERIAL_SCPI_PREFERRED_SETTINGS[:1],
+                    (baudrate, serial_format_value, "none", "\n"),
+                    (baudrate, serial_format_value, "none", "\r\n"),
+                    (baudrate, serial_format_value, "none", "\r"),
+                    (19200, "8N1", "none", "\n"),
+                    (19200, "8N1", "none", "\r\n"),
+                    (19200, "8N1", "none", "\r"),
+                ]
+            )
+        )
+    for settings in candidates:
+        response = _try_direct_serial_scpi(port, "*IDN?", probe_timeout_ms, settings)
+        idn = _serial_response_without_echo(response, "*IDN?").strip()
+        if _is_meaningful_serial_response(idn, "*IDN?"):
+            _SERIAL_SCPI_SETTINGS[port.upper()] = settings
+            set_preferred_serial_scpi_settings(settings)
+            return idn, settings
+    return "", None
+
+
 def _probe_direct_serial_idn(port: str, timeout_ms: int) -> str:
-    probe_timeout_ms = min(max(500, timeout_ms // 4), 1500)
-    for baudrate, serial_format_value in ((9600, "8N1"), (9600, "7E1"), (9600, "8N2"), (19200, "8N1")):
-        idn, _settings = _query_direct_serial_scpi_with_settings(port, "*IDN?", probe_timeout_ms, baudrate, serial_format_value)
-        idn = idn.strip()
-        if idn and idn.upper() != "*IDN?":
-            return idn
-    return ""
+    idn, _settings = probe_direct_serial_idn(port, timeout_ms)
+    return idn
 
 
 def _open_direct_serial_for_scpi(port: str, timeout_ms: int, baudrate: int = 9600, serial_format_value: str = "8N1", flow_control: str = "none"):

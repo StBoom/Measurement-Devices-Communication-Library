@@ -58,7 +58,7 @@ dist\MeasurementDevicesCommunicationLibrary\MeasurementDevicesCommunicationLibra
 
 Der Ordner `dist\MeasurementDevicesCommunicationLibrary` kann anschließend als ZIP weitergegeben werden. `README.md` und `config.example.ini` werden mit in den Ordner kopiert. Externe Runtime-Installer werden nicht in den EXE-Ordner kopiert; für diese erzeugt `scripts\package_release.ps1` einen separaten Dependencies-Verteilerordner.
 
-Für sauber benannte Verteilerordner kann das Paketier-Skript ausgeführt werden. Es baut standardmäßig zuerst die EXE neu und erzeugt danach getrennte Verteilerordner für EXE, Python-Source und optional externe Runtime-Abhängigkeiten:
+Für sauber benannte Verteilerordner kann das Paketier-Skript ausgeführt werden. Es baut standardmäßig zuerst die EXE neu und erzeugt danach getrennte Verteilerordner und ZIP-Dateien für EXE, Python-Source und optional externe Runtime-Abhängigkeiten:
 
 ```powershell
 scripts\package_release.ps1
@@ -67,8 +67,11 @@ scripts\package_release.ps1
 Die Release-Struktur ist dadurch einfacher getrennt weiterzugeben:
 
 - `release/MeasurementDevicesCommunicationLibrary_EXE_Windows_<datum>/`
+- `release/MeasurementDevicesCommunicationLibrary_EXE_Windows_<datum>.zip`
 - `release/MeasurementDevicesCommunicationLibrary_Python_Source_<datum>/`
+- `release/MeasurementDevicesCommunicationLibrary_Python_Source_<datum>.zip`
 - `release/MeasurementDevicesCommunicationLibrary_Dependencies_<datum>/`, falls `dependencies/` vorhanden ist
+- `release/MeasurementDevicesCommunicationLibrary_Dependencies_<datum>.zip`, falls `dependencies/` vorhanden ist
 
 Wenn Projektabhängigkeiten inklusive `logic2-automation` und `pyinstaller` bereits in der verwendeten Python-Umgebung vorhanden sind, geht es schneller mit:
 
@@ -82,11 +85,15 @@ Falls nur aus einem bereits vorhandenen `dist\MeasurementDevicesCommunicationLib
 scripts\package_release.ps1 -SkipExeBuild
 ```
 
-Es erzeugt zwei Ordner unter `release\`:
+Es erzeugt Ordner und ZIP-Dateien unter `release\`:
 
 ```text
 MeasurementDevicesCommunicationLibrary_EXE_Windows_<Datum>
+MeasurementDevicesCommunicationLibrary_EXE_Windows_<Datum>.zip
 MeasurementDevicesCommunicationLibrary_Python_Source_<Datum>
+MeasurementDevicesCommunicationLibrary_Python_Source_<Datum>.zip
+MeasurementDevicesCommunicationLibrary_Dependencies_<Datum>
+MeasurementDevicesCommunicationLibrary_Dependencies_<Datum>.zip
 ```
 
 Existiert ein Release-Ordner für das Datum bereits, hängt das Skript automatisch einen Zeitstempel an den Ordnernamen an.
