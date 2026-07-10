@@ -13,6 +13,7 @@ $dependenciesDir = Join-Path $projectRoot "dependencies"
 $buildScript = Join-Path $PSScriptRoot "build_exe.ps1"
 $exeReleaseBase = Join-Path $releaseRoot "MeasurementDevicesCommunicationLibrary_EXE_Windows_$ReleaseDate"
 $pythonReleaseBase = Join-Path $releaseRoot "MeasurementDevicesCommunicationLibrary_Python_Source_$ReleaseDate"
+$dependenciesReleaseBase = Join-Path $releaseRoot "MeasurementDevicesCommunicationLibrary_Dependencies_$ReleaseDate"
 
 $running = Get-Process -Name "MeasurementDevicesCommunicationLibrary" -ErrorAction SilentlyContinue
 if ($running) {
@@ -61,6 +62,7 @@ function New-UniqueDirectory {
 
 $exeRelease = New-UniqueDirectory -BasePath $exeReleaseBase
 $pythonRelease = New-UniqueDirectory -BasePath $pythonReleaseBase
+$dependenciesRelease = $null
 
 Copy-Item -LiteralPath (Join-Path $exeSource "MeasurementDevicesCommunicationLibrary.exe") -Destination $exeRelease -Force
 Copy-Item -LiteralPath (Join-Path $exeSource "_internal") -Destination $exeRelease -Recurse -Force
@@ -70,10 +72,6 @@ foreach ($file in @("README.md", "config.example.ini")) {
     if (Test-Path -LiteralPath $source) {
         Copy-Item -LiteralPath $source -Destination $exeRelease -Force
     }
-}
-
-if (Test-Path -LiteralPath $dependenciesDir) {
-    Copy-Item -LiteralPath $dependenciesDir -Destination $exeRelease -Recurse -Force
 }
 
 foreach ($folder in @("src", "tests", "scripts")) {
@@ -90,10 +88,6 @@ foreach ($file in @("README.md", "pyproject.toml", "config.example.ini")) {
     }
 }
 
-if (Test-Path -LiteralPath $dependenciesDir) {
-    Copy-Item -LiteralPath $dependenciesDir -Destination $pythonRelease -Recurse -Force
-}
-
 Get-ChildItem -LiteralPath $pythonRelease -Recurse -Directory -Filter "__pycache__" | ForEach-Object {
     Remove-Item -LiteralPath $_.FullName -Recurse -Force
 }
@@ -102,5 +96,13 @@ Get-ChildItem -LiteralPath $pythonRelease -Recurse -File | Where-Object { $_.Ext
     Remove-Item -LiteralPath $_.FullName -Force
 }
 
+if (Test-Path -LiteralPath $dependenciesDir) {
+    $dependenciesRelease = New-UniqueDirectory -BasePath $dependenciesReleaseBase
+    Get-ChildItem -LiteralPath $dependenciesDir | Copy-Item -Destination $dependenciesRelease -Recurse -Force
+}
+
 "EXE release: $exeRelease"
 "Python release: $pythonRelease"
+if ($dependenciesRelease) {
+    "Dependencies release: $dependenciesRelease"
+}

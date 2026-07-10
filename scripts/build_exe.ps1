@@ -11,7 +11,6 @@ $distDir = Join-Path $projectRoot "dist"
 $buildDir = Join-Path $projectRoot "build"
 $specFile = Join-Path $projectRoot "$appName.spec"
 $appDistDir = Join-Path $distDir $appName
-$dependenciesDir = Join-Path $projectRoot "dependencies"
 $projectWithSaleae = "$projectRoot[saleae]"
 
 if (-not (Test-Path -LiteralPath $entryPoint)) {
@@ -66,11 +65,7 @@ foreach ($file in $filesToCopy) {
     }
 }
 
-if (Test-Path -LiteralPath $dependenciesDir) {
-    Copy-Item -LiteralPath $dependenciesDir -Destination $appDistDir -Recurse -Force
-}
-
 New-Item -ItemType Directory -Path (Join-Path $appDistDir "logs") -Force | Out-Null
 
 "Build complete: $(Join-Path $appDistDir "$appName.exe")"
-"Optional runtime installers from dependencies\ are bundled when that folder exists."
+"Optional runtime installers are packaged separately by scripts\package_release.ps1."

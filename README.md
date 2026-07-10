@@ -9,7 +9,7 @@ Das Projekt kommuniziert per VISA/SCPI mit Messgeräten, liest Messwerte, Screen
 ## Installation
 
 1. Python 3.10 oder neuer installieren.
-2. Eine VISA-Runtime installieren, falls USB/GPIB/TCPIP-Geräte darüber angebunden sind. Empfohlen ist die schlanke R&S VISA Runtime: [R&S VISA und Tools](https://www.rohde-schwarz.com/de/driver-pages/fernsteuerung/3-visa-und-tools_231388.html). Alternativ funktionieren auch NI-VISA oder Keysight VISA.
+2. Eine VISA-Runtime installieren, falls USB/GPIB/TCPIP-Geräte darüber angebunden sind. Empfohlen ist die schlanke R&S VISA Runtime: [R&S VISA und Tools](https://www.rohde-schwarz.com/de/driver-pages/fernsteuerung/3-visa-und-tools_231388.html). Alternativ funktionieren auch NI-VISA oder Keysight VISA über die Keysight IO Libraries Suite.
 3. Abhängigkeiten installieren:
 
 ```powershell
@@ -26,12 +26,13 @@ Hinweis für GPIB: Der GPIB-Controller-Treiber sollte zur verwendeten VISA-Insta
 
 ## Externe Runtime-Abhängigkeiten
 
-Externe Hersteller-Installer können lokal im Ordner `dependencies` gesammelt werden, z. B. R&S VISA Runtime, PicoSDK 64-bit mit ps2000a-Treiber und Saleae Logic 2. Das Paketier-Skript kopiert diesen Ordner automatisch in die EXE- und Python-Source-Verteilerordner, wenn er vorhanden ist.
+Externe Hersteller-Installer können lokal im Ordner `dependencies` gesammelt werden, z. B. R&S VISA Runtime, Keysight IO Libraries Suite, PicoSDK 64-bit mit ps2000a-Treiber und Saleae Logic 2. Das Paketier-Skript erzeugt daraus einen separaten Dependencies-Verteilerordner, wenn der Ordner lokal vorhanden ist.
 
 Empfohlene Struktur:
 
 - `dependencies/`
 - `dependencies/RS_VISA_Setup_Win_<version>.exe`
+- `dependencies/IOLibrariesSuite-<version>-windows-x64.exe`
 - `dependencies/PicoSDK_x64_<version>.exe`
 - `dependencies/Logic-<version>-windows-x64.exe`
 - `dependencies/HO720-HO730-Interface-Driver-<version>.zip`
@@ -55,13 +56,19 @@ Das Skript installiert ohne `-SkipInstall` das Projekt per `py -m pip install -e
 dist\MeasurementDevicesCommunicationLibrary\MeasurementDevicesCommunicationLibrary.exe
 ```
 
-Der Ordner `dist\MeasurementDevicesCommunicationLibrary` kann anschließend als ZIP weitergegeben werden. `README.md`, `config.example.ini` und ein vorhandener Ordner `dependencies` werden mit in den Ordner kopiert.
+Der Ordner `dist\MeasurementDevicesCommunicationLibrary` kann anschließend als ZIP weitergegeben werden. `README.md` und `config.example.ini` werden mit in den Ordner kopiert. Externe Runtime-Installer werden nicht in den EXE-Ordner kopiert; für diese erzeugt `scripts\package_release.ps1` einen separaten Dependencies-Verteilerordner.
 
-Für sauber benannte Verteilerordner kann das Paketier-Skript ausgeführt werden. Es baut standardmäßig zuerst die EXE neu und erzeugt danach beide Verteilerordner:
+Für sauber benannte Verteilerordner kann das Paketier-Skript ausgeführt werden. Es baut standardmäßig zuerst die EXE neu und erzeugt danach getrennte Verteilerordner für EXE, Python-Source und optional externe Runtime-Abhängigkeiten:
 
 ```powershell
 scripts\package_release.ps1
 ```
+
+Die Release-Struktur ist dadurch einfacher getrennt weiterzugeben:
+
+- `release/MeasurementDevicesCommunicationLibrary_EXE_Windows_<datum>/`
+- `release/MeasurementDevicesCommunicationLibrary_Python_Source_<datum>/`
+- `release/MeasurementDevicesCommunicationLibrary_Dependencies_<datum>/`, falls `dependencies/` vorhanden ist
 
 Wenn Projektabhängigkeiten inklusive `logic2-automation` und `pyinstaller` bereits in der verwendeten Python-Umgebung vorhanden sind, geht es schneller mit:
 

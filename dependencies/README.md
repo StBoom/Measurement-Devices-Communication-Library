@@ -1,11 +1,12 @@
 # Lokale Runtime-Abhängigkeiten
 
-Dieser Ordner ist für externe Installer, Treiber und SDKs gedacht, die auf Zielrechnern zusätzlich zur EXE benötigt werden. Das Release-Skript kopiert den kompletten Ordner automatisch in die EXE- und Python-Source-Verteilerordner, wenn er lokal vorhanden ist.
+Dieser Ordner ist für externe Installer, Treiber und SDKs gedacht, die auf Zielrechnern zusätzlich zur EXE benötigt werden. Das Release-Skript erzeugt daraus einen separaten Dependencies-Verteilerordner `MeasurementDevicesCommunicationLibrary_Dependencies_<datum>`, wenn dieser Ordner lokal vorhanden ist.
 
 Empfohlene Ablage:
 
 - `dependencies/`
 - `dependencies/RS_VISA_Setup_Win_<version>.exe`
+- `dependencies/IOLibrariesSuite-<version>-windows-x64.exe`
 - `dependencies/PicoSDK_x64_<version>.exe`
 - `dependencies/Logic-<version>-windows-x64.exe`
 - `dependencies/HO720-HO730-Interface-Driver-<version>.zip`
@@ -16,7 +17,7 @@ Empfohlene Ablage:
 
 Hinweise:
 
-- Die EXE enthält Python-Code und Python-Pakete, aber keine Systemtreiber. VISA, PicoSDK und Saleae Logic 2 müssen auf dem Ziel-PC installiert werden.
+- Die EXE enthält Python-Code und Python-Pakete, aber keine Systemtreiber. VISA bzw. Keysight IO Libraries Suite, PicoSDK und Saleae Logic 2 müssen auf dem Ziel-PC installiert werden.
 - Saleae benötigt zusätzlich die aktivierte Logic-2-Automation-Schnittstelle, z. B. Start von Logic 2 mit `Logic.exe --automation`. Python-Installationen benötigen außerdem `py -m pip install -e ".[saleae]"`; EXE-Releases enthalten `logic2-automation`, wenn sie mit dem normalen Build-Skript ohne `-SkipInstall` gebaut wurden.
 - IVI-/VXIplug&play-Instrumententreiber sind für diese App normalerweise nicht nötig. Die App nutzt PyVISA/SCPI direkt und bindet keine herstellerspezifischen IVI-/VXI-PnP-DLLs ein.
 
@@ -27,6 +28,7 @@ Hinweise:
 | Installer | Zweck | Benötigt für |
 | --- | --- | --- |
 | `RS_VISA_Setup_Win_7_2_3.exe` | R&S VISA Runtime | Allgemeine VISA-/SCPI-Kommunikation über `USB...::INSTR`, `GPIB...::INSTR`, `TCPIP...::INSTR` und `ASRL...::INSTR`. Wichtig für die meisten Messgeräte. |
+| `IOLibrariesSuite-21.3.293-windows-x64.exe` | Keysight IO Libraries Suite mit Keysight VISA und Connection Expert | Keysight/Agilent-Geräte über USB/LAN/GPIB, z. B. InfiniiVision-Oszilloskope wie MSOX3054T/DSOX2024A. Alternative zu R&S VISA oder NI-VISA. |
 
 ### Geräte- und SDK-spezifisch
 

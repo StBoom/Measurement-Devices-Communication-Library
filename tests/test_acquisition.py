@@ -145,6 +145,7 @@ class AcquisitionTests(unittest.TestCase):
     def test_profile_detection_for_new_manual_checked_devices(self) -> None:
         cases = {
             "KEYSIGHT TECHNOLOGIES,DSOX2024A,MY123,1.0": "keysight_infinivision_x",
+            "KEYSIGHT TECHNOLOGIES,MSOX3054T,MY123,1.0": "keysight_infinivision_x",
             "AGILENT TECHNOLOGIES,34401A,MY123,1.0": "keysight_344_l44",
             "AGILENT TECHNOLOGIES,MSO6034A,MY123,1.0": "keysight_infinivision_6000",
             "AGILENT TECHNOLOGIES,DSO7034B,MY123,1.0": "keysight_infinivision_7000",
@@ -572,6 +573,42 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(result.ok_count, 1)
         self.assertEqual(exports, [("Scope1", "USB::TEST", "png", b"PNGDATA")])
         self.assertIn("Datei: screenshot.png", result.csv_content)
+
+    def test_msox3054t_waveform_uses_3000x_scpi(self) -> None:
+        instrument = FakeInstrument(
+            query_responses={
+                ":CHANnel1:DISPlay?": "1",
+                ":WAVeform:DATA?": "1.0,2.0",
+                ":SYSTem:ERRor?": "+0,No error",
+                ":WAVeform:XINCrement?": "0.5",
+                ":WAVeform:XREFerence?": "0",
+                ":WAVeform:XORigin?": "0",
+                ":SYSTEM:ERROR?": "+0,No error",
+            }
+        )
+
+        result = capture_waveform(instrument, "KEYSIGHT TECHNOLOGIES,MSOX3054T,MY123,1.0", channels=[1], point_mode="RAW")
+
+        self.assertEqual(result.file_type, "csv")
+        self.assertIn("CH1", result.content)
+        self.assertIn("0.0,1.0", result.content)
+        self.assertIn("0.5,2.0", result.content)
+        self.assertEqual(
+            instrument.writes,
+            [":WAVeform:SOURce CHANnel1", ":WAVeform:FORMat ASCII", ":WAVeform:POINts:MODE RAW"],
+        )
+        self.assertEqual(
+            instrument.queries,
+            [
+                ":CHANnel1:DISPlay?",
+                ":WAVeform:DATA?",
+                ":SYSTem:ERRor?",
+                ":WAVeform:XINCrement?",
+                ":WAVeform:XREFerence?",
+                ":WAVeform:XORigin?",
+                ":SYSTEM:ERROR?",
+            ],
+        )
 
     def test_custom_sequence_exports_serial_log_step(self) -> None:
         instrument = FakeInstrument(query_responses={"*IDN?": "SERIAL,LOGGER,1,1"})
