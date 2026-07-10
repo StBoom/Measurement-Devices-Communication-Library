@@ -30,18 +30,16 @@ Externe Hersteller-Installer können lokal im Ordner `dependencies` gesammelt we
 
 Empfohlene Struktur:
 
-```text
-dependencies\
-  RS_VISA_Setup_Win_<version>.exe
-  PicoSDK_x64_<version>.exe
-  Logic-<version>-windows-x64.exe
-  HO720-HO730-Interface-Driver-<version>.zip
-  HO732-USB-Driver-<version>.zip
-  CDM<version>_Setup.zip
-  Treiber USB-GPIB.7z
-```
+- `dependencies/`
+- `dependencies/RS_VISA_Setup_Win_<version>.exe`
+- `dependencies/PicoSDK_x64_<version>.exe`
+- `dependencies/Logic-<version>-windows-x64.exe`
+- `dependencies/HO720-HO730-Interface-Driver-<version>.zip`
+- `dependencies/HO732-USB-Driver-<version>.zip`
+- `dependencies/CDM<version>_Setup.zip`
+- `dependencies/Treiber USB-GPIB.7z`
 
-Wichtig: Vor dem Mitverteilen die Lizenzbedingungen der Hersteller prüfen. Die Installer werden wegen Dateigröße und Lizenzthemen nicht ins Git eingecheckt; nur `dependencies\README.md` ist versioniert. Auf Zielrechnern müssen diese Systemkomponenten weiterhin separat installiert werden, bevor die jeweilige Hardware genutzt werden kann.
+Auf Zielrechnern müssen diese Systemkomponenten separat installiert werden, bevor die jeweilige Hardware genutzt werden kann.
 
 ## EXE-Build
 
