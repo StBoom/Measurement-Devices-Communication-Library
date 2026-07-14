@@ -41,8 +41,10 @@ from .sequence import (
     CA410Config,
     CA410_COLOR_MODES,
     CA410_FLICKER_METHODS,
+    CA410_INTEGRATION_MODES,
     CA410_MEASUREMENT_METHODS,
     CA410_MEASUREMENT_SPEEDS,
+    CA410_SYNC_MODES,
     DataLogger34970AConfig,
     FrequencySweepConfig,
     SequenceStep,
@@ -99,7 +101,7 @@ CUSTOM_SEQUENCE_ACTIONS = (
     ("PicoScope: Digital erfassen", "picoscope_digital", ("device", "channels", "logic_level_mv", "samples", "interval_us")),
     ("Agilent 34970A: Kanäle messen", "data_logger_34970a_read", ("device", "measurement", "channels", "baudrate", "serial_format")),
     ("Agilent 34970A: Messplan", "data_logger_34970a_plan", ("device", "plan", "baudrate", "serial_format")),
-    ("Konica Minolta CA-410: Messwert", "ca410_read", ("device", "color_mode", "probe", "calibration_channel", "measurement_method")),
+    ("Konica Minolta CA-410: Messwert", "ca410_read", ("device", "color_mode", "probe", "calibration_channel", "measurement_method", "sync_mode", "sync_value", "integration_mode", "averaging_time_s")),
     ("Saleae: Digital aufnehmen", "saleae_capture", ("device", "channels", "duration_s", "sample_rate", "threshold_v")),
     ("Saleae: UART dekodieren", "saleae_uart", ("device", "channel", "baudrate", "duration_s", "sample_rate")),
     ("Saleae: I2C dekodieren", "saleae_i2c", ("device", "sda", "scl", "duration_s", "sample_rate")),
@@ -172,6 +174,10 @@ class InstrumentVisaApp(tk.Tk):
         self.ca410_measurement_method_var = tk.StringVar(value=self.settings.get("ca410_measurement_method", "Color+Flicker"))
         self.ca410_flicker_method_var = tk.StringVar(value=self.settings.get("ca410_flicker_method", "FMA"))
         self.ca410_measurement_speed_var = tk.StringVar(value=self.settings.get("ca410_measurement_speed", "FAST"))
+        self.ca410_sync_mode_var = tk.StringVar(value=self.settings.get("ca410_sync_mode", "UNIV"))
+        self.ca410_sync_value_var = tk.StringVar(value=str(self.settings.get("ca410_sync_value", "60.00")))
+        self.ca410_integration_mode_var = tk.StringVar(value=self.settings.get("ca410_integration_mode", "Double-Frame"))
+        self.ca410_averaging_time_var = tk.StringVar(value=str(self.settings.get("ca410_averaging_time", "0")))
         self.ca410_baudrate_var = tk.StringVar(value=str(self.settings.get("ca410_baudrate", "38400")))
         self.ca410_serial_format_var = tk.StringVar(value=self.settings.get("ca410_serial_format", "7E2"))
         self.ca410_interval_var = tk.StringVar(value=str(self.settings.get("ca410_interval", "1")))
@@ -537,15 +543,30 @@ class InstrumentVisaApp(tk.Tk):
         ttk.Label(ca410_settings, text="Speed").pack(side="left", padx=(0, 4))
         ca410_speed_combo = ttk.Combobox(ca410_settings, textvariable=self.ca410_measurement_speed_var, values=CA410_MEASUREMENT_SPEEDS, width=9, state="readonly")
         ca410_speed_combo.pack(side="left", padx=(0, 8))
-        ttk.Label(ca410_controls, text="Baud").pack(side="left", padx=(0, 4))
-        ca410_baudrate_entry = ttk.Entry(ca410_controls, textvariable=self.ca410_baudrate_var, width=7)
+        ttk.Label(ca410_settings, text="Sync").pack(side="left", padx=(0, 4))
+        ca410_sync_combo = ttk.Combobox(ca410_settings, textvariable=self.ca410_sync_mode_var, values=CA410_SYNC_MODES, width=8, state="readonly")
+        ca410_sync_combo.pack(side="left", padx=(0, 8))
+        ttk.Label(ca410_settings, text="Sync-Wert").pack(side="left", padx=(0, 4))
+        ca410_sync_value_entry = ttk.Entry(ca410_settings, textvariable=self.ca410_sync_value_var, width=8)
+        ca410_sync_value_entry.pack(side="left", padx=(0, 8))
+
+        ca410_advanced = ttk.Frame(ca410)
+        ca410_advanced.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
+        ttk.Label(ca410_advanced, text="Integration").pack(side="left", padx=(0, 4))
+        ca410_integration_combo = ttk.Combobox(ca410_advanced, textvariable=self.ca410_integration_mode_var, values=CA410_INTEGRATION_MODES, width=12, state="readonly")
+        ca410_integration_combo.pack(side="left", padx=(0, 8))
+        ttk.Label(ca410_advanced, text="Averaging [s]").pack(side="left", padx=(0, 4))
+        ca410_averaging_entry = ttk.Entry(ca410_advanced, textvariable=self.ca410_averaging_time_var, width=8)
+        ca410_averaging_entry.pack(side="left", padx=(0, 8))
+        ttk.Label(ca410_advanced, text="Baud").pack(side="left", padx=(0, 4))
+        ca410_baudrate_entry = ttk.Entry(ca410_advanced, textvariable=self.ca410_baudrate_var, width=7)
         ca410_baudrate_entry.pack(side="left", padx=(0, 8))
-        ttk.Label(ca410_controls, text="Format").pack(side="left", padx=(0, 4))
-        ca410_serial_format_combo = ttk.Combobox(ca410_controls, textvariable=self.ca410_serial_format_var, values=SERIAL_FORMAT_VALUES, width=6, state="readonly")
+        ttk.Label(ca410_advanced, text="Format").pack(side="left", padx=(0, 4))
+        ca410_serial_format_combo = ttk.Combobox(ca410_advanced, textvariable=self.ca410_serial_format_var, values=SERIAL_FORMAT_VALUES, width=6, state="readonly")
         ca410_serial_format_combo.pack(side="left", padx=(0, 8))
 
         ca410_timing = ttk.Frame(ca410)
-        ca410_timing.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
+        ca410_timing.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 8))
         ttk.Label(ca410_timing, text="Intervall [s]").pack(side="left", padx=(0, 4))
         ca410_interval_entry = ttk.Entry(ca410_timing, textvariable=self.ca410_interval_var, width=8)
         ca410_interval_entry.pack(side="left", padx=(0, 8))
@@ -554,7 +575,7 @@ class InstrumentVisaApp(tk.Tk):
         ca410_count_entry.pack(side="left", padx=(0, 8))
         ca410_stop_button = ttk.Button(ca410_timing, text="Stop", command=self.stop_current_operation)
         ca410_stop_button.pack(side="left", padx=(8, 0))
-        ttk.Label(ca410, text="USB/RS-232: virtueller COM-Port, Standard 38400 7E2 mit RTS/CTS; am Gerät ggf. Remote/COM zulassen.").grid(row=3, column=0, sticky="w", padx=8, pady=(0, 8))
+        ttk.Label(ca410, text="Defaults: UNIV, Double-Frame, FAST, Averaging 0 s. INT nutzt Sync-Wert in Hz, MANUAL in ms.").grid(row=4, column=0, sticky="w", padx=8, pady=(0, 8))
 
         spectrum = ttk.LabelFrame(measurement_area, text="Spektrumanalysator")
         spectrum.grid(row=6, column=0, sticky="ew", pady=(12, 0))
@@ -688,7 +709,7 @@ class InstrumentVisaApp(tk.Tk):
         self._vna_screenshot_widgets = [vna_screenshot_button]
         self._data_logger_widgets = [data_logger_read_button, data_logger_measurement_combo, data_logger_channels_entry, data_logger_baudrate_entry, data_logger_serial_format_combo, data_logger_plan_button, data_logger_plan_entry, data_logger_interval_entry, data_logger_count_entry]
         self._data_logger_stop_widgets = [data_logger_stop_button]
-        self._ca410_widgets = [ca410_read_button, ca410_mode_combo, ca410_probe_entry, ca410_calibration_entry, ca410_method_combo, ca410_flicker_combo, ca410_speed_combo, ca410_baudrate_entry, ca410_serial_format_combo, ca410_interval_entry, ca410_count_entry]
+        self._ca410_widgets = [ca410_read_button, ca410_mode_combo, ca410_probe_entry, ca410_calibration_entry, ca410_method_combo, ca410_flicker_combo, ca410_speed_combo, ca410_sync_combo, ca410_sync_value_entry, ca410_integration_combo, ca410_averaging_entry, ca410_baudrate_entry, ca410_serial_format_combo, ca410_interval_entry, ca410_count_entry]
         self._ca410_stop_widgets = [ca410_stop_button]
         self._spectrum_widgets = [spectrum_trace_button]
         self._spectrum_screenshot_widgets = [spectrum_screenshot_button]
@@ -1042,18 +1063,22 @@ class InstrumentVisaApp(tk.Tk):
             "value2": tk.StringVar(value="-30 dBm"),
             "value3": tk.StringVar(value="0"),
             "value4": tk.StringVar(value="1"),
+            "value5": tk.StringVar(value=""),
+            "value6": tk.StringVar(value=""),
+            "value7": tk.StringVar(value=""),
+            "value8": tk.StringVar(value=""),
         }
-        for row, (label, key) in enumerate((("Gerät", "device"), ("Wert 1", "value1"), ("Wert 2", "value2"), ("Wert 3", "value3"), ("Wert 4", "value4")), start=1):
+        for row, (label, key) in enumerate((("Gerät", "device"), ("Wert 1", "value1"), ("Wert 2", "value2"), ("Wert 3", "value3"), ("Wert 4", "value4"), ("Wert 5", "value5"), ("Wert 6", "value6"), ("Wert 7", "value7"), ("Wert 8", "value8")), start=1):
             label_widget = ttk.Label(steps, text=label)
             label_widget.grid(row=row, column=0, sticky="w", padx=8, pady=(0, 8))
             self.custom_sequence_param_labels[key] = label_widget
             entry = ttk.Entry(steps, textvariable=self.custom_sequence_param_vars[key], width=52)
             entry.grid(row=row, column=1, sticky="ew", padx=8, pady=(0, 8))
             self.custom_sequence_param_widgets[key] = entry
-        ttk.Label(steps, text="Variablen werden mit ${name} genutzt, z. B. ${frequency}.", wraplength=500).grid(row=6, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8))
+        ttk.Label(steps, text="Variablen werden mit ${name} genutzt, z. B. ${frequency}.", wraplength=500).grid(row=10, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8))
         self.custom_sequence_step_button = ttk.Button(steps, text="Schritt hinzufügen", command=self._add_custom_sequence_step)
-        self.custom_sequence_step_button.grid(row=7, column=1, sticky="ew", padx=8, pady=(0, 8))
-        ttk.Button(steps, text="Bearbeiten abbrechen", command=self._cancel_custom_sequence_step_edit).grid(row=8, column=1, sticky="ew", padx=8, pady=(0, 8))
+        self.custom_sequence_step_button.grid(row=11, column=1, sticky="ew", padx=8, pady=(0, 8))
+        ttk.Button(steps, text="Bearbeiten abbrechen", command=self._cancel_custom_sequence_step_edit).grid(row=12, column=1, sticky="ew", padx=8, pady=(0, 8))
         self._refresh_custom_sequence_param_defaults()
 
     def _refresh_custom_sequence_param_defaults(self) -> None:
@@ -1079,7 +1104,7 @@ class InstrumentVisaApp(tk.Tk):
             "picoscope_digital": (self._default_sequence_device_name("PicoScope"), "D0-D7", "1500", "10000", "1"),
             "data_logger_34970a_read": (self._default_sequence_device_name("Datenlogger"), "TEMP", "1-20", "19200", "8N1"),
             "data_logger_34970a_plan": (self._default_sequence_device_name("Datenlogger"), "1-20:TEMP; 21-22:CURR_DC", "19200", "8N1", ""),
-            "ca410_read": (self._default_sequence_device_name("Farbmessgerät"), "xyLv", "1", "0", "Color+Flicker"),
+            "ca410_read": (self._default_sequence_device_name("Farbmessgerät"), "xyLv", "1", "0", "Color+Flicker", "UNIV", "60.00", "Double-Frame", "0"),
             "saleae_capture": (self._default_sequence_device_name("Saleae"), "D0-D7", "5", "10000000", "3.3"),
             "saleae_uart": (self._default_sequence_device_name("Saleae"), "0", "115200", "5", "10000000"),
             "saleae_i2c": (self._default_sequence_device_name("Saleae"), "0", "1", "5", "10000000"),
@@ -1087,14 +1112,17 @@ class InstrumentVisaApp(tk.Tk):
             "saleae_can": (self._default_sequence_device_name("Saleae"), "0", "500000", "5", "10000000"),
             "wait": ("", "0.5", "", "", ""),
         }.get(action, ("", "", "", "", ""))
-        for key, value in zip(("device", "value1", "value2", "value3", "value4"), defaults):
+        for key, value in zip(("device", "value1", "value2", "value3", "value4", "value5", "value6", "value7", "value8"), defaults):
             self.custom_sequence_param_vars[key].set(value)
+        for key in ("device", "value1", "value2", "value3", "value4", "value5", "value6", "value7", "value8"):
+            if key not in dict(zip(("device", "value1", "value2", "value3", "value4", "value5", "value6", "value7", "value8"), defaults)):
+                self.custom_sequence_param_vars[key].set("")
         self._refresh_custom_sequence_param_labels(action)
         self._refresh_custom_sequence_param_widgets(action)
 
     def _refresh_custom_sequence_param_labels(self, action: str) -> None:
         labels = self._custom_sequence_param_labels(action)
-        for key, fallback in (("device", "Gerät"), ("value1", "Wert 1"), ("value2", "Wert 2"), ("value3", "Wert 3"), ("value4", "Wert 4")):
+        for key, fallback in (("device", "Gerät"), ("value1", "Wert 1"), ("value2", "Wert 2"), ("value3", "Wert 3"), ("value4", "Wert 4"), ("value5", "Wert 5"), ("value6", "Wert 6"), ("value7", "Wert 7"), ("value8", "Wert 8")):
             label = self.custom_sequence_param_labels.get(key)
             if label is not None:
                 label.configure(text=labels.get(key, fallback))
@@ -1119,7 +1147,7 @@ class InstrumentVisaApp(tk.Tk):
             "picoscope_digital": {"device": "PicoScope", "value1": "Kanäle", "value2": "Logikpegel [mV]", "value3": "Samples", "value4": "Intervall [us]"},
             "data_logger_34970a_read": {"device": "34970A", "value1": "Messart", "value2": "Kanäle", "value3": "Baudrate", "value4": "Format"},
             "data_logger_34970a_plan": {"device": "34970A", "value1": "Messplan", "value2": "Baudrate", "value3": "Format", "value4": ""},
-            "ca410_read": {"device": "CA-410", "value1": "Farbmodus", "value2": "Probe", "value3": "Kal.-Kanal", "value4": "Messmethode"},
+            "ca410_read": {"device": "CA-410", "value1": "Farbmodus", "value2": "Probe", "value3": "Kal.-Kanal", "value4": "Messmethode", "value5": "Sync", "value6": "Sync-Wert", "value7": "Integration", "value8": "Averaging [s]"},
             "saleae_capture": {"device": "Saleae", "value1": "Kanäle", "value2": "Dauer [s]", "value3": "Sample-Rate", "value4": "Schwelle [V]"},
             "saleae_uart": {"device": "Saleae", "value1": "Kanal", "value2": "Baudrate", "value3": "Dauer [s]", "value4": "Sample-Rate"},
             "saleae_i2c": {"device": "Saleae", "value1": "SDA", "value2": "SCL", "value3": "Dauer [s]", "value4": "Sample-Rate"},
@@ -1130,11 +1158,14 @@ class InstrumentVisaApp(tk.Tk):
 
     def _refresh_custom_sequence_param_widgets(self, action: str) -> None:
         combo_values = self._custom_sequence_param_combo_values(action)
-        for key in ("value1", "value2", "value3", "value4"):
+        visible_keys = set(("device", "value1", "value2", "value3", "value4", "value5", "value6", "value7", "value8")[: len(self._custom_sequence_action_params(action))])
+        for key in ("value1", "value2", "value3", "value4", "value5", "value6", "value7", "value8"):
             current = self.custom_sequence_param_widgets.get(key)
             if current is None:
                 continue
             grid_info = current.grid_info()
+            if not grid_info:
+                grid_info = {"row": int(key.replace("value", "")), "column": 1, "sticky": "ew", "padx": 8, "pady": (0, 8)}
             current.destroy()
             values = combo_values.get(key)
             if values:
@@ -1143,6 +1174,16 @@ class InstrumentVisaApp(tk.Tk):
                 widget = ttk.Entry(current.master, textvariable=self.custom_sequence_param_vars[key], width=52)
             widget.grid(**grid_info)
             self.custom_sequence_param_widgets[key] = widget
+        for key in ("device", "value1", "value2", "value3", "value4", "value5", "value6", "value7", "value8"):
+            label = self.custom_sequence_param_labels.get(key)
+            widget = self.custom_sequence_param_widgets.get(key)
+            if label is not None and widget is not None:
+                if key in visible_keys:
+                    label.grid()
+                    widget.grid()
+                else:
+                    label.grid_remove()
+                    widget.grid_remove()
 
     def _custom_sequence_param_combo_values(self, action: str) -> dict[str, tuple[str, ...]]:
         if action == "generator_set_frequency":
@@ -1172,7 +1213,7 @@ class InstrumentVisaApp(tk.Tk):
         if action == "data_logger_34970a_plan":
             return {"value3": SERIAL_FORMAT_VALUES}
         if action == "ca410_read":
-            return {"value1": CA410_COLOR_MODES, "value4": CA410_MEASUREMENT_METHODS}
+            return {"value1": CA410_COLOR_MODES, "value4": CA410_MEASUREMENT_METHODS, "value5": CA410_SYNC_MODES, "value7": CA410_INTEGRATION_MODES}
         return {}
 
     def _apply_custom_sequence_variable_unit_defaults(self) -> None:
@@ -1381,7 +1422,7 @@ class InstrumentVisaApp(tk.Tk):
     def _add_custom_sequence_step(self) -> None:
         try:
             label, action, param_names = self._selected_custom_sequence_action()
-            raw_values = [self.custom_sequence_param_vars[key].get().strip() for key in ("device", "value1", "value2", "value3", "value4")]
+            raw_values = [self.custom_sequence_param_vars[key].get().strip() for key in ("device", "value1", "value2", "value3", "value4", "value5", "value6", "value7", "value8")]
             values_by_name = dict(zip(param_names, raw_values))
             device = values_by_name.pop("device", "")
             params = {name: value for name, value in values_by_name.items() if value != ""}
@@ -1445,10 +1486,10 @@ class InstrumentVisaApp(tk.Tk):
         self._refresh_custom_sequence_param_widgets(step.action)
         param_names = self._custom_sequence_action_params(step.action)
         values = {"device": step.device, **{name: str(value) for name, value in step.params.items()}}
-        for key, param_name in zip(("device", "value1", "value2", "value3", "value4"), param_names):
+        for key, param_name in zip(("device", "value1", "value2", "value3", "value4", "value5", "value6", "value7", "value8"), param_names):
             self.custom_sequence_param_vars[key].set(values.get(param_name, ""))
-        for key in ("value1", "value2", "value3", "value4"):
-            if key not in dict(zip(("device", "value1", "value2", "value3", "value4"), param_names)):
+        for key in ("value1", "value2", "value3", "value4", "value5", "value6", "value7", "value8"):
+            if key not in dict(zip(("device", "value1", "value2", "value3", "value4", "value5", "value6", "value7", "value8"), param_names)):
                 self.custom_sequence_param_vars[key].set("")
         if self.custom_sequence_step_button is not None:
             self.custom_sequence_step_button.configure(text="Schritt aktualisieren")
@@ -2271,6 +2312,10 @@ class InstrumentVisaApp(tk.Tk):
         measurement_method = self.ca410_measurement_method_var.get().strip()
         flicker_method = self.ca410_flicker_method_var.get().strip()
         measurement_speed = self.ca410_measurement_speed_var.get().strip()
+        sync_mode = self.ca410_sync_mode_var.get().strip()
+        sync_value = self.ca410_sync_value_var.get().strip()
+        integration_mode = self.ca410_integration_mode_var.get().strip()
+        averaging_time_s = float(self.ca410_averaging_time_var.get().strip() or "0")
         baudrate = int(self.ca410_baudrate_var.get().strip())
         serial_format = self.ca410_serial_format_var.get().strip()
         interval_s, count = self._ca410_timing()
@@ -2293,6 +2338,10 @@ class InstrumentVisaApp(tk.Tk):
                         measurement_method=measurement_method,
                         flicker_method=flicker_method,
                         measurement_speed=measurement_speed,
+                        sync_mode=sync_mode,
+                        sync_value=sync_value,
+                        integration_mode=integration_mode,
+                        averaging_time_s=averaging_time_s,
                         baudrate=baudrate,
                         serial_format=serial_format,
                     ),
@@ -2300,7 +2349,7 @@ class InstrumentVisaApp(tk.Tk):
                 )
                 export = append_result(self._output_path(), address, info.idn, result)
                 completed += 1
-                self.logger.info("CA-410 exported workbook=%s sheet=%s color_mode=%s probe=%s calibration_channel=%s measurement_method=%s flicker_method=%s measurement_speed=%s baudrate=%s serial_format=%s index=%s", export.workbook_path, export.sheet_name, color_mode, probe, calibration_channel, measurement_method, flicker_method, measurement_speed, baudrate, serial_format, completed)
+                self.logger.info("CA-410 exported workbook=%s sheet=%s color_mode=%s probe=%s calibration_channel=%s measurement_method=%s flicker_method=%s measurement_speed=%s sync_mode=%s sync_value=%s integration_mode=%s averaging_time_s=%s baudrate=%s serial_format=%s index=%s", export.workbook_path, export.sheet_name, color_mode, probe, calibration_channel, measurement_method, flicker_method, measurement_speed, sync_mode, sync_value, integration_mode, averaging_time_s, baudrate, serial_format, completed)
                 if count and completed >= count:
                     break
         stopped_text = " gestoppt" if self.operation_stop_event.is_set() else " abgeschlossen"
@@ -3496,6 +3545,10 @@ class InstrumentVisaApp(tk.Tk):
             "ca410_measurement_method": self.ca410_measurement_method_var.get(),
             "ca410_flicker_method": self.ca410_flicker_method_var.get(),
             "ca410_measurement_speed": self.ca410_measurement_speed_var.get(),
+            "ca410_sync_mode": self.ca410_sync_mode_var.get(),
+            "ca410_sync_value": self.ca410_sync_value_var.get(),
+            "ca410_integration_mode": self.ca410_integration_mode_var.get(),
+            "ca410_averaging_time": self.ca410_averaging_time_var.get(),
             "ca410_baudrate": self.ca410_baudrate_var.get(),
             "ca410_serial_format": self.ca410_serial_format_var.get(),
             "ca410_interval": self.ca410_interval_var.get(),

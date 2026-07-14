@@ -1204,6 +1204,8 @@ class AcquisitionTests(unittest.TestCase):
             query_responses={
                 "COM,1": "OK00",
                 "OPR,1": "OK00",
+                "SCS,3": "OK00",
+                "VSN,2": "OK00",
                 "FSC,1": "OK00",
                 "MMS,0": "OK00",
                 "FMS,0": "OK00",
@@ -1216,7 +1218,7 @@ class AcquisitionTests(unittest.TestCase):
         result = read_ca410_measurement(instrument, CA410Config())
 
         self.assertEqual(instrument.serial_configs, [(38400, 7, "E", 2.0)])
-        self.assertEqual(instrument.queries, ["COM,1", "OPR,1", "FSC,1", "MMS,0", "FMS,0", "MCH,1,0", "MDS,0", "MES,2"])
+        self.assertEqual(instrument.queries, ["COM,1", "OPR,1", "SCS,3", "FSC,1", "MMS,0", "VSN,2", "FMS,0", "MCH,1,0", "MDS,0", "MES,2"])
         self.assertIn("Timestamp,Status,Probe,DisplayMode,x,y,Lv,TempShift,FMAFlickerPercent,X,Y,Z", str(result.content))
         self.assertIn("OK00,P1,0,0.3274345,0.4191236,4.8075729,+0.39,2.1047971,1.0,2.0,3.0", str(result.content))
 
@@ -1226,8 +1228,10 @@ class AcquisitionTests(unittest.TestCase):
                 "*IDN?": "Konica Minolta CA-410",
                 "COM,1": "OK00",
                 "OPR,1": "OK00",
+                "SCS,4,60.00": "OK00",
+                "VSN,1": "OK00",
                 "FSC,1": "OK00",
-                "MMS,0": "OK00",
+                "MMS,1": "OK00",
                 "FMS,0": "OK00",
                 "MCH,1,2": "OK00",
                 "MDS,1": "OK00",
@@ -1240,7 +1244,7 @@ class AcquisitionTests(unittest.TestCase):
             {"CA410": instrument},  # type: ignore[dict-item]
             CustomSequenceConfig(
                 devices={"CA410": instrument.address},
-                steps=[SequenceStep("CA410", "ca410_read", {"color_mode": "TcpduvLv", "probe": "1", "calibration_channel": "2", "measurement_method": "Color+Flicker", "baudrate": "38400", "serial_format": "7E2"})],
+                steps=[SequenceStep("CA410", "ca410_read", {"color_mode": "TcpduvLv", "probe": "1", "calibration_channel": "2", "measurement_method": "Color", "sync_mode": "INT", "sync_value": "60", "integration_mode": "Single-Frame", "baudrate": "38400", "serial_format": "7E2"})],
                 end_rf_off=False,
             ),
         )
@@ -1248,7 +1252,36 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(result.ok_count, 1)
         self.assertIn("CA-410 measurement", result.csv_content)
         self.assertIn("MCH,1,2", instrument.queries)
+        self.assertIn("SCS,4,60.00", instrument.queries)
+        self.assertIn("VSN,1", instrument.queries)
         self.assertIn("MDS,1", instrument.queries)
+
+    def test_ca410_read_averages_for_configured_time(self) -> None:
+        instrument = FakeInstrument(
+            query_responses={
+                "COM,1": "OK00",
+                "OPR,1": "OK00",
+                "SCS,3": "OK00",
+                "VSN,2": "OK00",
+                "FSC,1": "OK00",
+                "MMS,1": "OK00",
+                "FMS,0": "OK00",
+                "MCH,1,0": "OK00",
+                "MDS,0": "OK00",
+                "MES,2": "OK00,P1,0,0.2000000,0.4000000,10.000000,+0.00,0.0,1.0,2.0,3.0",
+            }
+        )
+
+        result = read_ca410_measurement(instrument, CA410Config(measurement_method="Color", averaging_time_s=0.01))
+
+        self.assertIn("AverageSamples", str(result.content))
+        self.assertIn("0.2,0.4,10", str(result.content))
+
+    def test_ca410_single_frame_requires_synchronous_mode(self) -> None:
+        instrument = FakeInstrument()
+
+        with self.assertRaisesRegex(ValueError, "Sync"):
+            read_ca410_measurement(instrument, CA410Config(measurement_method="Color", integration_mode="Single-Frame"))
 
     def test_ca410_excel_export_appends_rows(self) -> None:
         from openpyxl import load_workbook

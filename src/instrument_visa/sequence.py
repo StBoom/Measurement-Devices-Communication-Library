@@ -226,6 +226,8 @@ CA410_COLOR_MODES: tuple[str, ...] = ("xyLv", "TcpduvLv", "uvLv", "XYZ", "AdPeLv
 CA410_MEASUREMENT_METHODS: tuple[str, ...] = ("Color+Flicker", "Color", "Flicker")
 CA410_FLICKER_METHODS: tuple[str, ...] = ("FMA", "JEITA")
 CA410_MEASUREMENT_SPEEDS: tuple[str, ...] = ("SLOW", "FAST", "LTD.AUTO", "AUTO")
+CA410_SYNC_MODES: tuple[str, ...] = ("UNIV", "INT", "EXT", "NTSC", "PAL", "MANUAL")
+CA410_INTEGRATION_MODES: tuple[str, ...] = ("Double-Frame", "Single-Frame")
 CA410_MODE_CODES = {
     "xyLv": "0",
     "TcpduvLv": "1",
@@ -255,6 +257,18 @@ CA410_MEASUREMENT_SPEED_CODES = {
     "LTD.AUTO": "2",
     "AUTO": "3",
 }
+CA410_SYNC_MODE_CODES = {
+    "NTSC": "0",
+    "PAL": "1",
+    "EXT": "2",
+    "UNIV": "3",
+    "INT": "4",
+    "MANUAL": "5",
+}
+CA410_INTEGRATION_MODE_CODES = {
+    "Single-Frame": "1",
+    "Double-Frame": "2",
+}
 
 
 @dataclass(frozen=True)
@@ -265,6 +279,10 @@ class CA410Config:
     measurement_method: str = "Color+Flicker"
     flicker_method: str = "FMA"
     measurement_speed: str = "FAST"
+    sync_mode: str = "UNIV"
+    sync_value: str = "60.00"
+    integration_mode: str = "Double-Frame"
+    averaging_time_s: float = 0.0
     baudrate: int = 38400
     serial_format: str = "7E2"
     remote: bool = True
@@ -1127,6 +1145,12 @@ def _execute_custom_sequence_step(
                 probe=str(params.get("probe", "1")).strip() or "1",
                 calibration_channel=str(params.get("calibration_channel", "0")).strip() or "0",
                 measurement_method=str(params.get("measurement_method", "Color+Flicker")).strip() or "Color+Flicker",
+                flicker_method=str(params.get("flicker_method", "FMA")).strip() or "FMA",
+                measurement_speed=str(params.get("measurement_speed", "FAST")).strip() or "FAST",
+                sync_mode=str(params.get("sync_mode", "UNIV")).strip() or "UNIV",
+                sync_value=str(params.get("sync_value", "60.00")).strip() or "60.00",
+                integration_mode=str(params.get("integration_mode", "Double-Frame")).strip() or "Double-Frame",
+                averaging_time_s=_float_param(params, "averaging_time_s", 0.0),
                 baudrate=_int_param(params, "baudrate", 38400),
                 serial_format=str(params.get("serial_format", "7E2")).strip() or "7E2",
                 include_xyz=_bool_param(params, "include_xyz", True),
@@ -1458,34 +1482,47 @@ def read_ca410_measurement(instrument: object, config: CA410Config, stop_request
     measurement_method_code = _ca410_named_code(config.measurement_method, CA410_MEASUREMENT_METHOD_CODES, "CA-410-Messmethode")
     flicker_method_code = _ca410_named_code(config.flicker_method, CA410_FLICKER_METHOD_CODES, "CA-410-Flicker-Methode")
     speed_code = _ca410_named_code(config.measurement_speed, CA410_MEASUREMENT_SPEED_CODES, "CA-410-Messgeschwindigkeit")
+    sync_mode_code = _ca410_named_code(config.sync_mode, CA410_SYNC_MODE_CODES, "CA-410-Sync-Modus")
+    sync_value = _ca410_sync_value(config.sync_value, sync_mode_code)
+    integration_mode_code = _ca410_named_code(config.integration_mode, CA410_INTEGRATION_MODE_CODES, "CA-410-Integration")
+    if integration_mode_code == "1" and measurement_method_code != "1":
+        raise ValueError("CA-410 Single-Frame ist nur bei Messmethode Color sinnvoll/verfügbar. Bitte Messmethode auf Color stellen oder Double-Frame verwenden.")
+    if integration_mode_code == "1" and sync_mode_code not in {"0", "1", "2", "4"}:
+        raise ValueError("CA-410 Single-Frame ist nur mit Sync NTSC, PAL, EXT oder INT verfügbar. Bitte Sync passend setzen oder Double-Frame verwenden.")
+    if config.averaging_time_s < 0:
+        raise ValueError("CA-410-Averaging-Zeit darf nicht negativ sein.")
     if stop_requested():
         return AcquisitionResult(kind="CA-410 measurement", file_type="csv", content=_ca410_csv({}, mode_code, stopped=True))
     address = str(getattr(instrument, "address", ""))
     if isinstance(instrument, DirectSerialInstrument) and _is_direct_serial_address(address):
-        values = _read_ca410_direct_serial(address, config, bytesize, parity, stopbits, mode_code, probe, calibration_channel, measurement_method_code, flicker_method_code, speed_code, stop_requested)
+        values = _read_ca410_direct_serial(address, config, bytesize, parity, stopbits, mode_code, probe, calibration_channel, measurement_method_code, flicker_method_code, speed_code, sync_mode_code, sync_value, integration_mode_code, stop_requested)
     else:
-        values = _read_ca410_instrument(instrument, config, bytesize, parity, stopbits, mode_code, probe, calibration_channel, measurement_method_code, flicker_method_code, speed_code, stop_requested)
+        values = _read_ca410_instrument(instrument, config, bytesize, parity, stopbits, mode_code, probe, calibration_channel, measurement_method_code, flicker_method_code, speed_code, sync_mode_code, sync_value, integration_mode_code, stop_requested)
     return AcquisitionResult(kind="CA-410 measurement", file_type="csv", content=_ca410_csv(values, values.get("DisplayMode", mode_code), stopped=stop_requested()))
 
 
-def _read_ca410_instrument(instrument: object, config: CA410Config, bytesize: int, parity: str, stopbits: float, mode_code: str, probe: str, calibration_channel: str, measurement_method_code: str, flicker_method_code: str, speed_code: str, stop_requested: StopCallback) -> dict[str, str]:
+def _read_ca410_instrument(instrument: object, config: CA410Config, bytesize: int, parity: str, stopbits: float, mode_code: str, probe: str, calibration_channel: str, measurement_method_code: str, flicker_method_code: str, speed_code: str, sync_mode_code: str, sync_value: str, integration_mode_code: str, stop_requested: StopCallback) -> dict[str, str]:
     if hasattr(instrument, "configure_serial"):
         instrument.configure_serial(config.baudrate, bytesize, parity, stopbits)
     if config.remote:
         _ca410_expect_ok(str(instrument.query("COM,1")), "COM,1")
     _ca410_expect_ok(str(instrument.query(f"OPR,{probe}")), f"OPR,{probe}")
+    _ca410_apply_sync_settings(lambda command: str(instrument.query(command)), sync_mode_code, sync_value)
     _ca410_expect_ok(str(instrument.query(f"FSC,{speed_code}")), f"FSC,{speed_code}")
     _ca410_expect_ok(str(instrument.query(f"MMS,{measurement_method_code}")), f"MMS,{measurement_method_code}")
+    _ca410_apply_integration_setting(lambda command: str(instrument.query(command)), integration_mode_code)
     _ca410_expect_ok(str(instrument.query(f"FMS,{flicker_method_code}")), f"FMS,{flicker_method_code}")
     _ca410_expect_ok(str(instrument.query(_ca410_mch_command(probe, calibration_channel))), _ca410_mch_command(probe, calibration_channel))
     _ca410_expect_ok(str(instrument.query(f"MDS,{mode_code}")), f"MDS,{mode_code}")
     if stop_requested():
         return {}
     response = str(instrument.query("MES,2" if config.include_xyz else "MES,1"))
+    if config.averaging_time_s > 0:
+        return _average_ca410_values([parse_ca410_measurement_response(response), *_collect_ca410_average_values(lambda command: str(instrument.query(command)), config, stop_requested)])
     return parse_ca410_measurement_response(response)
 
 
-def _read_ca410_direct_serial(port: str, config: CA410Config, bytesize: int, parity: str, stopbits: float, mode_code: str, probe: str, calibration_channel: str, measurement_method_code: str, flicker_method_code: str, speed_code: str, stop_requested: StopCallback) -> dict[str, str]:
+def _read_ca410_direct_serial(port: str, config: CA410Config, bytesize: int, parity: str, stopbits: float, mode_code: str, probe: str, calibration_channel: str, measurement_method_code: str, flicker_method_code: str, speed_code: str, sync_mode_code: str, sync_value: str, integration_mode_code: str, stop_requested: StopCallback) -> dict[str, str]:
     if serial is None:
         raise RuntimeError("CA-410-Zugriff benötigt pyserial. Bitte Abhängigkeiten neu installieren.")
     timeout_s = 3.0
@@ -1494,8 +1531,10 @@ def _read_ca410_direct_serial(port: str, config: CA410Config, bytesize: int, par
         if config.remote:
             _ca410_expect_ok(_ca410_serial_query(serial_port, "COM,1"), "COM,1")
         _ca410_expect_ok(_ca410_serial_query(serial_port, f"OPR,{probe}"), f"OPR,{probe}")
+        _ca410_apply_sync_settings(lambda command: _ca410_serial_query(serial_port, command), sync_mode_code, sync_value)
         _ca410_expect_ok(_ca410_serial_query(serial_port, f"FSC,{speed_code}"), f"FSC,{speed_code}")
         _ca410_expect_ok(_ca410_serial_query(serial_port, f"MMS,{measurement_method_code}"), f"MMS,{measurement_method_code}")
+        _ca410_apply_integration_setting(lambda command: _ca410_serial_query(serial_port, command), integration_mode_code)
         _ca410_expect_ok(_ca410_serial_query(serial_port, f"FMS,{flicker_method_code}"), f"FMS,{flicker_method_code}")
         mch_command = _ca410_mch_command(probe, calibration_channel)
         _ca410_expect_ok(_ca410_serial_query(serial_port, mch_command), mch_command)
@@ -1503,6 +1542,8 @@ def _read_ca410_direct_serial(port: str, config: CA410Config, bytesize: int, par
         if stop_requested():
             return {}
         response = _ca410_serial_query(serial_port, "MES,2" if config.include_xyz else "MES,1")
+        if config.averaging_time_s > 0:
+            return _average_ca410_values([parse_ca410_measurement_response(response), *_collect_ca410_average_values(lambda command: _ca410_serial_query(serial_port, command), config, stop_requested)])
         return parse_ca410_measurement_response(response)
 
 
@@ -1512,6 +1553,51 @@ def _ca410_serial_query(serial_port, command: str) -> str:
     if not response:
         raise TimeoutError(f"CA-410 antwortet nicht auf {command}.")
     return response.decode("ascii", errors="replace").strip()
+
+
+def _ca410_apply_sync_settings(query: Callable[[str], str], sync_mode_code: str, sync_value: str) -> None:
+    command = f"SCS,{sync_mode_code},{sync_value}" if sync_mode_code in {"4", "5"} else f"SCS,{sync_mode_code}"
+    _ca410_expect_ok(query(command), command)
+
+
+def _ca410_apply_integration_setting(query: Callable[[str], str], integration_mode_code: str) -> None:
+    command = f"VSN,{integration_mode_code}"
+    response = query(command)
+    try:
+        _ca410_expect_ok(response, command)
+    except RuntimeError as exc:
+        if integration_mode_code == "2" and response.strip().startswith("ER10"):
+            LOGGER.info("CA-410 integration mode not supported by current connection; keeping default Double-Frame")
+            return
+        raise exc
+
+
+def _collect_ca410_average_values(query: Callable[[str], str], config: CA410Config, stop_requested: StopCallback) -> list[dict[str, str]]:
+    deadline = monotonic() + config.averaging_time_s
+    results: list[dict[str, str]] = []
+    while monotonic() < deadline and not stop_requested():
+        response = query("MES,2" if config.include_xyz else "MES,1")
+        results.append(parse_ca410_measurement_response(response))
+    return results
+
+
+def _average_ca410_values(values: list[dict[str, str]]) -> dict[str, str]:
+    values = [value for value in values if value]
+    if not values:
+        return {}
+    averaged = dict(values[-1])
+    numeric_keys = sorted({key for value in values for key in value if key not in {"Status", "Probe", "DisplayMode"}})
+    for key in numeric_keys:
+        samples: list[float] = []
+        for value in values:
+            try:
+                samples.append(float(str(value.get(key, "")).strip()))
+            except ValueError:
+                pass
+        if samples:
+            averaged[key] = f"{sum(samples) / len(samples):.9g}"
+    averaged["AverageSamples"] = str(len(values))
+    return averaged
 
 
 def _ca410_serial_port(address: str) -> str | None:
@@ -1551,7 +1637,7 @@ def parse_ca410_measurement_response(response: str) -> dict[str, str]:
 
 def _ca410_csv(values: dict[str, str], mode_code: str, stopped: bool = False) -> str:
     fields = CA410_MODE_FIELDS.get(mode_code, ("Value1", "Value2", "Value3"))
-    headers = ["Timestamp", "Status", "Probe", "DisplayMode", *fields, "TempShift", "FMAFlickerPercent", "X", "Y", "Z"]
+    headers = ["Timestamp", "Status", "Probe", "DisplayMode", *fields, "TempShift", "FMAFlickerPercent", "X", "Y", "Z", "AverageSamples"]
     row = [datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
     row.extend(values.get(header, "") for header in headers[1:])
     if stopped:
@@ -1595,6 +1681,21 @@ def _ca410_named_code(value: str, mapping: dict[str, str], label: str) -> str:
     if compact in aliases:
         return aliases[compact]
     raise ValueError(f"Unbekannte {label}: {value}")
+
+
+def _ca410_sync_value(value: str, sync_mode_code: str) -> str:
+    if sync_mode_code not in {"4", "5"}:
+        return ""
+    try:
+        numeric = float(str(value).strip().replace(",", "."))
+    except ValueError as exc:
+        label = "interne Sync-Frequenz" if sync_mode_code == "4" else "manuelle Integrationszeit"
+        raise ValueError(f"CA-410 {label} muss eine Zahl sein.") from exc
+    if sync_mode_code == "4" and not 0.5 <= numeric <= 240.0:
+        raise ValueError("CA-410 interne Sync-Frequenz muss zwischen 0.50 und 240.00 Hz liegen.")
+    if sync_mode_code == "5" and not 4.0 <= numeric <= 4000.0:
+        raise ValueError("CA-410 manuelle Integrationszeit muss zwischen 4.0 und 4000.0 ms liegen.")
+    return f"{numeric:.2f}" if sync_mode_code == "4" else f"{numeric:.1f}"
 
 
 def _ca410_probe(value: str) -> str:
