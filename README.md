@@ -197,6 +197,8 @@ Beim getimten Messen kann eine DMM- oder Scope-Messreihe mit Intervall in Sekund
 
 Die GUI merkt sich zuletzt verwendete Einstellungen in `gui_settings.json`, darunter VISA-Adresse, bekannte Geräte, Excel-Datei, Scope-Messung, Timed-Measurement-Intervall, Timed-Measurement-Anzahl, Waveform-Kanäle, Waveform-Punktmodus, S-Parameter-Auswahl und 34970A-Datenlogger-Einstellungen. Nach einer erfolgreichen IDN-Abfrage wird die VISA-Adresse zusammen mit IDN, Gerätetyp, Profil und unterstützten Funktionen gespeichert. Für serielle Geräte können zusätzlich erfolgreiche SCPI-Settings wie Baudrate, Format, Flow-Control und Terminator gespeichert werden. Bekannte Geräte erscheinen beim nächsten Start direkt in der Geräte-Liste mit Typ, Hersteller, Modell und Adresse. Bei einer neuen Gerätesuche werden die gefundenen VISA-Adressen mit den bekannten Geräten zusammengeführt, sodass bereits erkannte Geräte sofort mit Typ angezeigt und die passenden Bedienbereiche aktiviert werden. Dabei werden äquivalente `ASRL...::INSTR`-Adressen gegenüber direkten `COM`-Adressen bevorzugt; direkte `COM`-Adressen bleiben für serielle Logs und Geräte ohne VISA-ASRL-Zugriff möglich. Die Auswahl eines bekannten Geräts nutzt das gespeicherte Profil ohne automatische IDN-Abfrage; für eine erneute Erkennung kann `IDN testen` manuell gestartet werden. Die Buttons `Excel öffnen` und `Ordner öffnen` öffnen direkt die Ergebnisdatei bzw. den Ausgabeordner. Der Excel-Export ergänzt Zeitstempel, Metadaten und eigene Tabellenblätter für Waveform- und Messreihendaten. Waveform-Tabellenblätter bekommen automatisch ein Diagramm, wenn numerische Daten erkannt werden. PNG-Screenshots werden zusätzlich in ein eigenes Excel-Tabellenblatt eingebettet.
 
+Wenn `IDN testen` bei einem direkten `COM...`-Port oder einer `ASRL...::INSTR`-Adresse keine bekannte Geräte-ID erkennt, wird die Adresse als `Seriell` abgelegt und nicht als unbekanntes Messgerät. Damit werden nicht versehentlich DMM-/Scope-Bereiche aktiviert; solche Geräte können anschließend im freien Ablaufeditor über `Seriell: Kommando senden` oder `Seriell: Log aufzeichnen` genutzt werden.
+
 Alle GUI- und CLI-Aktionen werden dauerhaft in `logs/instrument_visa.log` protokolliert. Das Log enthält gestartete Aktionen, Exportpfade, erkannte Geräteprofile und vollständige Fehlerdetails.
 
 ## Aus dem VBA-Projekt übernommene Funktionen
@@ -214,6 +216,8 @@ Alle GUI- und CLI-Aktionen werden dauerhaft in `logs/instrument_visa.log` protok
 Die folgenden Geräteprofile sind mit realen Geräten aus diesem Projekt getestet oder aus dem vorhandenen VBA-Projekt übernommen:
 
 - Keysight/Agilent 344xx/L44xx, darunter 34461A und 34401A: DMM-Messwert und getimtes DMM-Messen über `:READ?`
+
+Hinweis zum Keysight/Agilent 34461A über USB: Wenn das Gerät direkt nach dem Start der App oder nach dem Einschalten nicht in `Geräte suchen` erscheint, hilft in der Praxis häufig, das USB-Kabel am Gerät einmal kurz abzuziehen und wieder einzustecken und danach `Geräte suchen` erneut auszuführen. Falls das weiterhin nötig ist, auch Keysight Connection Expert bzw. die verwendete VISA Runtime prüfen.
 - Keysight/Agilent InfiniiVision X-Series, darunter DSOX2024A und MSOX3054T: Scope-Messwert, getimtes Scope-Messen, Screenshot und Waveform-Export
 - Keysight/Agilent E5071C: Screenshot und S-Parameter-Export
 - Rohde & Schwarz ZNB: Screenshot und S-Parameter-Export
@@ -574,7 +578,7 @@ Statuswerte:
     Funktionen:        DMM/Messwert ja, getimtes DMM-Messen ja
     Nicht unterstützt: Scope-Messwert, Screenshot, Waveform/Trace, S-Parameter
     Status:            getestet
-    Notizen:           34461A/34401A über :READ?; 34401A/HP/Agilent-Varianten fallen bewusst in dasselbe Profil
+    Notizen:           34461A/34401A über :READ?; 34401A/HP/Agilent-Varianten fallen bewusst in dasselbe Profil. Beim 34461A über USB kann es vorkommen, dass das Gerät nach App-Start/Einschalten erst nach einmaligem USB-Abziehen und Wiedereinstecken von der VISA-Suche erkannt wird.
 
 #### Keysight/Agilent InfiniiVision X-Series, DSOX2024A, MSOX3054T
 

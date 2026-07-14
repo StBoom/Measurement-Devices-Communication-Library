@@ -2162,6 +2162,8 @@ class InstrumentVisaApp(tk.Tk):
                     self.logger.info("ASRL IDN probe failed address=%s port=%s error=%s", address, port, exc)
                 if idn:
                     profile = detect_profile(idn)
+                    if profile.key == "unknown":
+                        profile = self._serial_unknown_profile()
                     self._messages.put(("profile", (profile, port, idn, serial_settings)))
                     results.append(f"{port}: IDN erkannt - {idn}")
                     continue
@@ -2174,6 +2176,8 @@ class InstrumentVisaApp(tk.Tk):
                 serial_settings = None
             if idn:
                 profile = detect_profile(idn)
+                if profile.key == "unknown":
+                    profile = self._serial_unknown_profile()
                 self._messages.put(("profile", (profile, port, idn, serial_settings)))
                 results.append(f"{port}: IDN erkannt - {idn}")
                 continue
@@ -2187,6 +2191,9 @@ class InstrumentVisaApp(tk.Tk):
         with self._open_instrument() as instrument:
             idn = instrument.info().idn
         profile = detect_profile(idn)
+        if profile.key == "unknown" and self._serial_port_for_address(address) is not None:
+            profile = self._serial_unknown_profile()
+            idn = "Serielles Gerät ohne IDN"
         serial_settings = getattr(instrument, "last_serial_settings", None)
         self._messages.put(("profile", (profile, address, idn, serial_settings)))
         if serial_settings is not None:

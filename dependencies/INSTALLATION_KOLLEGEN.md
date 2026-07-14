@@ -66,6 +66,8 @@ Die folgende Tabelle deckt die in der Anwendung hinterlegten Geraeteprofile ab. 
 
 Wenn ein Keysight-/Agilent-Geraet nicht gefunden wird, die Keysight IO Libraries installieren und im Keysight Connection Expert pruefen, ob das Geraet sichtbar ist.
 
+Beim Keysight/Agilent 34461A ueber USB kann es vorkommen, dass das Geraet nach App-Start oder nach dem Einschalten nicht sofort in `Geraete suchen` erscheint. In diesem Fall das USB-Kabel am Geraet einmal kurz abziehen, wieder einstecken und danach erneut `Geraete suchen` ausfuehren.
+
 ### R&S/Hameg
 
 Fuer viele Geraete reicht R&S VISA. Bei HMS-/HMP-Geraeten mit altem USB-Interface kann zusaetzlich der HO720/HO730- oder HO732-Treiber noetig sein.
