@@ -28,6 +28,24 @@ Hinweis für GPIB: Der GPIB-Controller-Treiber sollte zur verwendeten VISA-Insta
 
 Externe Hersteller-Installer können lokal im Ordner `dependencies` gesammelt werden, z. B. R&S VISA Runtime, Keysight IO Libraries Suite, PicoSDK 64-bit mit ps2000a-Treiber und Saleae Logic 2. Das Paketier-Skript erzeugt daraus einen separaten Dependencies-Verteilerordner, wenn der Ordner lokal vorhanden ist.
 
+Die fertige EXE enthält die Anwendung und Python-Abhängigkeiten, aber keine Windows-Treiber und keine Hersteller-Runtimes. Kollegen sollten nicht wahllos alle Installer ausführen, sondern nur die Pakete installieren, die zum Messgerät und Anschluss passen.
+
+Kurze Zuordnung für Ziel-PCs:
+
+| Gerät / Anschluss | Benötigte Installation |
+| --- | --- |
+| Normales Messgerät per USB, LAN oder GPIB | Eine VISA Runtime, empfohlen `RS_VISA_Setup_Win_<version>.exe` |
+| Keysight/Agilent-Gerät | `IOLibrariesSuite-<version>-windows-x64.exe`, besonders wenn das Gerät mit R&S VISA nicht gefunden wird |
+| R&S/Hameg HMS/HMP mit USB-Interface | R&S VISA plus bei Bedarf `HO720-HO730-Interface-Driver-<version>.zip` oder `HO732-USB-Driver-<version>.zip` |
+| PicoScope 2206BMSO/2406B | `PicoSDK_x64_<version>.exe` |
+| Saleae Logic Analyzer | `Logic-<version>-windows-x64.exe`, Logic 2 muss laufen und Automation muss aktiv sein |
+| USB-RS232-/COM-Port-Verbindung | Passender USB-Seriell-Treiber, bei FTDI-Adaptern `CDM<version>_Setup.zip` |
+| ältere GPIB-Geräte über USB-GPIB-Adapter | VISA Runtime plus Treiber des konkreten USB-GPIB-Adapters |
+
+Das Paketier-Skript sortiert den Dependencies-Verteilerordner zusätzlich in nummerierte Ordner wie `1_Immer_zuerst_VISA`, `4_Falls_PicoScope` und `5_Falls_Saleae`. Die Datei `dependencies/INSTALLATION_KOLLEGEN.md` ist die kurze Anleitung für Anwender ohne Entwicklungsdetails.
+
+Die vollständige Zuordnung aller unterstützten Geräteprofile zu Runtime, Treiber und Zusatzsoftware steht in `dependencies/README.md` im Abschnitt `Abdeckung der unterstuetzten Geraeteprofile`.
+
 Empfohlene Struktur:
 
 - `dependencies/`
@@ -39,6 +57,7 @@ Empfohlene Struktur:
 - `dependencies/HO732-USB-Driver-<version>.zip`
 - `dependencies/CDM<version>_Setup.zip`
 - `dependencies/Treiber USB-GPIB.7z`
+- `dependencies/INSTALLATION_KOLLEGEN.md`
 
 Auf Zielrechnern müssen diese Systemkomponenten separat installiert werden, bevor die jeweilige Hardware genutzt werden kann.
 
@@ -141,7 +160,9 @@ measurement-devices
 measurement-devices-gui
 ```
 
-Die Oberfläche bietet Geräte-Suche, IDN-Test, DMM-Messwert, Scope-Messwert, getimtes Messen, Screenshot, Waveform-Export, S-Parameter-Export, Signalgenerator-Basisbedienung, Netzgerät-Basisbedienung, 34970A-Datenlogger-Messungen, Spektrumanalysator-Trace-Export und automatische Abläufe in eine auswählbare Excel-Datei. Nach `IDN testen` wird ein Geräteprofil erkannt und die passenden Bereiche werden aktiviert. Für Oszilloskope sollte `Scope Messwert` genutzt werden, da `DMM Messwert` den Multimeter-Befehl `:READ?` sendet. Beim Waveform-Export können `CH1` bis `CH4` beliebig kombiniert werden. Zusätzlich ist der Punktmodus `RAW`, `NORMAL` oder `MAXIMUM` auswählbar. Jede Waveform-Messung wird zur besseren Übersicht in ein eigenes Tabellenblatt geschrieben.
+Die Oberfläche bietet Geräte-Suche, Setup-Prüfung, IDN-Test, DMM-Messwert, Scope-Messwert, getimtes Messen, Screenshot, Waveform-Export, S-Parameter-Export, Signalgenerator-Basisbedienung, Netzgerät-Basisbedienung, 34970A-Datenlogger-Messungen, Spektrumanalysator-Trace-Export und automatische Abläufe in eine auswählbare Excel-Datei. Nach `IDN testen` wird ein Geräteprofil erkannt und die passenden Bereiche werden aktiviert. Für Oszilloskope sollte `Scope Messwert` genutzt werden, da `DMM Messwert` den Multimeter-Befehl `:READ?` sendet. Beim Waveform-Export können `CH1` bis `CH4` beliebig kombiniert werden. Zusätzlich ist der Punktmodus `RAW`, `NORMAL` oder `MAXIMUM` auswählbar. Jede Waveform-Messung wird zur besseren Übersicht in ein eigenes Tabellenblatt geschrieben.
+
+Der Button `Setup prüfen` im Bereich `Verbindung` prüft das Zielsystem auf VISA Runtime, gefundene VISA-Ressourcen, COM-Ports, PicoSDK 2000A und Saleae Logic-2-Automation. Das Ergebnis wird als Diagnosefenster angezeigt und enthält konkrete Empfehlungen, welche Runtime oder welcher Treiber fehlt. Wenn Ressourcen gefunden werden, wird die Geräteauswahl in der Oberfläche direkt aktualisiert. Für Details zu konkreten Gerätefamilien auf Ziel-PCs siehe `dependencies/INSTALLATION_KOLLEGEN.md`.
 
 Der Signalgenerator-Bereich kann Frequenz, Pegel und RF-Ausgang lesen bzw. setzen. Als Sicherheitsvorgabe ist der RF-Ausgang vor Änderungen abschaltbar und der Maximalpegel wird lokal geprüft, bevor Befehle gesendet werden. `RF Aus` sendet nur den Ausgang-Aus-Befehl und liest anschließend die aktuellen Einstellungen zurück. SME/SMT/SMIQ nutzen SCPI-Basisbefehle `:SOUR:FREQ:CW`, `:SOUR:POW` und `:OUTP`. SMGU/SMHU nutzen laut Programmierbeispielen die ältere IEC-Bus-Syntax `RF`, `LEVEL:RF`, `LEVEL:RF:ON` und `LEVEL:RF:OFF`.
 
@@ -152,6 +173,25 @@ Der `34970A Datenlogger`-Bereich unterstützt Agilent/HP/Keysight 34970A/34972A 
 Der `Spektrumanalysator`-Bereich wird für erkannte Spektrumanalysator-Profile eingeblendet. `Trace exportieren` nutzt die bestehende Waveform-/Trace-Logik des Geräteprofils; `Screenshot` ist nur aktiv, wenn das Profil Hardcopy/Screenshot unterstützt.
 
 Der Bereich `Automatischer Ablauf` öffnet über `Freier Ablauf-Editor` ein eigenes Fenster, in dem mehrere Geräte benannt, einzelne Schritte in eine Ablauf-Liste eingefügt und mit Wiederholungen, Pause sowie einer optional pro Durchlauf hochgezählten Variable ausgeführt werden können. Unterstützt sind Generator-Frequenz/Pegel/RF, Netzgerät-Spannung/Ausgänge, DMM-Messwert, Scope-Messwert, Scope-/Spektrumanalysator-Waveform/Trace, Screenshots, serielle Logs von ASRL/COM-Geräten, einfache Parallel-Messphasen und Wartezeiten. Im Gerätebereich des freien Editors können vorhandene Windows-COM-Ports über `COM-Port` und `suchen` ermittelt und mit `übernehmen` direkt als serielles Gerät eingetragen werden, z. B. `COM3` oder `COM12`; manuelles Eintragen bleibt möglich. Für VISA-Seriell geht weiterhin eine Adresse wie `ASRL3::INSTR`. Der Schritt `Seriellen Log aufzeichnen` liest passiv mit und bietet `Dauer [s]`, `Baudrate` und `Format`, z. B. `8N1`, `7E1`, `7O1` oder `8N2`. Der Schritt `Parallel-Messphase` startet mehrere einfache Aufgaben gleichzeitig über eine Dauer und ein Messintervall; Aufgaben werden mit Semikolon getrennt eingetragen, z. B. `DMM1:dmm; Scope1:scope:Vpp:1; Seriell1:serial:115200:8N1`. DMM- und Scope-Werte werden in ein eigenes Tabellenblatt geschrieben, serielle Parallel-Logs zusätzlich als Textdatei exportiert. Variablen werden in Parametern als `${name}` verwendet, z. B. `${frequency}` oder `${voltage}`. Der freie Ablauf wird als eigenes Excel-Tabellenblatt mit Durchlauf, Schritt, Gerät, Aktion, Parametern, Wert und Status gespeichert. Serielle Logs werden zusätzlich als Textdatei neben der Excel-Datei abgelegt und im Ergebnisblatt referenziert. Der Editor enthält Vorlagen für getimtes DMM- und Scope-Messen, RF- und Netzteil-Schalten, Generator+DMM, Generator+Oszilloskop, Netzteil+DMM, Netzteil+Oszilloskop und Generator+Spektrumanalysator; fertige Abläufe können als JSON importiert und exportiert werden. Exportierte JSON-Abläufe können über die Kommandozeile mit `instrument-visa sequence-run --sequence-file <datei.json> --output <xlsx>` ausgeführt werden. Die bisherigen Spezialbereiche für getimtes Messen, getimtes Schalten sowie die alten festen Sweep-Eingaben im Hauptfenster sind zugunsten des freien Editors ausgeblendet.
+
+Zusätzlich zum passiven Schritt `Seriellen Log aufzeichnen` unterstützt der freie Ablauf-Editor den Schritt `Serielles Kommando senden`. Damit kann für COM-Ports und VISA-ASRL-Geräte beliebiger Text gesendet werden; Escape-Sequenzen wie `\r`, `\n` und `\t` werden in echte Steuerzeichen umgewandelt, sodass z. B. `*IDN?\n` oder gerätespezifische ASCII-Protokolle möglich sind. Optional zeichnet `Antwort lesen [s]` direkt nach dem Senden für eine feste Zeit die Antwort auf; ohne Antwortzeit wird nur gesendet. Das ist für Spezialgeräte gedacht, die zwar als serielles Interface erkannt werden, aber kein eigenes Geräteprofil haben.
+
+Der freie Ablauf-Editor unterstützt außerdem SSH-Geräte. Dafür ein Gerät mit Adresse im Format `ssh://user@host` oder `ssh://user@host:2222` eintragen und den Schritt `SSH: Kommando ausführen` verwenden. Der Schritt bietet Kommando, optional abweichenden Benutzer, optional Passwort und Timeout in Sekunden. Ohne Passwort nutzt die SSH-Bibliothek vorhandene SSH-Keys bzw. den Agent; mit Passwort wird Passwort-Authentifizierung verwendet. Die Standardausgabe des Kommandos wird als Schrittwert in das Ablauf-Ergebnis geschrieben, ein nicht-null Exit-Code bricht den Schritt mit Fehlerstatus ab.
+
+Die Vorlagen im freien Ablauf-Editor decken typische Startszenarien ab: getimtes Multimeter- oder Oszilloskop-Messen, RF-Schalten, Netzgerät-Schalten, Generator- oder Netzgerät-Sweeps mit DMM/Scope/Spektrumanalysator, Screenshot speichern, Kurve/Trace speichern, Parallel-Messphase, serielles Kommando mit anschließendem Log, SSH-Kommando, PicoScope-Analogaufnahme, Saleae-UART-Aufnahme, 34970A-Messplan und CA-410-Messwert. Die Vorlagen sind bewusst einfache Ausgangspunkte; danach können Geräteadressen, Parameter, Wiederholungen und Variablen angepasst und als JSON exportiert werden.
+
+Beispielhafte Ablauf-Szenarien:
+
+- Generator-Sweep mit DMM: `Signalgenerator: Frequenz setzen`, `Warten`, `Multimeter: Messwert lesen`; Variable `${frequency}` pro Durchlauf erhöhen.
+- Netzgerät-Sweep mit Scope: `Netzgerät: Spannung/Strom setzen`, `Warten`, `Oszilloskop: Messwert lesen`; Variable `${voltage}` pro Durchlauf erhöhen und `Netzgerät am Ende aus` aktivieren.
+- Trace- oder Waveform-Export: `Oszilloskop/Spektrum: Kurve erfassen`, optional nach einem Generator- oder Netzgerät-Schritt.
+- Screenshot-Dokumentation: `Gerät: Screenshot erfassen`, z. B. nach einer Messphase oder einem Gerätezustand.
+- Serielle Spezialgeräte: `Serielles Kommando senden` mit z. B. `*IDN?\n` oder gerätespezifischem ASCII-Kommando, danach optional `Seriellen Log aufzeichnen`.
+- SSH-gesteuerte Prüflinge: `SSH: Kommando ausführen`, z. B. Dienst starten, DUT konfigurieren oder Logdatei abfragen, danach Messgerät-Schritte ausführen.
+- Parallel-Messphase: DMM, Scope und serielles Log gleichzeitig für eine feste Dauer erfassen, z. B. `Multimeter1:dmm; Oszilloskop1:scope:Vpp:1; Seriell1:serial:115200:8N1`.
+- Datenlogger: `Agilent 34970A: Messplan` mit gemischten Kanalgruppen wie `1-20:TEMP; 21-22:CURR_DC`.
+- Logic Analyzer: `Saleae: Digital aufnehmen` und anschließend Analyzer-Schritte wie `Saleae: UART dekodieren`.
+- PicoScope: `PicoScope: Analog erfassen` oder `PicoScope: Digital erfassen`, wenn ein PicoScope ohne VISA-SCPI genutzt wird.
 
 Beim getimten Messen kann eine DMM- oder Scope-Messreihe mit Intervall in Sekunden und Anzahl Messpunkte gestartet werden. Die Messpunkte werden auf feste Sollzeitpunkte geplant, damit die Messdauer das Intervall nicht dauerhaft verschiebt. Die Messreihe kann über `Stop` abgebrochen werden. Die Ergebnisse werden mit Index, Zeitstempel, verstrichener Zeit, Delta zum vorherigen Messpunkt, Abweichung vom Sollzeitpunkt, Messart, Kanal, Wert und Status in ein eigenes Tabellenblatt geschrieben. Zusätzlich enthält das Tabellenblatt eine Zusammenfassung mit Start-/Endzeit, Soll-Intervall, angeforderter und tatsächlicher Anzahl sowie OK- und Fehlerzähler.
 
@@ -179,6 +219,7 @@ Die folgenden Geräteprofile sind mit realen Geräten aus diesem Projekt geteste
 - Rohde & Schwarz ZNB: Screenshot und S-Parameter-Export
 - Keysight/Agilent/HP E740 und HP/Agilent 4395A: Exportfunktionen aus dem VBA-Projekt
 - Agilent/HP/Keysight 34970A/34972A: Datenlogger-Messplan über serielle COM-Verbindung, getestet mit `HEWLETT-PACKARD,34970A,0,13-2-2`
+- Konica Minolta CA-410: Messwert über virtuellen COM-Port getestet
 
 Die folgenden Geräteprofile sind als best-effort implementiert, aber noch nicht mit den konkreten Laborgeräten getestet. Die SCPI-Befehle wurden gegen öffentlich verfügbare Programmierhandbücher bzw. Hersteller-Manual-Seiten gegengeprüft, soweit zugänglich. Sie erscheinen nach `IDN testen` mit Gerätetyp und aktivierten Funktionen; Rückmeldungen aus Tests sollten im Log `logs/instrument_visa.log` geprüft werden:
 
@@ -189,7 +230,7 @@ Die folgenden Geräteprofile sind als best-effort implementiert, aber noch nicht
 - Agilent E4402B ESA: Screenshot WMF und Trace CSV best-effort über ESA/E740-ähnliche SCPI-/Mass-Memory-Befehle (`:MMEM:STOR:SCR`, `:MMEM:STOR:TRAC TRACE1,"R:INTUI.CSV"`, `:MMEM:DATA?`).
 - Keithley 2000: DMM-Messwert und getimtes DMM-Messen über `:READ?`, laut Keithley-Manual als `:ABORt`, `:INITiate`, `:FETCh?`-Sequenz beschrieben
 - Tektronix TDS400, darunter TDS420A: Scope-Messwert, Screenshot und Waveform-Export mit TDS-Family-Programmer-SCPI (`MEASUrement:IMMed...`, `DATa:SOUrce`, `DATa:ENCdg ASCii`, `CURVe?`, `HARDCopy START`). Screenshot nutzt TIFF, da PNG im TDS400A-Manual nicht als sicher unterstütztes Hardcopy-Format aufgeführt ist.
-- Tektronix TDS3000/MDO/MSO/DPO: Scope-Messwert und Waveform zusätzlich zu Screenshot best-effort aktiviert
+- Tektronix TDS3000/MDO/MSO/DPO: Scope-Messwert und Screenshot best-effort aktiviert; Waveform-Export ist aktuell nur für TDS400 aktiviert
 - Rohde & Schwarz / Hameg HMS-X: Screenshot und Trace-Export mit HMS-X-SCPI-Programmer-Manual gegengeprüft (`HCOPy:FORMat BMP`, `HCOPy:DATA?`, `TRACe:DATA:FORMat CSV`, `TRACe:DATA?`). Screenshot nutzt BMP, da das Manual nur BMP für `HCOPy:FORMat` aufführt.
 - Rohde & Schwarz / Hameg HMP4030/HMP4040/HMP2000: Netzgerät-Basisbedienung mit Kanalwahl, Spannung, Stromlimit, Ausgangsschaltung und Messwertabfrage über HMP-SCPI (`INST:NSEL`, `VOLT`, `CURR`, `MEAS:VOLT?`, `MEAS:CURR?`, `OUTP:SEL`, `OUTP:GEN`).
 - Rohde & Schwarz SME/SMT/SMIQ: IDN-/Profil-Erkennung als Signalgeneratoren sowie Basisbedienung für Frequenz, Pegel und RF-Ausgang über `:SOUR:FREQ:CW`, `:SOUR:POW` und `:OUTP`. Die Langformen sind laut Manuals `[:SOURce]:FREQuency[:CW|:FIXed]`, `[:SOURce]:POWer[:LEVel][:IMMediate][:AMPLitude]` und `:OUTPut[:STATe]`.
@@ -200,6 +241,8 @@ Die folgenden Geräteprofile sind als best-effort implementiert, aber noch nicht
 PicoScope 2206BMSO und PicoScope 2406B können im freien Ablauf über `PICO2000A::AUTO` oder `PICO2000A::SERIAL::<seriennummer>` angesprochen werden. Dafür muss auf dem Ziel-PC das PicoSDK 64-bit mit ps2000a-Treiber installiert sein; ohne PicoSDK bleibt das Programm startfähig, PicoScope-Schritte melden dann eine klare Fehlermeldung. Unterstützt sind zunächst analoge Block-Aufnahmen über `PicoScope: Analog erfassen` mit Bereich, Sample-Anzahl und Intervall in Mikrosekunden. Beim 2206BMSO sind typischerweise `A,B` analog und zusätzlich digitale MSO-Kanäle `D0-D15` nutzbar; beim 2406B sind typischerweise `A,B,C,D` analog nutzbar, aber keine MSO-Digitalkanäle. Digitale Aufnahmen laufen über `PicoScope: Digital erfassen` mit Kanälen, Logikpegel, Samples und Intervall. Die Ergebnisse werden als CSV/Excel-Waveform exportiert.
 
 Agilent/HP/Keysight 34970A/34972A Datenlogger können im freien Ablauf über `Agilent 34970A: Kanäle messen` genutzt werden. Für USB-Seriell-Adapter kann direkt ein Windows-COM-Port wie `COM5` als Geräteadresse eingetragen werden; alternativ funktioniert eine VISA-ASRL-Adresse wie `ASRL5::INSTR`. Unterstützt sind Kanäle `1-22` sowie Messarten `VOLT_DC`, `RES`, `FRES`, `CURR_DC` und `TEMP`. Die Kanalangabe kann einzelne Kanäle und Bereiche enthalten, z. B. `1-4,7,10-12`; intern werden daraus die SCPI-Kanäle `101` bis `122`, die pro Messart in einem gemeinsamen SCPI-Query abgefragt werden. Der Schritt bietet Messart, Kanäle, Baudrate und serielles Format. Wenn pro Kanal oder Kanalgruppe unterschiedliche Messarten nötig sind, kann `Agilent 34970A: Messplan` verwendet werden, z. B. `1-4:VOLT_DC; 5-8:TEMP; 9-12:RES; 13-14:CURR_DC`. Thermoelemente verwenden zunächst Typ `K`. Für `VOLT_DC` werden bei `AUTO`/`DEF` die getesteten Parameter Bereich `10` und Auflösung `0.003` verwendet; andere Messarten senden ohne explizite Bereichs-/Auflösungsparameter die Geräte-Defaults. Die Ergebnisse werden als CSV/Excel-Tabelle mit Kanal, Messart, Wert und Einheit exportiert. Die Implementierung basiert auf der 34970A/34972A Command Reference und wurde mit einem 34970A getestet.
+
+Konica Minolta CA-410 Display Color Analyzer können über einen virtuellen COM-Port oder eine VISA-ASRL-Adresse genutzt werden. In der GUI den COM-Port auswählen und `Als CA-410` drücken; danach erscheint der Bereich `Konica Minolta CA-410`. Unterstützt ist das Lesen einzelner Messwerte mit den offiziellen CA-410-Kommandos `COM,1`, `OPR,<probe>`, `FSC,<speed>`, `MMS,<method>`, `FMS,<method>`, `MCH,<probe>,<channel>`, `MDS,<mode>` und `MES,2`. Standardparameter sind `38400`, `7E2`, RTS/CTS und CR-Abschluss. Einstellbar sind Probe, Kalibrierkanal `0..99`, Messmethode `Color+Flicker`, `Color` oder `Flicker`, Flicker-Methode `FMA` oder `JEITA`, Messgeschwindigkeit `SLOW`, `FAST`, `LTD.AUTO` oder `AUTO` sowie die Farbmodi `xyLv`, `TcpduvLv`, `uvLv`, `XYZ` und `AdPeLv`. Zusätzlich werden, sofern vom Gerät geliefert, `X`, `Y`, `Z`, Temperaturdrift und FMA-Flicker-Prozentwert exportiert. Ergebnisse werden in das gemeinsame Excel-Blatt `CA-410 Measurements` geschrieben. Für USB-Verbindung benötigt Windows den Konica-Minolta-USB-Treiber für den virtuellen COM-Port; bei echter RS-232-Verbindung ist ggf. nur der USB-RS232-Adaptertreiber nötig. Die offizielle Communication-Specification-PDF liegt lokal unter `Manuals/CA-410_Communication_Specifications_V1.08.pdf`.
 
 Saleae Logic Analyzer können im freien Ablauf über `SALEAE::LOCAL` als Geräteadresse vorbereitet werden. Dafür muss Saleae Logic 2 installiert sein und die Automation-Schnittstelle aktiviert sein, entweder in der Logic-2-Oberfläche oder per Start mit `Logic.exe --automation`; der Standardport ist `10430`. Für Python-Installationen wird zusätzlich das Extra `saleae` bzw. das Paket `logic2-automation` benötigt. EXE-Releases enthalten dieses Paket, sofern sie mit dem normalen Build-Skript ohne `-SkipInstall` gebaut wurden. Unterstützt sind `Saleae: Digital aufnehmen` mit Kanälen wie `D0-D7`, Dauer, Sample-Rate und Schwellwert sowie Analyzer-Schritte für `Saleae: UART dekodieren`, `Saleae: I2C dekodieren`, `Saleae: SPI dekodieren` und `Saleae: CAN dekodieren`. Die Saleae-Aufnahme wird als `.sal` gespeichert, Rohdaten bzw. Analyzer-Exporte werden als CSV in einem `saleae_output`-Ordner abgelegt und im Ablauf-Ergebnis referenziert. Die Saleae-Automation-Dokumentation ist extern bei Saleae verfügbar; lokal abgelegte Manual-Kopien unter `Manuals\...` sind optional und werden nicht versioniert oder in Releases mitverteilt. Die Integration ist mit Hardware noch zu testen.
 
@@ -551,6 +594,15 @@ Statuswerte:
     Status:            getestet
     Notizen:           34970A mit seriellen Defaults 19200 8N1 getestet; USB-Seriell-Adapter benötigt passenden Windows-COM-Treiber
 
+#### Konica Minolta CA-410
+
+    Profil-Key:        konica_minolta_ca410
+    IDN-Erkennung:     keine SCPI-IDN erwartet; manuell über `Als CA-410` auf COM/ASRL-Adresse setzen
+    Funktionen:        Messwert über virtuellen COM-Port, Probe, Kalibrierkanal, Messmethode, Flicker-Methode, Messgeschwindigkeit, Farbmodus
+    Nicht unterstützt: automatische IDN-Erkennung, Zero-Calibration-Auslösung, JEITA-Spektrum-Export, Trigger-Standby
+    Status:            getestet
+    Notizen:           CA-410-Messung mit realem Gerät erfolgreich getestet; Standardkommunikation 38400 7E2, RTS/CTS, CR-Abschluss
+
 ### Aus VBA Übernommen
 
 #### Keysight/Agilent E5071C
@@ -676,19 +728,19 @@ Statuswerte:
 
     Profil-Key:        tektronix_tds30
     IDN-Erkennung:     TEKTRONIX und TDS30
-    Funktionen:        Scope-Messwert ja, getimtes Scope-Messen ja, Screenshot PNG, Waveform ja
-    Nicht unterstützt: DMM/Messwert, S-Parameter
+    Funktionen:        Scope-Messwert ja, getimtes Scope-Messen ja, Screenshot PNG
+    Nicht unterstützt: DMM/Messwert, Waveform, S-Parameter
     Status:            commands from manual, untested
-    Notizen:           Best-effort aktiviert; konkretes Laborgerät noch offen
+    Notizen:           Best-effort aktiviert; Waveform erst nach Gerätetest/SCPI-Abgleich aktivieren
 
 #### Tektronix MDO/MSO/DPO
 
     Profil-Key:        tektronix_mdo
     IDN-Erkennung:     TEKTRONIX und MSO4/MDO4/MDO3/DPO4
-    Funktionen:        Scope-Messwert ja, getimtes Scope-Messen ja, Screenshot PNG, Waveform ja
-    Nicht unterstützt: DMM/Messwert, S-Parameter
+    Funktionen:        Scope-Messwert ja, getimtes Scope-Messen ja, Screenshot PNG
+    Nicht unterstützt: DMM/Messwert, Waveform, S-Parameter
     Status:            commands from manual, untested
-    Notizen:           Best-effort aktiviert; konkretes Laborgerät noch offen
+    Notizen:           Best-effort aktiviert; Waveform erst nach Gerätetest/SCPI-Abgleich aktivieren
 
 #### Rohde & Schwarz / Hameg HMS-X Spectrum Analyzer
 

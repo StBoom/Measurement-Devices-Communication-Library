@@ -71,6 +71,29 @@ function New-ReleaseZip {
     return $zipPath
 }
 
+function Copy-DependencyCategory {
+    param(
+        [string]$SourceDirectory,
+        [string]$DestinationDirectory,
+        [string]$CategoryName,
+        [string[]]$Patterns
+    )
+
+    $categoryDirectory = Join-Path $DestinationDirectory $CategoryName
+    $copied = @()
+    foreach ($pattern in $Patterns) {
+        Get-ChildItem -LiteralPath $SourceDirectory -File -Filter $pattern | ForEach-Object {
+            if (-not (Test-Path -LiteralPath $categoryDirectory)) {
+                New-Item -ItemType Directory -Path $categoryDirectory | Out-Null
+            }
+            Copy-Item -LiteralPath $_.FullName -Destination $categoryDirectory -Force
+            $copied += $_.FullName
+        }
+    }
+
+    return $copied
+}
+
 $exeRelease = New-UniqueDirectory -BasePath $exeReleaseBase
 $pythonRelease = New-UniqueDirectory -BasePath $pythonReleaseBase
 $dependenciesRelease = $null
@@ -109,7 +132,42 @@ Get-ChildItem -LiteralPath $pythonRelease -Recurse -File | Where-Object { $_.Ext
 
 if (Test-Path -LiteralPath $dependenciesDir) {
     $dependenciesRelease = New-UniqueDirectory -BasePath $dependenciesReleaseBase
-    Get-ChildItem -LiteralPath $dependenciesDir | Copy-Item -Destination $dependenciesRelease -Recurse -Force
+    $copiedDependencies = @()
+
+    foreach ($file in @("README.md", "INSTALLATION_KOLLEGEN.md")) {
+        $source = Join-Path $dependenciesDir $file
+        if (Test-Path -LiteralPath $source) {
+            Copy-Item -LiteralPath $source -Destination $dependenciesRelease -Force
+            $copiedDependencies += $source
+        }
+    }
+
+    $copiedDependencies += Copy-DependencyCategory -SourceDirectory $dependenciesDir -DestinationDirectory $dependenciesRelease -CategoryName "1_Immer_zuerst_VISA" -Patterns @("RS_VISA_Setup_Win_*.exe")
+    $copiedDependencies += Copy-DependencyCategory -SourceDirectory $dependenciesDir -DestinationDirectory $dependenciesRelease -CategoryName "2_Falls_Keysight_Agilent" -Patterns @("IOLibrariesSuite-*.exe")
+    $copiedDependencies += Copy-DependencyCategory -SourceDirectory $dependenciesDir -DestinationDirectory $dependenciesRelease -CategoryName "3_Falls_Hameg_RS_USB" -Patterns @("HO720-HO730-Interface-Driver-*.zip", "HO732-USB-Driver-*.zip")
+    $copiedDependencies += Copy-DependencyCategory -SourceDirectory $dependenciesDir -DestinationDirectory $dependenciesRelease -CategoryName "4_Falls_PicoScope" -Patterns @("PicoSDK_x64_*.exe")
+    $copiedDependencies += Copy-DependencyCategory -SourceDirectory $dependenciesDir -DestinationDirectory $dependenciesRelease -CategoryName "5_Falls_Saleae" -Patterns @("Logic-*-windows-x64.exe")
+    $copiedDependencies += Copy-DependencyCategory -SourceDirectory $dependenciesDir -DestinationDirectory $dependenciesRelease -CategoryName "6_Falls_USB_RS232_COM" -Patterns @("CDM*_Setup.zip")
+    $copiedDependencies += Copy-DependencyCategory -SourceDirectory $dependenciesDir -DestinationDirectory $dependenciesRelease -CategoryName "7_Falls_USB_GPIB" -Patterns @("*GPIB*")
+
+    $copiedDependencies += Copy-DependencyCategory -SourceDirectory $dependenciesDir -DestinationDirectory $dependenciesRelease -CategoryName "8_Falls_Konica_Minolta_CA410" -Patterns @("*CA-410*", "*CA410*", "KMMIUSB*", "*Konica*Minolta*")
+    $ca410Manual = Join-Path (Join-Path $projectRoot "Manuals") "CA-410_Communication_Specifications_V1.08.pdf"
+    if (Test-Path -LiteralPath $ca410Manual) {
+        $ca410Directory = Join-Path $dependenciesRelease "8_Falls_Konica_Minolta_CA410"
+        if (-not (Test-Path -LiteralPath $ca410Directory)) {
+            New-Item -ItemType Directory -Path $ca410Directory | Out-Null
+        }
+        Copy-Item -LiteralPath $ca410Manual -Destination $ca410Directory -Force
+    }
+
+    $knownDependencyPaths = @($copiedDependencies | ForEach-Object { [string]$_ })
+    $miscellaneousDirectory = Join-Path $dependenciesRelease "9_Sonstiges"
+    Get-ChildItem -LiteralPath $dependenciesDir | Where-Object { $knownDependencyPaths -notcontains $_.FullName } | ForEach-Object {
+        if (-not (Test-Path -LiteralPath $miscellaneousDirectory)) {
+            New-Item -ItemType Directory -Path $miscellaneousDirectory | Out-Null
+        }
+        Copy-Item -LiteralPath $_.FullName -Destination $miscellaneousDirectory -Recurse -Force
+    }
 }
 
 $exeReleaseZip = New-ReleaseZip -DirectoryPath $exeRelease

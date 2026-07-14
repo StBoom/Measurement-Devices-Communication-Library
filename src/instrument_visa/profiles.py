@@ -86,7 +86,6 @@ def detect_profile(idn: str) -> DeviceProfile:
             device_type="Oszilloskop",
             key="tektronix_mdo",
             supports_scope_measurements=True,
-            supports_waveform=True,
             supports_screenshot=True,
         )
 
@@ -108,7 +107,6 @@ def detect_profile(idn: str) -> DeviceProfile:
             device_type="Oszilloskop",
             key="tektronix_tds30",
             supports_scope_measurements=True,
-            supports_waveform=True,
             supports_screenshot=True,
         )
 
@@ -162,6 +160,14 @@ def detect_profile(idn: str) -> DeviceProfile:
             model_family="Logic 2 Automation",
             device_type="Saleae",
             key="saleae_logic2",
+        )
+
+    if ("KONICAMINOLTA" in compact or "KONICA" in compact) and "CA410" in compact:
+        return DeviceProfile(
+            manufacturer="Konica Minolta",
+            model_family="CA-410",
+            device_type="Farbmessgerät",
+            key="konica_minolta_ca410",
         )
 
     if "344" in compact or "L44" in compact:

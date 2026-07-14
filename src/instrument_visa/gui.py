@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import csv
+import importlib.util
 import json
 import os
 import queue
+import socket
 import threading
 import tkinter as tk
 from dataclasses import asdict
@@ -32,10 +34,15 @@ from .config import SParameterConfig
 from .excel_export import append_result
 from .logging_utils import setup_logging
 from .profiles import UNKNOWN_PROFILE, DeviceProfile, detect_profile, hmp_channel_count
-from .picoscope_client import list_picoscope_resources
+from .picoscope_client import _load_ps2000a, list_picoscope_resources
 from .saleae_client import list_saleae_resources
 from .sequence import (
     CustomSequenceConfig,
+    CA410Config,
+    CA410_COLOR_MODES,
+    CA410_FLICKER_METHODS,
+    CA410_MEASUREMENT_METHODS,
+    CA410_MEASUREMENT_SPEEDS,
     DataLogger34970AConfig,
     FrequencySweepConfig,
     SequenceStep,
@@ -52,6 +59,7 @@ from .sequence import (
     probe_direct_serial_idn,
     read_34970a_data_logger,
     read_34970a_measurement_plan,
+    read_ca410_measurement,
     parse_34970a_measurement_plan,
     run_frequency_sweep,
     run_custom_sequence,
@@ -60,7 +68,7 @@ from .sequence import (
     set_preferred_serial_scpi_settings,
     voltage_points,
 )
-from .visa_client import VisaInstrument, list_resources
+from .visa_client import InstrumentInfo, VisaInstrument, list_resources
 
 
 DEFAULT_ADDRESS = "USB0::0x0957::0x1796::MY58104189::0::INSTR"
@@ -72,28 +80,31 @@ POINT_MODE_VALUES = ("RAW", "NORMAL", "MAXIMUM")
 PICOSCOPE_RANGE_VALUES = ("100MV", "200MV", "500MV", "1V", "2V", "5V", "10V", "20V")
 DATA_LOGGER_34970A_MEASUREMENTS = ("VOLT_DC", "RES", "FRES", "CURR_DC", "TEMP")
 CUSTOM_SEQUENCE_ACTIONS = (
+    ("Allgemein: Warten", "wait", ("device", "seconds")),
+    ("Allgemein: Parallel-Messphase", "parallel_phase", ("device", "duration_s", "interval_s", "tasks")),
+    ("Gerät: Screenshot erfassen", "capture_screenshot", ("device",)),
+    ("Multimeter: Messwert lesen", "dmm_read", ("device",)),
+    ("Oszilloskop: Messwert lesen", "scope_measure", ("device", "measurement", "channel")),
+    ("Oszilloskop/Spektrum: Kurve erfassen", "capture_waveform", ("device", "channels", "point_mode")),
     ("Signalgenerator: Frequenz setzen", "generator_set_frequency", ("device", "frequency", "power", "max_power_dbm", "rf")),
     ("Signalgenerator: Pegel setzen", "generator_set_power", ("device", "power", "max_power_dbm", "rf", "rf_off_before_change")),
     ("Signalgenerator: RF ein/aus", "generator_rf", ("device", "enabled")),
     ("Netzgerät: Spannung/Strom setzen", "power_supply_set", ("device", "voltage", "current", "channel", "output")),
     ("Netzgerät: Kanal ein/aus", "power_supply_output", ("device", "enabled", "channel")),
     ("Netzgerät: Master ein/aus", "power_supply_master_output", ("device", "enabled", "channel")),
-    ("Multimeter: Messwert lesen", "dmm_read", ("device",)),
-    ("Oszilloskop: Messwert lesen", "scope_measure", ("device", "measurement", "channel")),
-    ("Oszilloskop/Spektrum: Kurve erfassen", "capture_waveform", ("device", "channels", "point_mode")),
-    ("Screenshot erfassen", "capture_screenshot", ("device",)),
-    ("Seriellen Log aufzeichnen", "serial_log", ("device", "duration_s", "baudrate", "serial_format")),
-    ("Parallel-Messphase", "parallel_phase", ("device", "duration_s", "interval_s", "tasks")),
+    ("Seriell: Log aufzeichnen", "serial_log", ("device", "duration_s", "baudrate", "serial_format")),
+    ("Seriell: Kommando senden", "serial_command", ("device", "command", "baudrate", "serial_format", "response_duration_s")),
+    ("SSH: Kommando ausführen", "ssh_command", ("device", "command", "username", "password", "timeout_s")),
     ("PicoScope: Analog erfassen", "picoscope_analog", ("device", "channels", "range", "samples", "interval_us")),
     ("PicoScope: Digital erfassen", "picoscope_digital", ("device", "channels", "logic_level_mv", "samples", "interval_us")),
     ("Agilent 34970A: Kanäle messen", "data_logger_34970a_read", ("device", "measurement", "channels", "baudrate", "serial_format")),
     ("Agilent 34970A: Messplan", "data_logger_34970a_plan", ("device", "plan", "baudrate", "serial_format")),
+    ("Konica Minolta CA-410: Messwert", "ca410_read", ("device", "color_mode", "probe", "calibration_channel", "measurement_method")),
     ("Saleae: Digital aufnehmen", "saleae_capture", ("device", "channels", "duration_s", "sample_rate", "threshold_v")),
     ("Saleae: UART dekodieren", "saleae_uart", ("device", "channel", "baudrate", "duration_s", "sample_rate")),
     ("Saleae: I2C dekodieren", "saleae_i2c", ("device", "sda", "scl", "duration_s", "sample_rate")),
     ("Saleae: SPI dekodieren", "saleae_spi", ("device", "mosi", "miso", "clock", "duration_s")),
     ("Saleae: CAN dekodieren", "saleae_can", ("device", "channel", "bitrate", "duration_s", "sample_rate")),
-    ("Warten", "wait", ("device", "seconds")),
 )
 CUSTOM_SEQUENCE_FILE_VERSION = 1
 CUSTOM_SEQUENCE_EXAMPLES = (
@@ -106,8 +117,17 @@ CUSTOM_SEQUENCE_EXAMPLES = (
     ("Netzgerät + Multimeter", "supply_dmm"),
     ("Netzgerät + Oszilloskop", "supply_scope"),
     ("Netzgerät schalten", "supply_switch"),
+    ("Screenshot speichern", "screenshot"),
+    ("Kurve/Trace speichern", "waveform"),
+    ("Parallel-Messphase", "parallel_phase"),
+    ("Seriell: Kommando + Log", "serial_command_log"),
+    ("SSH: Kommando", "ssh_command"),
+    ("PicoScope analog", "picoscope_analog"),
+    ("Saleae UART", "saleae_uart"),
+    ("34970A Messplan", "data_logger_34970a_plan"),
+    ("CA-410 Messwert", "ca410_read"),
 )
-SEQUENCE_DEVICE_ROLES = ("Multimeter", "Netzgerät", "Oszilloskop", "Signalgenerator", "Spektrumanalysator", "Netzwerkanalysator", "Seriell", "PicoScope", "Saleae", "Datenlogger", "Gerät")
+SEQUENCE_DEVICE_ROLES = ("Multimeter", "Netzgerät", "Oszilloskop", "Signalgenerator", "Spektrumanalysator", "Netzwerkanalysator", "Seriell", "SSH", "PicoScope", "Saleae", "Datenlogger", "Farbmessgerät", "Gerät")
 SERIAL_FORMAT_VALUES = ("8N1", "7E1", "7O1", "8E1", "8O1", "8N2")
 
 
@@ -146,6 +166,16 @@ class InstrumentVisaApp(tk.Tk):
         self.data_logger_34970a_serial_format_var = tk.StringVar(value=self.settings.get("data_logger_34970a_serial_format", "8N1"))
         self.data_logger_34970a_interval_var = tk.StringVar(value=str(self.settings.get("data_logger_34970a_interval", "5")))
         self.data_logger_34970a_count_var = tk.StringVar(value=str(self.settings.get("data_logger_34970a_count", "0")))
+        self.ca410_color_mode_var = tk.StringVar(value=self.settings.get("ca410_color_mode", "xyLv"))
+        self.ca410_probe_var = tk.StringVar(value=str(self.settings.get("ca410_probe", "1")))
+        self.ca410_calibration_channel_var = tk.StringVar(value=str(self.settings.get("ca410_calibration_channel", "0")))
+        self.ca410_measurement_method_var = tk.StringVar(value=self.settings.get("ca410_measurement_method", "Color+Flicker"))
+        self.ca410_flicker_method_var = tk.StringVar(value=self.settings.get("ca410_flicker_method", "FMA"))
+        self.ca410_measurement_speed_var = tk.StringVar(value=self.settings.get("ca410_measurement_speed", "FAST"))
+        self.ca410_baudrate_var = tk.StringVar(value=str(self.settings.get("ca410_baudrate", "38400")))
+        self.ca410_serial_format_var = tk.StringVar(value=self.settings.get("ca410_serial_format", "7E2"))
+        self.ca410_interval_var = tk.StringVar(value=str(self.settings.get("ca410_interval", "1")))
+        self.ca410_count_var = tk.StringVar(value=str(self.settings.get("ca410_count", "1")))
         self.generator_frequency_var = tk.StringVar(value=self.settings.get("generator_frequency", "100 MHz"))
         self.generator_power_var = tk.StringVar(value=self.settings.get("generator_power", "-30 dBm"))
         self.generator_rf_var = tk.StringVar(value=self.settings.get("generator_rf", "OFF"))
@@ -215,9 +245,12 @@ class InstrumentVisaApp(tk.Tk):
         self._vna_widgets: list[tk.Widget] = []
         self._data_logger_widgets: list[tk.Widget] = []
         self._data_logger_stop_widgets: list[tk.Widget] = []
+        self._ca410_widgets: list[tk.Widget] = []
+        self._ca410_stop_widgets: list[tk.Widget] = []
         self._spectrum_widgets: list[tk.Widget] = []
         self._spectrum_screenshot_widgets: list[tk.Widget] = []
-        self._screenshot_widgets: list[tk.Widget] = []
+        self._scope_screenshot_widgets: list[tk.Widget] = []
+        self._vna_screenshot_widgets: list[tk.Widget] = []
         self._timed_widgets: list[tk.Widget] = []
         self._timed_dmm_widgets: list[tk.Widget] = []
         self._timed_scope_widgets: list[tk.Widget] = []
@@ -294,7 +327,7 @@ class InstrumentVisaApp(tk.Tk):
         log_frame = ttk.LabelFrame(log_pane, text="Protokoll")
         self._log_frame = log_frame
         log_frame.columnconfigure(0, weight=1)
-        log_frame.rowconfigure(0, weight=1)
+        log_frame.rowconfigure(1, weight=1)
         connection = ttk.LabelFrame(controls_frame, text="Verbindung")
         connection.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
         connection.columnconfigure(1, weight=1)
@@ -307,14 +340,18 @@ class InstrumentVisaApp(tk.Tk):
         search_button.grid(row=0, column=2, padx=8, pady=8)
         idn_button = ttk.Button(connection, text="IDN testen", command=self.test_idn)
         idn_button.grid(row=0, column=3, padx=8, pady=8)
+        setup_check_button = ttk.Button(connection, text="Setup prüfen", command=self.check_setup)
+        setup_check_button.grid(row=0, column=4, padx=8, pady=8)
         ttk.Label(connection, text="VISA-Adresse").grid(row=1, column=0, sticky="w", padx=8, pady=(0, 8))
         address_entry = ttk.Entry(connection, textvariable=self.address_var)
         address_entry.grid(row=1, column=1, sticky="ew", padx=8, pady=(0, 8))
         address_entry.bind("<FocusOut>", self.apply_saved_profile)
         address_entry.bind("<Return>", self.apply_saved_profile)
+        ca410_profile_button = ttk.Button(connection, text="Als CA-410", command=self.use_current_address_as_ca410)
+        ca410_profile_button.grid(row=1, column=2, padx=8, pady=(0, 8))
         ttk.Label(connection, text="Gerätetyp").grid(row=2, column=0, sticky="w", padx=8, pady=(0, 8))
         ttk.Label(connection, textvariable=self.device_type_var).grid(row=2, column=1, sticky="w", padx=8, pady=(0, 8))
-        ttk.Label(connection, textvariable=self.profile_var).grid(row=2, column=2, columnspan=2, sticky="w", padx=8, pady=(0, 8))
+        ttk.Label(connection, textvariable=self.profile_var).grid(row=2, column=2, columnspan=3, sticky="w", padx=8, pady=(0, 8))
 
         export = ttk.LabelFrame(controls_frame, text="Export")
         export.grid(row=1, column=0, sticky="ew", padx=12, pady=6)
@@ -377,6 +414,11 @@ class InstrumentVisaApp(tk.Tk):
         )
         point_mode_combo.pack(side="left", padx=(0, 8))
 
+        scope_documentation = ttk.Frame(scope)
+        scope_documentation.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 8))
+        scope_screenshot_button = ttk.Button(scope_documentation, text="Screenshot erfassen", command=self.capture_screenshot)
+        scope_screenshot_button.pack(side="left", padx=(0, 8))
+
         dmm = ttk.LabelFrame(measurement_area, text="Multimeter")
         dmm.grid(row=1, column=0, sticky="ew", pady=(12, 0))
         dmm_value_button = ttk.Button(dmm, text="DMM Messwert", command=self.read_value)
@@ -409,6 +451,8 @@ class InstrumentVisaApp(tk.Tk):
         sparameter_controls.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
         sparameter_button = ttk.Button(sparameter_controls, text="S-Parameter exportieren", command=self.capture_sparameters)
         sparameter_button.pack(side="left", padx=(0, 8))
+        vna_screenshot_button = ttk.Button(sparameter_controls, text="Screenshot erfassen", command=self.capture_screenshot)
+        vna_screenshot_button.pack(side="left", padx=(0, 12))
         ttk.Label(sparameter_controls, text="Format").pack(side="left", padx=(0, 4))
         sparameter_format_combo = ttk.Combobox(
             sparameter_controls,
@@ -465,8 +509,55 @@ class InstrumentVisaApp(tk.Tk):
         data_logger_stop_button.pack(side="left", padx=(8, 0))
         ttk.Label(data_logger, text="Vorher einmal IDN testen, damit die funktionierenden COM-Settings gecacht werden.").grid(row=3, column=0, sticky="w", padx=8, pady=(0, 8))
 
+        ca410 = ttk.LabelFrame(measurement_area, text="Konica Minolta CA-410")
+        ca410.grid(row=5, column=0, sticky="ew", pady=(12, 0))
+        ca410.columnconfigure(0, weight=1)
+        ca410_controls = ttk.Frame(ca410)
+        ca410_controls.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
+        ca410_read_button = ttk.Button(ca410_controls, text="CA-410 messen", command=self.read_ca410)
+        ca410_read_button.pack(side="left", padx=(0, 8))
+        ttk.Label(ca410_controls, text="Modus").pack(side="left", padx=(0, 4))
+        ca410_mode_combo = ttk.Combobox(ca410_controls, textvariable=self.ca410_color_mode_var, values=CA410_COLOR_MODES, width=10, state="readonly")
+        ca410_mode_combo.pack(side="left", padx=(0, 8))
+        ttk.Label(ca410_controls, text="Probe").pack(side="left", padx=(0, 4))
+        ca410_probe_entry = ttk.Entry(ca410_controls, textvariable=self.ca410_probe_var, width=6)
+        ca410_probe_entry.pack(side="left", padx=(0, 8))
+        ttk.Label(ca410_controls, text="Kal.-Kanal").pack(side="left", padx=(0, 4))
+        ca410_calibration_entry = ttk.Entry(ca410_controls, textvariable=self.ca410_calibration_channel_var, width=6)
+        ca410_calibration_entry.pack(side="left", padx=(0, 8))
+        ttk.Label(ca410_controls, text="Messmethode").pack(side="left", padx=(0, 4))
+        ca410_method_combo = ttk.Combobox(ca410_controls, textvariable=self.ca410_measurement_method_var, values=CA410_MEASUREMENT_METHODS, width=13, state="readonly")
+        ca410_method_combo.pack(side="left", padx=(0, 8))
+
+        ca410_settings = ttk.Frame(ca410)
+        ca410_settings.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
+        ttk.Label(ca410_settings, text="Flicker").pack(side="left", padx=(0, 4))
+        ca410_flicker_combo = ttk.Combobox(ca410_settings, textvariable=self.ca410_flicker_method_var, values=CA410_FLICKER_METHODS, width=8, state="readonly")
+        ca410_flicker_combo.pack(side="left", padx=(0, 8))
+        ttk.Label(ca410_settings, text="Speed").pack(side="left", padx=(0, 4))
+        ca410_speed_combo = ttk.Combobox(ca410_settings, textvariable=self.ca410_measurement_speed_var, values=CA410_MEASUREMENT_SPEEDS, width=9, state="readonly")
+        ca410_speed_combo.pack(side="left", padx=(0, 8))
+        ttk.Label(ca410_controls, text="Baud").pack(side="left", padx=(0, 4))
+        ca410_baudrate_entry = ttk.Entry(ca410_controls, textvariable=self.ca410_baudrate_var, width=7)
+        ca410_baudrate_entry.pack(side="left", padx=(0, 8))
+        ttk.Label(ca410_controls, text="Format").pack(side="left", padx=(0, 4))
+        ca410_serial_format_combo = ttk.Combobox(ca410_controls, textvariable=self.ca410_serial_format_var, values=SERIAL_FORMAT_VALUES, width=6, state="readonly")
+        ca410_serial_format_combo.pack(side="left", padx=(0, 8))
+
+        ca410_timing = ttk.Frame(ca410)
+        ca410_timing.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
+        ttk.Label(ca410_timing, text="Intervall [s]").pack(side="left", padx=(0, 4))
+        ca410_interval_entry = ttk.Entry(ca410_timing, textvariable=self.ca410_interval_var, width=8)
+        ca410_interval_entry.pack(side="left", padx=(0, 8))
+        ttk.Label(ca410_timing, text="Anzahl (0=endlos)").pack(side="left", padx=(0, 4))
+        ca410_count_entry = ttk.Entry(ca410_timing, textvariable=self.ca410_count_var, width=8)
+        ca410_count_entry.pack(side="left", padx=(0, 8))
+        ca410_stop_button = ttk.Button(ca410_timing, text="Stop", command=self.stop_current_operation)
+        ca410_stop_button.pack(side="left", padx=(8, 0))
+        ttk.Label(ca410, text="USB/RS-232: virtueller COM-Port, Standard 38400 7E2 mit RTS/CTS; am Gerät ggf. Remote/COM zulassen.").grid(row=3, column=0, sticky="w", padx=8, pady=(0, 8))
+
         spectrum = ttk.LabelFrame(measurement_area, text="Spektrumanalysator")
-        spectrum.grid(row=5, column=0, sticky="ew", pady=(12, 0))
+        spectrum.grid(row=6, column=0, sticky="ew", pady=(12, 0))
         spectrum_controls = ttk.Frame(spectrum)
         spectrum_controls.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
         spectrum_trace_button = ttk.Button(spectrum_controls, text="Trace exportieren", command=self.capture_spectrum_trace)
@@ -475,7 +566,7 @@ class InstrumentVisaApp(tk.Tk):
         spectrum_screenshot_button.pack(side="left", padx=(0, 8))
 
         generator = ttk.LabelFrame(measurement_area, text="Signalgenerator")
-        generator.grid(row=6, column=0, sticky="ew", pady=(12, 0))
+        generator.grid(row=7, column=0, sticky="ew", pady=(12, 0))
         generator.columnconfigure(0, weight=1)
 
         generator_controls = ttk.Frame(generator)
@@ -507,7 +598,7 @@ class InstrumentVisaApp(tk.Tk):
         generator_rf_off_check.grid(row=1, column=2, columnspan=4, sticky="w")
 
         power_supply = ttk.LabelFrame(measurement_area, text="Netzgerät")
-        power_supply.grid(row=7, column=0, sticky="ew", pady=(12, 0))
+        power_supply.grid(row=8, column=0, sticky="ew", pady=(12, 0))
         power_supply.columnconfigure(0, weight=1)
         power_supply_controls = ttk.Frame(power_supply)
         power_supply_controls.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
@@ -541,11 +632,6 @@ class InstrumentVisaApp(tk.Tk):
         ttk.Label(power_supply_settings, text="Max. A").grid(row=1, column=2, sticky="w", padx=(0, 4))
         power_supply_max_current_entry = ttk.Entry(power_supply_settings, textvariable=self.power_supply_max_current_var, width=7)
         power_supply_max_current_entry.grid(row=1, column=3, sticky="w", padx=(0, 12))
-
-        common = ttk.LabelFrame(controls_frame, text="Allgemein")
-        common.grid(row=3, column=0, sticky="ew", padx=12, pady=6)
-        screenshot_button = ttk.Button(common, text="Screenshot", command=self.capture_screenshot)
-        screenshot_button.pack(side="left", padx=8, pady=8)
 
         sequence = ttk.LabelFrame(controls_frame, text="Automatischer Ablauf")
         sequence.grid(row=4, column=0, sticky="ew", padx=12, pady=6)
@@ -595,14 +681,17 @@ class InstrumentVisaApp(tk.Tk):
         switch_stop_button.grid(row=3, column=5, sticky="ew", padx=8, pady=(4, 8))
 
         self._scope_widgets = [scope_value_button, measurement_combo, channel_spinbox, waveform_button, *waveform_checkbuttons, all_button, none_button, point_mode_combo]
-        self._connection_widgets = [self.resource_combo, search_button, idn_button, address_entry]
+        self._scope_screenshot_widgets = [scope_screenshot_button]
+        self._connection_widgets = [self.resource_combo, search_button, idn_button, setup_check_button, address_entry, ca410_profile_button]
         self._dmm_widgets = [dmm_value_button]
         self._vna_widgets = [sparameter_button, sparameter_format_combo, *sparameter_checkbuttons]
+        self._vna_screenshot_widgets = [vna_screenshot_button]
         self._data_logger_widgets = [data_logger_read_button, data_logger_measurement_combo, data_logger_channels_entry, data_logger_baudrate_entry, data_logger_serial_format_combo, data_logger_plan_button, data_logger_plan_entry, data_logger_interval_entry, data_logger_count_entry]
         self._data_logger_stop_widgets = [data_logger_stop_button]
+        self._ca410_widgets = [ca410_read_button, ca410_mode_combo, ca410_probe_entry, ca410_calibration_entry, ca410_method_combo, ca410_flicker_combo, ca410_speed_combo, ca410_baudrate_entry, ca410_serial_format_combo, ca410_interval_entry, ca410_count_entry]
+        self._ca410_stop_widgets = [ca410_stop_button]
         self._spectrum_widgets = [spectrum_trace_button]
         self._spectrum_screenshot_widgets = [spectrum_screenshot_button]
-        self._screenshot_widgets = [screenshot_button]
         self._timed_widgets = [timed_dmm_button, timed_scope_button, timed_interval_entry, timed_count_entry]
         self._timed_dmm_widgets = [timed_dmm_button]
         self._timed_scope_widgets = [timed_scope_button]
@@ -636,6 +725,7 @@ class InstrumentVisaApp(tk.Tk):
             "timed": timed,
             "vna": vna,
             "data_logger": data_logger,
+            "ca410": ca410,
             "spectrum": spectrum,
             "generator": generator,
             "power_supply": power_supply,
@@ -661,10 +751,14 @@ class InstrumentVisaApp(tk.Tk):
         self._refresh_resource_combo()
         self._apply_saved_profile_for_address()
 
+        log_actions = ttk.Frame(log_frame)
+        log_actions.grid(row=0, column=0, columnspan=2, sticky="ew", padx=8, pady=(8, 0))
+        ttk.Button(log_actions, text="Leeren", command=self.clear_log).pack(side="right")
+
         self.log = tk.Text(log_frame, width=44, wrap="word", state="disabled")
-        self.log.grid(row=0, column=0, sticky="nsew", padx=(8, 0), pady=8)
+        self.log.grid(row=1, column=0, sticky="nsew", padx=(8, 0), pady=8)
         scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.log.yview)
-        scrollbar.grid(row=0, column=1, sticky="ns", padx=(0, 8), pady=8)
+        scrollbar.grid(row=1, column=1, sticky="ns", padx=(0, 8), pady=8)
         self.log.configure(yscrollcommand=scrollbar.set)
 
         status = ttk.Label(self, textvariable=self.status_var, anchor="w")
@@ -691,6 +785,9 @@ class InstrumentVisaApp(tk.Tk):
     def test_idn(self) -> None:
         self._run_worker("IDN-Abfrage läuft...", self._test_idn)
 
+    def check_setup(self) -> None:
+        self._run_worker("Setup wird geprüft...", self._check_setup)
+
     def read_value(self) -> None:
         self._run_worker("DMM-Messwert wird gelesen...", self._read_value)
 
@@ -699,6 +796,22 @@ class InstrumentVisaApp(tk.Tk):
 
     def read_data_logger_34970a_plan(self) -> None:
         self._run_worker("34970A-Messplan wird gemessen...", self._read_data_logger_34970a_plan)
+
+    def read_ca410(self) -> None:
+        self._run_worker("CA-410-Messung läuft...", self._read_ca410)
+
+    def use_current_address_as_ca410(self) -> None:
+        address = self.address_var.get().strip()
+        if not address:
+            messagebox.showerror("CA-410", "Bitte zuerst einen COM-Port oder eine ASRL-Adresse eintragen oder auswählen.")
+            return
+        if self._serial_port_for_address(address) is None:
+            messagebox.showerror("CA-410", "CA-410 wird aktuell über COM-Port oder ASRL...::INSTR unterstützt.")
+            return
+        profile = self._ca410_profile()
+        self._remember_device(address, "Konica Minolta CA-410", profile)
+        self._apply_profile(profile)
+        self.status_var.set("Adresse als Konica Minolta CA-410 gespeichert.")
 
     def stop_current_operation(self) -> None:
         self.operation_stop_event.set()
@@ -959,11 +1072,14 @@ class InstrumentVisaApp(tk.Tk):
             "capture_waveform": (self._default_sequence_device_name("Oszilloskop"), "1", self.point_mode_var.get(), "", ""),
             "capture_screenshot": (self._default_sequence_device_name("Oszilloskop"), "", "", "", ""),
             "serial_log": (self._default_sequence_device_name("Seriell"), "10", "115200", "8N1", ""),
+            "serial_command": (self._default_sequence_device_name("Seriell"), "*IDN?\\n", "115200", "8N1", "1"),
+            "ssh_command": (self._default_sequence_device_name("SSH"), "uname -a", "", "", "30"),
             "parallel_phase": ("", "10", "1", "Multimeter1:dmm; Oszilloskop1:scope:Vpp:1; Seriell1:serial:115200:8N1", ""),
             "picoscope_analog": (self._default_sequence_device_name("PicoScope"), "A,B", "5V", "10000", "1"),
             "picoscope_digital": (self._default_sequence_device_name("PicoScope"), "D0-D7", "1500", "10000", "1"),
             "data_logger_34970a_read": (self._default_sequence_device_name("Datenlogger"), "TEMP", "1-20", "19200", "8N1"),
             "data_logger_34970a_plan": (self._default_sequence_device_name("Datenlogger"), "1-20:TEMP; 21-22:CURR_DC", "19200", "8N1", ""),
+            "ca410_read": (self._default_sequence_device_name("Farbmessgerät"), "xyLv", "1", "0", "Color+Flicker"),
             "saleae_capture": (self._default_sequence_device_name("Saleae"), "D0-D7", "5", "10000000", "3.3"),
             "saleae_uart": (self._default_sequence_device_name("Saleae"), "0", "115200", "5", "10000000"),
             "saleae_i2c": (self._default_sequence_device_name("Saleae"), "0", "1", "5", "10000000"),
@@ -996,11 +1112,14 @@ class InstrumentVisaApp(tk.Tk):
             "capture_waveform": {"device": "Oszilloskop/Spektrum", "value1": "Kanäle", "value2": "Punktmodus"},
             "capture_screenshot": {"device": "Gerät"},
             "serial_log": {"device": "Serielles Gerät", "value1": "Dauer [s]", "value2": "Baudrate", "value3": "Format"},
+            "serial_command": {"device": "Serielles Gerät", "value1": "Kommando", "value2": "Baudrate", "value3": "Format", "value4": "Antwort lesen [s]"},
+            "ssh_command": {"device": "SSH-Gerät", "value1": "Kommando", "value2": "Benutzer optional", "value3": "Passwort optional", "value4": "Timeout [s]"},
             "parallel_phase": {"device": "", "value1": "Dauer [s]", "value2": "Intervall [s]", "value3": "Aufgaben"},
             "picoscope_analog": {"device": "PicoScope", "value1": "Kanäle", "value2": "Bereich", "value3": "Samples", "value4": "Intervall [us]"},
             "picoscope_digital": {"device": "PicoScope", "value1": "Kanäle", "value2": "Logikpegel [mV]", "value3": "Samples", "value4": "Intervall [us]"},
             "data_logger_34970a_read": {"device": "34970A", "value1": "Messart", "value2": "Kanäle", "value3": "Baudrate", "value4": "Format"},
             "data_logger_34970a_plan": {"device": "34970A", "value1": "Messplan", "value2": "Baudrate", "value3": "Format", "value4": ""},
+            "ca410_read": {"device": "CA-410", "value1": "Farbmodus", "value2": "Probe", "value3": "Kal.-Kanal", "value4": "Messmethode"},
             "saleae_capture": {"device": "Saleae", "value1": "Kanäle", "value2": "Dauer [s]", "value3": "Sample-Rate", "value4": "Schwelle [V]"},
             "saleae_uart": {"device": "Saleae", "value1": "Kanal", "value2": "Baudrate", "value3": "Dauer [s]", "value4": "Sample-Rate"},
             "saleae_i2c": {"device": "Saleae", "value1": "SDA", "value2": "SCL", "value3": "Dauer [s]", "value4": "Sample-Rate"},
@@ -1044,12 +1163,16 @@ class InstrumentVisaApp(tk.Tk):
             return {"value2": POINT_MODE_VALUES}
         if action == "serial_log":
             return {"value3": SERIAL_FORMAT_VALUES}
+        if action == "serial_command":
+            return {"value3": SERIAL_FORMAT_VALUES}
         if action == "picoscope_analog":
             return {"value2": PICOSCOPE_RANGE_VALUES}
         if action == "data_logger_34970a_read":
             return {"value1": DATA_LOGGER_34970A_MEASUREMENTS, "value4": SERIAL_FORMAT_VALUES}
         if action == "data_logger_34970a_plan":
             return {"value3": SERIAL_FORMAT_VALUES}
+        if action == "ca410_read":
+            return {"value1": CA410_COLOR_MODES, "value4": CA410_MEASUREMENT_METHODS}
         return {}
 
     def _apply_custom_sequence_variable_unit_defaults(self) -> None:
@@ -1226,12 +1349,16 @@ class InstrumentVisaApp(tk.Tk):
             return "Spektrumanalysator"
         if normalized in {"serial", "seriell", "com", "comport", "com-port"}:
             return "Seriell"
+        if normalized in {"ssh", "linux", "remote", "shell"}:
+            return "SSH"
         if normalized in {"pico", "picoscope"}:
             return "PicoScope"
         if normalized in {"saleae", "logic", "logic2"}:
             return "Saleae"
         if normalized in {"datenlogger", "logger", "datalogger", "data logger", "34970a"}:
             return "Datenlogger"
+        if normalized in {"farbmessgerät", "farbmessgeraet", "colorimeter", "color analyzer", "ca-410", "ca410"}:
+            return "Farbmessgerät"
         return role.strip() or "Gerät"
 
     def _remove_custom_sequence_device(self) -> None:
@@ -1391,6 +1518,12 @@ class InstrumentVisaApp(tk.Tk):
         scope_address = self._example_address("Oszilloskop", current_address)
         spectrum_address = self._example_address("Spektrumanalysator", current_address)
         supply_address = self._example_address("Netzgerät", current_address)
+        serial_address = self._example_address("Seriell", current_address)
+        ssh_address = self._example_address("SSH", current_address)
+        picoscope_address = self._example_address("PicoScope", current_address)
+        saleae_address = self._example_address("Saleae", current_address)
+        data_logger_address = self._example_address("Datenlogger", current_address)
+        ca410_address = self._example_address("Farbmessgerät", current_address)
         if example == "timed_dmm":
             self.custom_sequence_devices = {"Multimeter1": dmm_address}
             self.custom_sequence_steps = [SequenceStep("Multimeter1", "dmm_read")]
@@ -1489,6 +1622,57 @@ class InstrumentVisaApp(tk.Tk):
             self.custom_sequence_variable_step_var.set("")
             self.custom_sequence_end_supply_off_var.set(True)
             self.status_var.set("Beispiel geladen: Netzgerät getimt schalten")
+        elif example == "screenshot":
+            self.custom_sequence_devices = {"Gerät1": current_address}
+            self.custom_sequence_steps = [SequenceStep("Gerät1", "capture_screenshot")]
+            self._clear_custom_sequence_variable_defaults(repeat="1")
+            self.status_var.set("Beispiel geladen: Screenshot speichern")
+        elif example == "waveform":
+            self.custom_sequence_devices = {"Oszilloskop1": scope_address}
+            self.custom_sequence_steps = [SequenceStep("Oszilloskop1", "capture_waveform", {"channels": "1", "point_mode": self.point_mode_var.get()})]
+            self._clear_custom_sequence_variable_defaults(repeat="1")
+            self.status_var.set("Beispiel geladen: Kurve/Trace speichern")
+        elif example == "parallel_phase":
+            self.custom_sequence_devices = {"Multimeter1": dmm_address, "Oszilloskop1": scope_address, "Seriell1": serial_address}
+            self.custom_sequence_steps = [SequenceStep("", "parallel_phase", {"duration_s": "10", "interval_s": "1", "tasks": "Multimeter1:dmm; Oszilloskop1:scope:Vpp:1; Seriell1:serial:115200:8N1"})]
+            self._clear_custom_sequence_variable_defaults(repeat="1")
+            self.status_var.set("Beispiel geladen: Parallel-Messphase")
+        elif example == "serial_command_log":
+            self.custom_sequence_devices = {"Seriell1": serial_address}
+            self.custom_sequence_steps = [
+                SequenceStep("Seriell1", "serial_command", {"command": "*IDN?\\n", "baudrate": "115200", "serial_format": "8N1", "response_duration_s": "1"}),
+                SequenceStep("Seriell1", "serial_log", {"duration_s": "5", "baudrate": "115200", "serial_format": "8N1"}),
+            ]
+            self._clear_custom_sequence_variable_defaults(repeat="1")
+            self.status_var.set("Beispiel geladen: Serielles Kommando + Log")
+        elif example == "ssh_command":
+            self.custom_sequence_devices = {"SSH1": ssh_address}
+            self.custom_sequence_steps = [SequenceStep("SSH1", "ssh_command", {"command": "uname -a", "timeout_s": "30"})]
+            self._clear_custom_sequence_variable_defaults(repeat="1")
+            self.status_var.set("Beispiel geladen: SSH-Kommando")
+        elif example == "picoscope_analog":
+            self.custom_sequence_devices = {"PicoScope1": picoscope_address}
+            self.custom_sequence_steps = [SequenceStep("PicoScope1", "picoscope_analog", {"channels": "A,B", "range": "5V", "samples": "10000", "interval_us": "1"})]
+            self._clear_custom_sequence_variable_defaults(repeat="1")
+            self.status_var.set("Beispiel geladen: PicoScope analog")
+        elif example == "saleae_uart":
+            self.custom_sequence_devices = {"Saleae1": saleae_address}
+            self.custom_sequence_steps = [
+                SequenceStep("Saleae1", "saleae_capture", {"channels": "D0-D7", "duration_s": "5", "sample_rate": "10000000", "threshold_v": "3.3"}),
+                SequenceStep("Saleae1", "saleae_uart", {"channel": "0", "baudrate": "115200", "duration_s": "5", "sample_rate": "10000000"}),
+            ]
+            self._clear_custom_sequence_variable_defaults(repeat="1")
+            self.status_var.set("Beispiel geladen: Saleae UART")
+        elif example == "data_logger_34970a_plan":
+            self.custom_sequence_devices = {"Datenlogger1": data_logger_address}
+            self.custom_sequence_steps = [SequenceStep("Datenlogger1", "data_logger_34970a_plan", {"plan": "1-20:TEMP; 21-22:CURR_DC", "baudrate": "19200", "serial_format": "8N1"})]
+            self._clear_custom_sequence_variable_defaults(repeat="1")
+            self.status_var.set("Beispiel geladen: 34970A Messplan")
+        elif example == "ca410_read":
+            self.custom_sequence_devices = {"Farbmessgerät1": ca410_address}
+            self.custom_sequence_steps = [SequenceStep("Farbmessgerät1", "ca410_read", {"color_mode": "xyLv", "probe": "1", "calibration_channel": "0", "measurement_method": "Color+Flicker"})]
+            self._clear_custom_sequence_variable_defaults(repeat="1")
+            self.status_var.set("Beispiel geladen: CA-410 Messwert")
         else:
             return
         self._refresh_custom_sequence_device_tree()
@@ -1499,6 +1683,14 @@ class InstrumentVisaApp(tk.Tk):
             return "PICO2000A::AUTO"
         if self._sequence_device_role_name(role) == "Saleae":
             return "SALEAE::LOCAL"
+        if self._sequence_device_role_name(role) == "SSH":
+            return "ssh://user@hostname:22"
+        if self._sequence_device_role_name(role) == "Seriell":
+            if fallback.upper().startswith(("COM", "ASRL")):
+                return fallback
+            return "COM1"
+        if self._sequence_device_role_name(role) == "Farbmessgerät":
+            return fallback if fallback.upper().startswith("COM") else "COM1"
         for address in self._known_device_addresses():
             saved = self._saved_device_for_address(address)
             if isinstance(saved, dict) and self._saved_device_matches_example_role(saved, role):
@@ -1518,6 +1710,8 @@ class InstrumentVisaApp(tk.Tk):
             return bool(saved.get("supports_waveform")) and ("spektrum" in device_type or "analysator" in device_type)
         if role in {"netzteil", "netzgerät"}:
             return bool(saved.get("supports_power_supply")) or "netzgerät" in device_type or "netzteil" in device_type
+        if role in {"farbmessgerät", "farbmessgeraet", "colorimeter", "color analyzer", "ca-410", "ca410"}:
+            return "farbe" in device_type or "color" in device_type or "ca-410" in str(saved.get("model_family", "")).lower()
         return role in device_type
 
     def _set_custom_sequence_frequency_defaults(self, repeat: str) -> None:
@@ -1535,6 +1729,13 @@ class InstrumentVisaApp(tk.Tk):
         self.custom_sequence_variable_name_var.set("voltage")
         self.custom_sequence_variable_start_var.set(self.sequence_start_voltage_var.get())
         self.custom_sequence_variable_step_var.set(self.sequence_step_voltage_var.get())
+
+    def _clear_custom_sequence_variable_defaults(self, repeat: str = "1") -> None:
+        self.custom_sequence_repeat_var.set(repeat)
+        self.custom_sequence_pause_var.set("0")
+        self.custom_sequence_variable_name_var.set("")
+        self.custom_sequence_variable_start_var.set("")
+        self.custom_sequence_variable_step_var.set("")
 
     def export_custom_sequence(self) -> None:
         try:
@@ -1813,6 +2014,120 @@ class InstrumentVisaApp(tk.Tk):
             return result
         return "Keine VISA-Geräte gefunden. Bekannte Adresse kann manuell eingetragen werden."
 
+    def _check_setup(self) -> str:
+        lines = ["Setup-Prüfung", ""]
+        recommendations: list[str] = []
+
+        visa_resources: list[str] = []
+        try:
+            visa_resources = list_resources()
+        except Exception as exc:
+            lines.append(f"[FEHLT] VISA/PyVISA-Zugriff: nicht nutzbar ({exc})")
+            recommendations.append("Eine VISA Runtime installieren, z. B. R&S VISA oder Keysight IO Libraries Suite.")
+        else:
+            lines.append("[OK] VISA/PyVISA-Zugriff: nutzbar")
+            if visa_resources:
+                lines.append("[OK] VISA-Geräte gefunden:")
+                lines.extend(f"  - {resource}" for resource in visa_resources)
+            else:
+                lines.append("[INFO] VISA-Geräte gefunden: keine")
+                recommendations.append("Wenn ein USB/LAN/GPIB-Gerät angeschlossen ist, VISA Runtime, Kabel, Gerätestatus und Hersteller-Tools prüfen.")
+
+        serial_ports = list_direct_serial_ports()
+        if serial_ports:
+            lines.append("[OK] COM-Ports gefunden:")
+            lines.extend(f"  - {port.device}: {port.description}" if port.description else f"  - {port.device}" for port in serial_ports)
+            ca410_like_ports = [port for port in serial_ports if "KONICA" in str(port.description).upper() or "MINOLTA" in str(port.description).upper() or "CA-410" in str(port.description).upper()]
+            if ca410_like_ports:
+                lines.append("[OK] Mögliche CA-410-COM-Ports gefunden:")
+                lines.extend(f"  - {port.device}: {port.description}" if port.description else f"  - {port.device}" for port in ca410_like_ports)
+            else:
+                lines.append("[INFO] CA-410: kein eindeutig beschrifteter Konica-Minolta-COM-Port gefunden")
+        else:
+            lines.append("[INFO] COM-Ports gefunden: keine")
+            recommendations.append("Für RS232/COM-Geräte im Windows-Gerätemanager prüfen, ob ein COM-Port erscheint; sonst USB-Seriell-Treiber installieren.")
+            recommendations.append("Für CA-410 per USB den Konica-Minolta-USB-Treiber installieren, damit ein virtueller COM-Port erscheint.")
+
+        try:
+            _load_ps2000a()
+        except Exception as exc:
+            lines.append(f"[FEHLT] PicoSDK 2000A: nicht gefunden ({exc})")
+            recommendations.append("Für PicoScope 2206BMSO/2406B das PicoSDK 64-bit installieren.")
+        else:
+            pico_resources = list_picoscope_resources()
+            lines.append("[OK] PicoSDK 2000A: gefunden")
+            if pico_resources:
+                lines.append("[OK] PicoScope-Geräte gefunden:")
+                lines.extend(f"  - {resource}" for resource in pico_resources)
+            else:
+                lines.append("[INFO] PicoScope-Geräte gefunden: keine")
+
+        saleae_package_available = importlib.util.find_spec("saleae") is not None
+        if saleae_package_available:
+            lines.append("[OK] Saleae Python-Paket: vorhanden")
+        else:
+            lines.append("[FEHLT] Saleae Python-Paket: logic2-automation nicht gefunden")
+            recommendations.append("Für Saleae mit Python-Installation `py -m pip install -e \".[saleae]\"` ausführen; EXE-Releases sollten mit Saleae-Extra gebaut sein.")
+
+        saleae_port_open = self._is_local_port_open(10430, timeout_s=0.5)
+        if saleae_port_open:
+            lines.append("[OK] Saleae Automation-Port 10430: erreichbar")
+        else:
+            lines.append("[INFO] Saleae Automation-Port 10430: nicht erreichbar")
+            recommendations.append("Für Saleae Logic 2 starten und Automation aktivieren oder Logic 2 mit `Logic.exe --automation` starten.")
+
+        saleae_resources = list_saleae_resources()
+        if saleae_resources:
+            lines.append("[OK] Saleae-Geräte gefunden:")
+            lines.extend(f"  - {resource}" for resource in saleae_resources)
+        elif saleae_package_available and saleae_port_open:
+            lines.append("[INFO] Saleae-Geräte gefunden: keine")
+
+        manual_resources = list(dict.fromkeys([*(port.device for port in serial_ports), *list_picoscope_resources(), *saleae_resources]))
+        all_resources = list(dict.fromkeys([*visa_resources, *manual_resources]))
+        if all_resources:
+            self._messages.put(("resources", "\n".join(all_resources)))
+
+        lines.append("")
+        lines.append("Empfehlung:")
+        if recommendations:
+            unique_recommendations = list(dict.fromkeys(recommendations))
+            lines.extend(f"- {recommendation}" for recommendation in unique_recommendations)
+        else:
+            lines.append("- Basis-Setup sieht vollständig aus. Danach `Geräte suchen` und `IDN testen` ausführen.")
+        lines.append("- Für CA-410 den COM-Port auswählen und `Als CA-410` drücken, da das Gerät normalerweise keine SCPI-IDN liefert.")
+        lines.append("- Details zu konkreten Geräten stehen in `dependencies/INSTALLATION_KOLLEGEN.md` und `dependencies/README.md`.")
+        report = "\n".join(lines)
+        self._messages.put(("setup_report", report))
+        return "Setup-Prüfung abgeschlossen."
+
+    def _is_local_port_open(self, port: int, timeout_s: float = 0.5) -> bool:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=timeout_s):
+                return True
+        except OSError:
+            return False
+
+    def _show_setup_report(self, report: str) -> None:
+        window = tk.Toplevel(self)
+        window.title("Setup-Prüfung")
+        window.geometry("760x560")
+        window.minsize(560, 360)
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
+
+        text = tk.Text(window, wrap="word", width=90, height=28)
+        text.grid(row=0, column=0, sticky="nsew", padx=(12, 0), pady=12)
+        scrollbar = ttk.Scrollbar(window, orient="vertical", command=text.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns", padx=(0, 12), pady=12)
+        text.configure(yscrollcommand=scrollbar.set)
+        text.insert("1.0", report)
+        text.configure(state="disabled")
+
+        actions = ttk.Frame(window)
+        actions.grid(row=1, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 12))
+        ttk.Button(actions, text="Schließen", command=window.destroy).pack(side="right")
+
     def _identify_discovered_resources(self, resources: list[str]) -> list[str]:
         results: list[str] = []
         checked: set[str] = set()
@@ -1941,6 +2256,48 @@ class InstrumentVisaApp(tk.Tk):
                     break
         stopped_text = " gestoppt" if self.operation_stop_event.is_set() else " abgeschlossen"
         return f"34970A-Messplan{stopped_text}: {self._output_path()}\nMessungen: {completed}\nPlan: {plan}"
+
+    def _read_ca410(self) -> str:
+        color_mode = self.ca410_color_mode_var.get().strip()
+        probe = self.ca410_probe_var.get().strip()
+        calibration_channel = self.ca410_calibration_channel_var.get().strip()
+        measurement_method = self.ca410_measurement_method_var.get().strip()
+        flicker_method = self.ca410_flicker_method_var.get().strip()
+        measurement_speed = self.ca410_measurement_speed_var.get().strip()
+        baudrate = int(self.ca410_baudrate_var.get().strip())
+        serial_format = self.ca410_serial_format_var.get().strip()
+        interval_s, count = self._ca410_timing()
+        completed = 0
+        started = monotonic()
+        address = self.address_var.get().strip()
+        ca410_address = self._serial_port_for_address(address) or address
+        with create_sequence_instrument(ca410_address, timeout_ms=10000) as instrument:
+            info = InstrumentInfo(address=address, idn="Konica Minolta CA-410")
+            while not self.operation_stop_event.is_set() and (count == 0 or completed < count):
+                wait_s = started + completed * interval_s - monotonic()
+                if wait_s > 0 and self.operation_stop_event.wait(wait_s):
+                    break
+                result = read_ca410_measurement(
+                    instrument,
+                    CA410Config(
+                        color_mode=color_mode,
+                        probe=probe,
+                        calibration_channel=calibration_channel,
+                        measurement_method=measurement_method,
+                        flicker_method=flicker_method,
+                        measurement_speed=measurement_speed,
+                        baudrate=baudrate,
+                        serial_format=serial_format,
+                    ),
+                    stop_requested=self.operation_stop_event.is_set,
+                )
+                export = append_result(self._output_path(), address, info.idn, result)
+                completed += 1
+                self.logger.info("CA-410 exported workbook=%s sheet=%s color_mode=%s probe=%s calibration_channel=%s measurement_method=%s flicker_method=%s measurement_speed=%s baudrate=%s serial_format=%s index=%s", export.workbook_path, export.sheet_name, color_mode, probe, calibration_channel, measurement_method, flicker_method, measurement_speed, baudrate, serial_format, completed)
+                if count and completed >= count:
+                    break
+        stopped_text = " gestoppt" if self.operation_stop_event.is_set() else " abgeschlossen"
+        return f"CA-410-Messung{stopped_text}: {self._output_path()}\nMessungen: {completed}\nModus: {color_mode}\nProbe: {probe}\nKal.-Kanal: {calibration_channel}\nMessmethode: {measurement_method}"
 
     def _read_scope_measurement(self) -> str:
         measurement = self.measurement_var.get()
@@ -2323,6 +2680,18 @@ class InstrumentVisaApp(tk.Tk):
             raise ValueError("34970A-Anzahl darf nicht negativ sein.")
         return interval_s, count
 
+    def _ca410_timing(self) -> tuple[float, int]:
+        try:
+            interval_s = float(self.ca410_interval_var.get().replace(",", "."))
+            count = int(self.ca410_count_var.get())
+        except ValueError as exc:
+            raise ValueError("CA-410-Intervall muss eine Zahl und Anzahl eine ganze Zahl sein.") from exc
+        if interval_s < 0:
+            raise ValueError("CA-410-Intervall darf nicht negativ sein.")
+        if count < 0:
+            raise ValueError("CA-410-Anzahl darf nicht negativ sein.")
+        return interval_s, count
+
     def _power_supply_channel(self) -> int:
         try:
             channel = int(self.power_supply_channel_var.get())
@@ -2564,6 +2933,9 @@ class InstrumentVisaApp(tk.Tk):
                 if isinstance(message, str):
                     self.status_var.set(message)
                     self._append_log(message)
+            elif kind == "setup_report":
+                if isinstance(message, str):
+                    self._show_setup_report(message)
             elif kind == "timed_done":
                 self._set_timed_running(False)
             elif kind == "sequence_done":
@@ -2588,6 +2960,11 @@ class InstrumentVisaApp(tk.Tk):
         self.log.configure(state="normal")
         self.log.insert("end", message + "\n\n")
         self.log.see("end")
+        self.log.configure(state="disabled")
+
+    def clear_log(self) -> None:
+        self.log.configure(state="normal")
+        self.log.delete("1.0", "end")
         self.log.configure(state="disabled")
 
     def _scroll_controls_if_needed(self, canvas: tk.Canvas, event: tk.Event) -> None:
@@ -2790,6 +3167,7 @@ class InstrumentVisaApp(tk.Tk):
         timed_enabled = scope_measurement_enabled or dmm_enabled
         vna_enabled = profile.supports_sparameters
         data_logger_enabled = profile.key == "keysight_34970a" or "34970" in profile.model_family or profile.device_type == "Datenlogger"
+        ca410_enabled = profile.key == "konica_minolta_ca410"
         spectrum_enabled = "spektrum" in profile.device_type.lower() or profile.key in {"hp_4395a", "hp_8591a", "hp_e740", "hp_agilent_e4402b", "rs_hameg_hms"}
         screenshot_enabled = profile.supports_screenshot
         generator_enabled = profile.supports_signal_generator
@@ -2811,21 +3189,25 @@ class InstrumentVisaApp(tk.Tk):
         self._set_section_visible("timed", timed_enabled)
         self._set_section_visible("vna", vna_enabled)
         self._set_section_visible("data_logger", data_logger_enabled)
+        self._set_section_visible("ca410", ca410_enabled)
         self._set_section_visible("spectrum", spectrum_enabled)
         self._set_section_visible("generator", generator_enabled)
         self._set_section_visible("power_supply", power_supply_enabled)
         self._set_widgets_enabled(self._scope_widgets, scope_enabled)
+        self._set_widgets_enabled(self._scope_screenshot_widgets, scope_enabled and screenshot_enabled and not spectrum_enabled and not vna_enabled)
         self._set_widgets_enabled(self._dmm_widgets, dmm_enabled)
         self._set_widgets_enabled(self._timed_widgets, timed_enabled and not self.timed_running)
         self._set_widgets_enabled(self._timed_dmm_widgets, dmm_enabled and not self.timed_running)
         self._set_widgets_enabled(self._timed_scope_widgets, scope_measurement_enabled and not self.timed_running)
         self._set_widgets_enabled(self._timed_stop_widgets, self.timed_running)
         self._set_widgets_enabled(self._vna_widgets, vna_enabled)
+        self._set_widgets_enabled(self._vna_screenshot_widgets, vna_enabled and screenshot_enabled)
         self._set_widgets_enabled(self._data_logger_widgets, data_logger_enabled and not self.operation_running)
         self._set_widgets_enabled(self._data_logger_stop_widgets, data_logger_enabled and self.operation_running)
-        self._set_widgets_enabled(self._spectrum_widgets, spectrum_enabled)
+        self._set_widgets_enabled(self._ca410_widgets, ca410_enabled and not self.operation_running)
+        self._set_widgets_enabled(self._ca410_stop_widgets, ca410_enabled and self.operation_running)
+        self._set_widgets_enabled(self._spectrum_widgets, spectrum_enabled and profile.supports_waveform)
         self._set_widgets_enabled(self._spectrum_screenshot_widgets, spectrum_enabled and screenshot_enabled)
-        self._set_widgets_enabled(self._screenshot_widgets, screenshot_enabled)
         self._set_widgets_enabled(self._generator_widgets, generator_enabled)
         self._set_widgets_enabled(self._power_supply_widgets, power_supply_enabled)
         if self.sequence_running:
@@ -2870,11 +3252,17 @@ class InstrumentVisaApp(tk.Tk):
     def _serial_unknown_profile(self) -> DeviceProfile:
         return DeviceProfile("Unbekannt", "Direkter COM-Port", "Seriell", key="direct_serial")
 
+    def _ca410_profile(self) -> DeviceProfile:
+        return DeviceProfile("Konica Minolta", "CA-410", "Farbmessgerät", key="konica_minolta_ca410")
+
     def _set_operation_running(self, running: bool) -> None:
         self.operation_running = running
         data_logger_enabled = self.current_profile.key == "keysight_34970a" or "34970" in self.current_profile.model_family or self.current_profile.device_type == "Datenlogger"
+        ca410_enabled = self.current_profile.key == "konica_minolta_ca410"
         self._set_widgets_enabled(self._data_logger_widgets, data_logger_enabled and not running)
         self._set_widgets_enabled(self._data_logger_stop_widgets, data_logger_enabled and running)
+        self._set_widgets_enabled(self._ca410_widgets, ca410_enabled and not running)
+        self._set_widgets_enabled(self._ca410_stop_widgets, ca410_enabled and running)
 
     def _remember_device(self, address: str, idn: str, profile: DeviceProfile) -> None:
         if not address:
@@ -2968,6 +3356,8 @@ class InstrumentVisaApp(tk.Tk):
         self._set_widgets_enabled(self._sequence_stop_widgets, False)
         self._set_widgets_enabled(self._switch_widgets, not running and not self.sequence_running and not self.switch_running)
         self._set_widgets_enabled(self._switch_stop_widgets, False)
+        self._set_widgets_enabled(self._ca410_widgets, self.current_profile.key == "konica_minolta_ca410" and not running)
+        self._set_widgets_enabled(self._ca410_stop_widgets, self.current_profile.key == "konica_minolta_ca410" and running)
 
     def _set_sequence_running(self, running: bool) -> None:
         self.sequence_running = running
@@ -2978,16 +3368,19 @@ class InstrumentVisaApp(tk.Tk):
         self._set_widgets_enabled(self._connection_widgets, not running)
         if running:
             self._set_widgets_enabled(self._scope_widgets, False)
+            self._set_widgets_enabled(self._scope_screenshot_widgets, False)
             self._set_widgets_enabled(self._dmm_widgets, False)
             self._set_widgets_enabled(self._timed_widgets, False)
             self._set_widgets_enabled(self._timed_dmm_widgets, False)
             self._set_widgets_enabled(self._timed_scope_widgets, False)
             self._set_widgets_enabled(self._vna_widgets, False)
+            self._set_widgets_enabled(self._vna_screenshot_widgets, False)
             self._set_widgets_enabled(self._data_logger_widgets, False)
             self._set_widgets_enabled(self._data_logger_stop_widgets, False)
+            self._set_widgets_enabled(self._ca410_widgets, False)
+            self._set_widgets_enabled(self._ca410_stop_widgets, False)
             self._set_widgets_enabled(self._spectrum_widgets, False)
             self._set_widgets_enabled(self._spectrum_screenshot_widgets, False)
-            self._set_widgets_enabled(self._screenshot_widgets, False)
             self._set_widgets_enabled(self._generator_widgets, False)
             self._set_widgets_enabled(self._power_supply_widgets, False)
         else:
@@ -3006,16 +3399,19 @@ class InstrumentVisaApp(tk.Tk):
         self._set_widgets_enabled(self._connection_widgets, not running)
         if running:
             self._set_widgets_enabled(self._scope_widgets, False)
+            self._set_widgets_enabled(self._scope_screenshot_widgets, False)
             self._set_widgets_enabled(self._dmm_widgets, False)
             self._set_widgets_enabled(self._timed_widgets, False)
             self._set_widgets_enabled(self._timed_dmm_widgets, False)
             self._set_widgets_enabled(self._timed_scope_widgets, False)
             self._set_widgets_enabled(self._vna_widgets, False)
+            self._set_widgets_enabled(self._vna_screenshot_widgets, False)
             self._set_widgets_enabled(self._data_logger_widgets, False)
             self._set_widgets_enabled(self._data_logger_stop_widgets, False)
+            self._set_widgets_enabled(self._ca410_widgets, False)
+            self._set_widgets_enabled(self._ca410_stop_widgets, False)
             self._set_widgets_enabled(self._spectrum_widgets, False)
             self._set_widgets_enabled(self._spectrum_screenshot_widgets, False)
-            self._set_widgets_enabled(self._screenshot_widgets, False)
             self._set_widgets_enabled(self._generator_widgets, False)
             self._set_widgets_enabled(self._power_supply_widgets, False)
         else:
@@ -3087,6 +3483,16 @@ class InstrumentVisaApp(tk.Tk):
             "data_logger_34970a_serial_format": self.data_logger_34970a_serial_format_var.get(),
             "data_logger_34970a_interval": self.data_logger_34970a_interval_var.get(),
             "data_logger_34970a_count": self.data_logger_34970a_count_var.get(),
+            "ca410_color_mode": self.ca410_color_mode_var.get(),
+            "ca410_probe": self.ca410_probe_var.get(),
+            "ca410_calibration_channel": self.ca410_calibration_channel_var.get(),
+            "ca410_measurement_method": self.ca410_measurement_method_var.get(),
+            "ca410_flicker_method": self.ca410_flicker_method_var.get(),
+            "ca410_measurement_speed": self.ca410_measurement_speed_var.get(),
+            "ca410_baudrate": self.ca410_baudrate_var.get(),
+            "ca410_serial_format": self.ca410_serial_format_var.get(),
+            "ca410_interval": self.ca410_interval_var.get(),
+            "ca410_count": self.ca410_count_var.get(),
             "generator_frequency": self.generator_frequency_var.get(),
             "generator_power": self.generator_power_var.get(),
             "generator_rf": self.generator_rf_var.get(),

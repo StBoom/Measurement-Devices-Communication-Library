@@ -63,11 +63,15 @@ def append_result(workbook_path: Path, address: str, idn: str, result: Acquisiti
     elif result.file_type == "csv":
         if result.kind in {"34970A data logger", "34970A measurement plan"}:
             data_sheet = _get_or_create_sheet(workbook, "34970A Measurements")
+        elif result.kind == "CA-410 measurement":
+            data_sheet = _get_or_create_sheet(workbook, "CA-410 Measurements")
         else:
             data_sheet = workbook.create_sheet(_unique_sheet_name(workbook, result.kind))
         result_sheet_name = data_sheet.title
         sheet.append([timestamp, address, idn, result.kind, result.file_type, f"sheet:{result_sheet_name}"])
         if result.kind in {"34970A data logger", "34970A measurement plan"}:
+            _append_34970a_csv(data_sheet, result.content)
+        elif result.kind == "CA-410 measurement":
             _append_34970a_csv(data_sheet, result.content)
         else:
             data_sheet.append(["Timestamp", timestamp])

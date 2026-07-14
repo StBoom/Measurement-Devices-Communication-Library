@@ -46,6 +46,7 @@ try {
         --collect-all openpyxl `
         --collect-all PIL `
         --collect-all serial `
+        --collect-all paramiko `
         --collect-all saleae `
         $entryPoint
 }

@@ -29,6 +29,7 @@ from instrument_visa.saleae_client import SaleaeCanConfig, SaleaeCaptureConfig, 
 from instrument_visa.profiles import detect_profile  # noqa: E402
 from instrument_visa.sequence import (  # noqa: E402
     CustomSequenceConfig,
+    CA410Config,
     MAX_SWEEP_POINTS,
     FrequencySweepConfig,
     SequenceStep,
@@ -38,13 +39,18 @@ from instrument_visa.sequence import (  # noqa: E402
     frequency_points,
     parse_json_bool,
     parse_frequency_hz,
+    parse_ssh_target,
     probe_direct_serial_idn,
     parse_serial_format,
     parse_parallel_tasks,
     read_direct_serial_log,
+    send_direct_serial_command,
     parse_34970a_channels,
     read_34970a_data_logger,
     DataLogger34970AConfig,
+    parse_ca410_measurement_response,
+    read_ca410_measurement,
+    run_ssh_command,
     parse_34970a_measurement_plan,
     run_custom_sequence,
     run_frequency_sweep,
@@ -74,6 +80,8 @@ class FakeInstrument:
         self.raw_writes: list[str] = []
         self.serial_log_durations: list[float] = []
         self.serial_log_baudrates: list[int | None] = []
+        self.serial_commands: list[tuple[str, float, int | None, int | None, str | None, float | None]] = []
+        self.ssh_commands: list[tuple[str, str, str, float | None]] = []
         self.serial_configs: list[tuple[int | None, int | None, str | None, float | None]] = []
 
     def write(self, command: str) -> None:
@@ -112,6 +120,23 @@ class FakeInstrument:
 
     def configure_serial(self, baudrate: int | None = None, bytesize: int | None = None, parity: str | None = None, stopbits: float | None = None) -> None:
         self.serial_configs.append((baudrate, bytesize, parity, stopbits))
+
+    def send_serial_command(
+        self,
+        command: str,
+        response_duration_s: float = 0.0,
+        baudrate: int | None = None,
+        bytesize: int | None = None,
+        parity: str | None = None,
+        stopbits: float | None = None,
+        stop_requested=None,
+    ) -> str:
+        self.serial_commands.append((command, response_duration_s, baudrate, bytesize, parity, stopbits))
+        return "OK"
+
+    def run_ssh_command(self, command: str, username: str = "", password: str = "", timeout_s: float | None = None, stop_requested=None) -> str:
+        self.ssh_commands.append((command, username, password, timeout_s))
+        return "ssh output"
 
     def capture_analog(self, config, stop_requested=None):
         self.pico_analog_configs.append(config)
@@ -648,8 +673,126 @@ class AcquisitionTests(unittest.TestCase):
         )
 
         self.assertEqual(result.ok_count, 1)
-        self.assertIn("Serieller Log ohne IDN", result.csv_content)
+        self.assertEqual(instrument.queries, [])
+        self.assertIn("Serielles Gerät ohne IDN", result.csv_content)
         self.assertEqual(instrument.serial_log_durations, [1.0])
+
+    def test_custom_sequence_sends_serial_command(self) -> None:
+        instrument = FakeInstrument()
+        instrument.address = "ASRL5::INSTR"
+
+        result = run_custom_sequence(
+            {"Serial1": instrument},  # type: ignore[dict-item]
+            CustomSequenceConfig(devices={"Serial1": instrument.address}, steps=[SequenceStep("Serial1", "serial_command", {"command": "PING\\n", "baudrate": "57600", "serial_format": "7E1", "response_duration_s": "0.5"})], end_rf_off=False),
+        )
+
+        self.assertEqual(result.ok_count, 1)
+        self.assertEqual(instrument.serial_commands, [("PING\\n", 0.5, 57600, 7, "E", 1)])
+        self.assertIn("OK", result.csv_content)
+
+    def test_custom_sequence_serial_command_device_does_not_require_idn(self) -> None:
+        instrument = FakeInstrument()
+        instrument.address = "ASRL6::INSTR"
+
+        def failing_query(command: str) -> str:
+            raise TimeoutError(command)
+
+        instrument.query = failing_query  # type: ignore[method-assign]
+
+        result = run_custom_sequence(
+            {"Serial1": instrument},  # type: ignore[dict-item]
+            CustomSequenceConfig(devices={"Serial1": instrument.address}, steps=[SequenceStep("Serial1", "serial_command", {"command": "BOOT\\r", "baudrate": "9600", "serial_format": "8N1"})], end_rf_off=False),
+        )
+
+        self.assertEqual(result.ok_count, 1)
+        self.assertEqual(instrument.queries, [])
+        self.assertIn("Serielles Gerät ohne IDN", result.csv_content)
+
+    def test_custom_sequence_runs_ssh_command(self) -> None:
+        instrument = FakeInstrument(query_responses={"*IDN?": "SSH test"})
+        instrument.address = "ssh://tester@example.local:2222"
+
+        result = run_custom_sequence(
+            {"SSH1": instrument},  # type: ignore[dict-item]
+            CustomSequenceConfig(devices={"SSH1": instrument.address}, steps=[SequenceStep("SSH1", "ssh_command", {"command": "uname -a", "username": "override", "password": "secret", "timeout_s": "12"})], end_rf_off=False),
+        )
+
+        self.assertEqual(result.ok_count, 1)
+        self.assertEqual(instrument.ssh_commands, [("uname -a", "override", "secret", 12.0)])
+        self.assertIn("ssh output", result.csv_content)
+
+    def test_parse_ssh_target_supports_user_host_port(self) -> None:
+        target = parse_ssh_target("ssh://user@example.local:2222")
+
+        self.assertEqual(target.host, "example.local")
+        self.assertEqual(target.port, 2222)
+        self.assertEqual(target.username, "user")
+
+    def test_run_ssh_command_uses_paramiko(self) -> None:
+        class FakeChannel:
+            def __init__(self) -> None:
+                self.stdout_reads = [b"hello\n"]
+                self.stderr_reads: list[bytes] = []
+
+            def exit_status_ready(self) -> bool:
+                return True
+
+            def recv_ready(self) -> bool:
+                return bool(self.stdout_reads)
+
+            def recv_stderr_ready(self) -> bool:
+                return bool(self.stderr_reads)
+
+            def recv(self, size: int) -> bytes:
+                return self.stdout_reads.pop(0)
+
+            def recv_stderr(self, size: int) -> bytes:
+                return self.stderr_reads.pop(0)
+
+            def recv_exit_status(self) -> int:
+                return 0
+
+            def close(self) -> None:
+                return None
+
+        class FakeStdout:
+            def __init__(self) -> None:
+                self.channel = FakeChannel()
+
+        class FakeClient:
+            connect_kwargs: dict[str, object] = {}
+            command = ""
+            closed = False
+
+            def set_missing_host_key_policy(self, policy: object) -> None:
+                return None
+
+            def connect(self, **kwargs: object) -> None:
+                self.__class__.connect_kwargs = kwargs
+
+            def exec_command(self, command: str, timeout: float):
+                self.__class__.command = command
+                return None, FakeStdout(), SimpleNamespace(channel=FakeChannel())
+
+            def close(self) -> None:
+                self.__class__.closed = True
+
+        fake_paramiko = SimpleNamespace(SSHClient=FakeClient, AutoAddPolicy=lambda: object())
+        import instrument_visa.sequence as sequence_module
+
+        original_paramiko = sequence_module.paramiko
+        sequence_module.paramiko = fake_paramiko  # type: ignore[assignment]
+        try:
+            result = run_ssh_command("ssh://user@example.local:2222", "echo hello", timeout_s=5)
+        finally:
+            sequence_module.paramiko = original_paramiko  # type: ignore[assignment]
+
+        self.assertEqual(result, "hello")
+        self.assertEqual(FakeClient.command, "echo hello")
+        self.assertEqual(FakeClient.connect_kwargs["hostname"], "example.local")
+        self.assertEqual(FakeClient.connect_kwargs["port"], 2222)
+        self.assertEqual(FakeClient.connect_kwargs["username"], "user")
+        self.assertTrue(FakeClient.closed)
 
     def test_read_direct_serial_log_decodes_bytes(self) -> None:
         class FakeSerial:
@@ -687,6 +830,53 @@ class AcquisitionTests(unittest.TestCase):
             sequence_module.serial = original_serial  # type: ignore[assignment]
 
         self.assertEqual(result, "boot ok\n")
+
+    def test_send_direct_serial_command_writes_escaped_bytes_and_reads_response(self) -> None:
+        class FakeSerial:
+            writes: list[bytes] = []
+
+            def __init__(self, port: str, baudrate: int, bytesize: int, parity: str, stopbits: float, timeout: float, write_timeout: float) -> None:
+                self.port = port
+                self.baudrate = baudrate
+                self.bytesize = bytesize
+                self.parity = parity
+                self.stopbits = stopbits
+                self.timeout = timeout
+                self.write_timeout = write_timeout
+                self.reads = [b"ACK\r\n", b""]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+                return None
+
+            @property
+            def in_waiting(self) -> int:
+                return len(self.reads[0]) if self.reads else 0
+
+            def write(self, data: bytes) -> None:
+                self.writes.append(data)
+
+            def flush(self) -> None:
+                return None
+
+            def read(self, size: int) -> bytes:
+                if self.reads:
+                    return self.reads.pop(0)
+                return b""
+
+        import instrument_visa.sequence as sequence_module
+
+        original_serial = sequence_module.serial
+        sequence_module.serial = SimpleNamespace(Serial=FakeSerial)  # type: ignore[assignment]
+        try:
+            result = send_direct_serial_command("COM7", "PING\\r\\n", 115200, response_duration_s=0.01)
+        finally:
+            sequence_module.serial = original_serial  # type: ignore[assignment]
+
+        self.assertEqual(result, "ACK\r\n")
+        self.assertEqual(FakeSerial.writes, [b"PING\r\n"])
 
     def test_probe_direct_serial_idn_returns_idn_and_settings(self) -> None:
         class FakeSerial:
@@ -997,6 +1187,87 @@ class AcquisitionTests(unittest.TestCase):
 
             self.assertEqual(sheet["C1"].value, "StoppedByUser")
             self.assertEqual(sheet["C3"].value, "Yes")
+
+    def test_parse_ca410_measurement_response(self) -> None:
+        values = parse_ca410_measurement_response("OK00,P1,0,0.3274345,0.4191236,4.8075729,+0.39,2.1047971,1.0,2.0,3.0")
+
+        self.assertEqual(values["Status"], "OK00")
+        self.assertEqual(values["Probe"], "P1")
+        self.assertEqual(values["x"], "0.3274345")
+        self.assertEqual(values["y"], "0.4191236")
+        self.assertEqual(values["Lv"], "4.8075729")
+        self.assertEqual(values["FMAFlickerPercent"], "2.1047971")
+        self.assertEqual(values["Z"], "3.0")
+
+    def test_ca410_read_sets_serial_and_exports_xy_lv(self) -> None:
+        instrument = FakeInstrument(
+            query_responses={
+                "COM,1": "OK00",
+                "OPR,1": "OK00",
+                "FSC,1": "OK00",
+                "MMS,0": "OK00",
+                "FMS,0": "OK00",
+                "MCH,1,0": "OK00",
+                "MDS,0": "OK00",
+                "MES,2": "OK00,P1,0,0.3274345,0.4191236,4.8075729,+0.39,2.1047971,1.0,2.0,3.0",
+            }
+        )
+
+        result = read_ca410_measurement(instrument, CA410Config())
+
+        self.assertEqual(instrument.serial_configs, [(38400, 7, "E", 2.0)])
+        self.assertEqual(instrument.queries, ["COM,1", "OPR,1", "FSC,1", "MMS,0", "FMS,0", "MCH,1,0", "MDS,0", "MES,2"])
+        self.assertIn("Timestamp,Status,Probe,DisplayMode,x,y,Lv,TempShift,FMAFlickerPercent,X,Y,Z", str(result.content))
+        self.assertIn("OK00,P1,0,0.3274345,0.4191236,4.8075729,+0.39,2.1047971,1.0,2.0,3.0", str(result.content))
+
+    def test_custom_sequence_ca410_step(self) -> None:
+        instrument = FakeInstrument(
+            query_responses={
+                "*IDN?": "Konica Minolta CA-410",
+                "COM,1": "OK00",
+                "OPR,1": "OK00",
+                "FSC,1": "OK00",
+                "MMS,0": "OK00",
+                "FMS,0": "OK00",
+                "MCH,1,2": "OK00",
+                "MDS,1": "OK00",
+                "MES,2": "OK00,P1,1,6500.0,0.001,120.5,+0.01,0.5,1.0,2.0,3.0",
+            }
+        )
+        instrument.address = "COM9"
+
+        result = run_custom_sequence(
+            {"CA410": instrument},  # type: ignore[dict-item]
+            CustomSequenceConfig(
+                devices={"CA410": instrument.address},
+                steps=[SequenceStep("CA410", "ca410_read", {"color_mode": "TcpduvLv", "probe": "1", "calibration_channel": "2", "measurement_method": "Color+Flicker", "baudrate": "38400", "serial_format": "7E2"})],
+                end_rf_off=False,
+            ),
+        )
+
+        self.assertEqual(result.ok_count, 1)
+        self.assertIn("CA-410 measurement", result.csv_content)
+        self.assertIn("MCH,1,2", instrument.queries)
+        self.assertIn("MDS,1", instrument.queries)
+
+    def test_ca410_excel_export_appends_rows(self) -> None:
+        from openpyxl import load_workbook
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "results.xlsx"
+            first = AcquisitionResult(kind="CA-410 measurement", file_type="csv", content="Timestamp,Status,Probe,DisplayMode,x,y,Lv\n2026-07-13 14:00:00,OK00,P1,0,0.1,0.2,100\n")
+            second = AcquisitionResult(kind="CA-410 measurement", file_type="csv", content="Timestamp,Status,Probe,DisplayMode,x,y,Lv\n2026-07-13 14:00:01,OK00,P1,0,0.3,0.4,101\n")
+
+            first_export = append_result(workbook_path, "COM9", "Konica Minolta CA-410", first)
+            second_export = append_result(workbook_path, "COM9", "Konica Minolta CA-410", second)
+            workbook = load_workbook(workbook_path)
+            sheet = workbook["CA-410 Measurements"]
+
+            self.assertEqual(first_export.sheet_name, "CA-410 Measurements")
+            self.assertEqual(second_export.sheet_name, "CA-410 Measurements")
+            self.assertEqual(sheet.max_row, 3)
+            self.assertEqual(sheet["B1"].value, "Status")
+            self.assertEqual(sheet["E3"].value, 0.3)
 
     def test_parse_34970a_measurement_plan(self) -> None:
         tasks = parse_34970a_measurement_plan("1-4:VOLT_DC; 5:TEMP; 6-7:RES")

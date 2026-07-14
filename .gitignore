@@ -37,6 +37,7 @@ vba/
 # Locally collected third-party installers are packaged, not versioned
 dependencies/*
 !dependencies/README.md
+!dependencies/INSTALLATION_KOLLEGEN.md
 
 # OS/editor files
 .DS_Store

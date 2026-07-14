@@ -8,6 +8,7 @@ import logging
 from io import StringIO
 from time import monotonic, sleep
 from typing import Callable, Literal
+from urllib.parse import urlparse, unquote
 
 try:
     import serial
@@ -15,6 +16,11 @@ try:
 except ImportError:  # pragma: no cover - dependency error is reported at runtime
     serial = None  # type: ignore[assignment]
     serial_list_ports = None  # type: ignore[assignment]
+
+try:
+    import paramiko
+except ImportError:  # pragma: no cover - dependency error is reported at runtime
+    paramiko = None  # type: ignore[assignment]
 
 from .acquisition import (
     AcquisitionResult,
@@ -183,6 +189,13 @@ class SerialPortInfo:
 
 
 @dataclass(frozen=True)
+class SshTarget:
+    host: str
+    port: int = 22
+    username: str = ""
+
+
+@dataclass(frozen=True)
 class ParallelTask:
     device: str
     action: Literal["dmm", "scope", "serial"]
@@ -207,6 +220,55 @@ class DataLogger34970AConfig:
 class DataLogger34970ATask:
     measurement: str
     channels: str
+
+
+CA410_COLOR_MODES: tuple[str, ...] = ("xyLv", "TcpduvLv", "uvLv", "XYZ", "AdPeLv")
+CA410_MEASUREMENT_METHODS: tuple[str, ...] = ("Color+Flicker", "Color", "Flicker")
+CA410_FLICKER_METHODS: tuple[str, ...] = ("FMA", "JEITA")
+CA410_MEASUREMENT_SPEEDS: tuple[str, ...] = ("SLOW", "FAST", "LTD.AUTO", "AUTO")
+CA410_MODE_CODES = {
+    "xyLv": "0",
+    "TcpduvLv": "1",
+    "uvLv": "5",
+    "XYZ": "7",
+    "AdPeLv": "8",
+}
+CA410_MODE_FIELDS = {
+    "0": ("x", "y", "Lv"),
+    "1": ("Tcp", "duv", "Lv"),
+    "5": ("u'", "v'", "Lv"),
+    "7": ("X", "Y", "Z"),
+    "8": ("Lambda_d", "Pe", "Lv"),
+}
+CA410_MEASUREMENT_METHOD_CODES = {
+    "Color+Flicker": "0",
+    "Color": "1",
+    "Flicker": "2",
+}
+CA410_FLICKER_METHOD_CODES = {
+    "FMA": "0",
+    "JEITA": "1",
+}
+CA410_MEASUREMENT_SPEED_CODES = {
+    "SLOW": "0",
+    "FAST": "1",
+    "LTD.AUTO": "2",
+    "AUTO": "3",
+}
+
+
+@dataclass(frozen=True)
+class CA410Config:
+    color_mode: str = "xyLv"
+    probe: str = "1"
+    calibration_channel: str = "0"
+    measurement_method: str = "Color+Flicker"
+    flicker_method: str = "FMA"
+    measurement_speed: str = "FAST"
+    baudrate: int = 38400
+    serial_format: str = "7E2"
+    remote: bool = True
+    include_xyz: bool = True
 
 
 def run_frequency_sweep(
@@ -831,6 +893,23 @@ class DirectSerialInstrument:
         with _open_direct_serial_for_scpi(self.address, self.timeout_ms, self.baudrate, self.serial_format) as serial_port:
             _serial_write_line(serial_port, command)
 
+    def send_serial_command(
+        self,
+        command: str,
+        response_duration_s: float = 0.0,
+        baudrate: int | None = None,
+        bytesize: int | None = None,
+        parity: str | None = None,
+        stopbits: float | None = None,
+        stop_requested: StopCallback | None = None,
+    ) -> str:
+        if baudrate is not None:
+            self.baudrate = int(baudrate)
+        if bytesize is not None and parity is not None and stopbits is not None:
+            self.serial_format = f"{int(bytesize)}{parity}{stopbits:g}"
+        bytesize, parity, stopbits = parse_serial_format(self.serial_format)
+        return send_direct_serial_command(self.address, command, self.baudrate, bytesize, parity, stopbits, response_duration_s, stop_requested)
+
     def query(self, command: str) -> str:
         response, settings = _query_direct_serial_scpi_with_settings(self.address, command, self.timeout_ms, self.baudrate, self.serial_format)
         if settings is not None:
@@ -844,23 +923,52 @@ def create_sequence_instrument(address: str, timeout_ms: int = 10000) -> VisaIns
         return create_picoscope_instrument(address, timeout_ms=timeout_ms)
     if is_saleae_address(address):
         return create_saleae_instrument(address, timeout_ms=timeout_ms)
+    if is_ssh_address(address):
+        return SshInstrument(address, timeout_ms)
     if _is_direct_serial_address(address):
         return DirectSerialInstrument(address, timeout_ms)
     return VisaInstrument(address, timeout_ms=timeout_ms)
 
 
+class SshInstrument:
+    def __init__(self, address: str, timeout_ms: int = 10000) -> None:
+        self.address = address
+        self.timeout_ms = timeout_ms
+
+    def open(self) -> None:
+        return
+
+    def close(self) -> None:
+        return
+
+    def __enter__(self):
+        self.open()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self.close()
+
+    def info(self) -> InstrumentInfo:
+        target = parse_ssh_target(self.address)
+        user_text = f"{target.username}@" if target.username else ""
+        return InstrumentInfo(address=self.address, idn=f"SSH {user_text}{target.host}:{target.port}")
+
+    def run_ssh_command(self, command: str, username: str = "", password: str = "", timeout_s: float | None = None, stop_requested: StopCallback | None = None) -> str:
+        return run_ssh_command(self.address, command, username=username, password=password, timeout_s=timeout_s or self.timeout_ms / 1000.0, stop_requested=stop_requested)
+
+
 def _custom_sequence_device_info(name: str, config: CustomSequenceConfig, instrument: object) -> InstrumentInfo:
+    if _device_only_uses_serial_without_idn(name, config):
+        return InstrumentInfo(address=str(getattr(instrument, "address", config.devices.get(name, ""))), idn="Serielles Gerät ohne IDN")
     try:
         return instrument.info()
     except Exception:
-        if _device_only_uses_serial_log(name, config):
-            return InstrumentInfo(address=str(getattr(instrument, "address", config.devices.get(name, ""))), idn="Serieller Log ohne IDN")
         raise
 
 
-def _device_only_uses_serial_log(name: str, config: CustomSequenceConfig) -> bool:
+def _device_only_uses_serial_without_idn(name: str, config: CustomSequenceConfig) -> bool:
     device_steps = [step for step in config.steps if step.device == name]
-    return bool(device_steps) and all(step.action == "serial_log" for step in device_steps)
+    return bool(device_steps) and all(step.action in {"serial_log", "serial_command"} for step in device_steps)
 
 
 def _is_direct_serial_address(address: str) -> bool:
@@ -962,6 +1070,33 @@ def _execute_custom_sequence_step(
         else:
             content = instrument.read_serial_log(duration_s, baudrate=baudrate, bytesize=bytesize, parity=parity, stopbits=stopbits, stop_requested=stop_requested)
         return AcquisitionResult(kind="serial log", file_type="txt", content=content)
+    if step.action == "serial_command":
+        command = _string_param(params, "command")
+        baudrate = _int_param(params, "baudrate", 115200)
+        bytesize, parity, stopbits = parse_serial_format(str(params.get("serial_format", "8N1")))
+        response_duration_s = _float_param(params, "response_duration_s", 0.0)
+        if response_duration_s < 0:
+            raise ValueError("Antwort-Lesezeit darf nicht negativ sein.")
+        if _is_direct_serial_address(info.address):
+            response = send_direct_serial_command(info.address, command, baudrate, bytesize, parity, stopbits, response_duration_s, stop_requested)
+        elif hasattr(instrument, "send_serial_command"):
+            response = instrument.send_serial_command(command, response_duration_s, baudrate=baudrate, bytesize=bytesize, parity=parity, stopbits=stopbits, stop_requested=stop_requested)
+        else:
+            if hasattr(instrument, "configure_serial"):
+                instrument.configure_serial(baudrate, bytesize, parity, stopbits)
+            instrument.write(_decode_serial_command_text(command).decode("utf-8", errors="replace"))
+            response = ""
+        return response or "gesendet"
+    if step.action == "ssh_command":
+        command = _string_param(params, "command")
+        username = str(params.get("username", "")).strip()
+        password = str(params.get("password", ""))
+        timeout_s = _float_param(params, "timeout_s", 30.0)
+        if timeout_s <= 0:
+            raise ValueError("SSH-Timeout muss größer als 0 sein.")
+        if hasattr(instrument, "run_ssh_command"):
+            return instrument.run_ssh_command(command, username=username, password=password, timeout_s=timeout_s, stop_requested=stop_requested)
+        return run_ssh_command(info.address, command, username=username, password=password, timeout_s=timeout_s, stop_requested=stop_requested)
     if step.action == "data_logger_34970a_read":
         return read_34970a_data_logger(
             instrument,
@@ -982,6 +1117,20 @@ def _execute_custom_sequence_step(
             parse_34970a_measurement_plan(_string_param(params, "plan")),
             baudrate=_int_param(params, "baudrate", 19200),
             serial_format_value=str(params.get("serial_format", "8N1")).strip() or "8N1",
+            stop_requested=stop_requested,
+        )
+    if step.action == "ca410_read":
+        return read_ca410_measurement(
+            instrument,
+            CA410Config(
+                color_mode=_string_param(params, "color_mode"),
+                probe=str(params.get("probe", "1")).strip() or "1",
+                calibration_channel=str(params.get("calibration_channel", "0")).strip() or "0",
+                measurement_method=str(params.get("measurement_method", "Color+Flicker")).strip() or "Color+Flicker",
+                baudrate=_int_param(params, "baudrate", 38400),
+                serial_format=str(params.get("serial_format", "7E2")).strip() or "7E2",
+                include_xyz=_bool_param(params, "include_xyz", True),
+            ),
             stop_requested=stop_requested,
         )
     if step.action == "picoscope_analog":
@@ -1106,8 +1255,11 @@ def _validate_custom_sequence_step(step: SequenceStep) -> None:
         "capture_waveform": set(),
         "capture_screenshot": set(),
         "serial_log": {"duration_s", "baudrate", "serial_format"},
+        "serial_command": {"command", "baudrate", "serial_format"},
+        "ssh_command": {"command", "timeout_s"},
         "data_logger_34970a_read": {"measurement", "channels", "baudrate", "serial_format"},
         "data_logger_34970a_plan": {"plan", "baudrate", "serial_format"},
+        "ca410_read": {"color_mode", "probe"},
         "parallel_phase": {"duration_s", "interval_s", "tasks"},
         "picoscope_analog": {"channels", "range", "samples", "interval_us"},
         "picoscope_digital": {"channels", "logic_level_mv", "samples", "interval_us"},
@@ -1169,7 +1321,7 @@ def _custom_sequence_cleanup(
     if not (config.end_rf_off or config.end_power_supply_off or stop_requested()):
         return rows, errors
     for device, info in device_infos.items():
-        if _device_only_uses_serial_log(device, config):
+        if _device_only_uses_serial_without_idn(device, config):
             continue
         try:
             profile_idn = info.idn
@@ -1293,6 +1445,190 @@ def read_34970a_measurement_plan(instrument: object, tasks: list[DataLogger34970
         if stop_requested():
             break
     return AcquisitionResult(kind="34970A measurement plan", file_type="csv", content=_34970a_wide_csv(results, stop_requested()))
+
+
+def read_ca410_measurement(instrument: object, config: CA410Config, stop_requested: StopCallback | None = None) -> AcquisitionResult:
+    stop_requested = stop_requested or (lambda: False)
+    if config.baudrate <= 0:
+        raise ValueError("Baudrate muss größer als 0 sein.")
+    bytesize, parity, stopbits = parse_serial_format(config.serial_format)
+    mode_code = _ca410_mode_code(config.color_mode)
+    probe = _ca410_probe(config.probe)
+    calibration_channel = _ca410_calibration_channel(config.calibration_channel)
+    measurement_method_code = _ca410_named_code(config.measurement_method, CA410_MEASUREMENT_METHOD_CODES, "CA-410-Messmethode")
+    flicker_method_code = _ca410_named_code(config.flicker_method, CA410_FLICKER_METHOD_CODES, "CA-410-Flicker-Methode")
+    speed_code = _ca410_named_code(config.measurement_speed, CA410_MEASUREMENT_SPEED_CODES, "CA-410-Messgeschwindigkeit")
+    if stop_requested():
+        return AcquisitionResult(kind="CA-410 measurement", file_type="csv", content=_ca410_csv({}, mode_code, stopped=True))
+    address = str(getattr(instrument, "address", ""))
+    if isinstance(instrument, DirectSerialInstrument) and _is_direct_serial_address(address):
+        values = _read_ca410_direct_serial(address, config, bytesize, parity, stopbits, mode_code, probe, calibration_channel, measurement_method_code, flicker_method_code, speed_code, stop_requested)
+    else:
+        values = _read_ca410_instrument(instrument, config, bytesize, parity, stopbits, mode_code, probe, calibration_channel, measurement_method_code, flicker_method_code, speed_code, stop_requested)
+    return AcquisitionResult(kind="CA-410 measurement", file_type="csv", content=_ca410_csv(values, values.get("DisplayMode", mode_code), stopped=stop_requested()))
+
+
+def _read_ca410_instrument(instrument: object, config: CA410Config, bytesize: int, parity: str, stopbits: float, mode_code: str, probe: str, calibration_channel: str, measurement_method_code: str, flicker_method_code: str, speed_code: str, stop_requested: StopCallback) -> dict[str, str]:
+    if hasattr(instrument, "configure_serial"):
+        instrument.configure_serial(config.baudrate, bytesize, parity, stopbits)
+    if config.remote:
+        _ca410_expect_ok(str(instrument.query("COM,1")), "COM,1")
+    _ca410_expect_ok(str(instrument.query(f"OPR,{probe}")), f"OPR,{probe}")
+    _ca410_expect_ok(str(instrument.query(f"FSC,{speed_code}")), f"FSC,{speed_code}")
+    _ca410_expect_ok(str(instrument.query(f"MMS,{measurement_method_code}")), f"MMS,{measurement_method_code}")
+    _ca410_expect_ok(str(instrument.query(f"FMS,{flicker_method_code}")), f"FMS,{flicker_method_code}")
+    _ca410_expect_ok(str(instrument.query(_ca410_mch_command(probe, calibration_channel))), _ca410_mch_command(probe, calibration_channel))
+    _ca410_expect_ok(str(instrument.query(f"MDS,{mode_code}")), f"MDS,{mode_code}")
+    if stop_requested():
+        return {}
+    response = str(instrument.query("MES,2" if config.include_xyz else "MES,1"))
+    return parse_ca410_measurement_response(response)
+
+
+def _read_ca410_direct_serial(port: str, config: CA410Config, bytesize: int, parity: str, stopbits: float, mode_code: str, probe: str, calibration_channel: str, measurement_method_code: str, flicker_method_code: str, speed_code: str, stop_requested: StopCallback) -> dict[str, str]:
+    if serial is None:
+        raise RuntimeError("CA-410-Zugriff benötigt pyserial. Bitte Abhängigkeiten neu installieren.")
+    timeout_s = 3.0
+    with serial.Serial(port=port, baudrate=config.baudrate, bytesize=bytesize, parity=parity, stopbits=stopbits, timeout=timeout_s, write_timeout=timeout_s, rtscts=True) as serial_port:
+        _serial_prepare_port(serial_port)
+        if config.remote:
+            _ca410_expect_ok(_ca410_serial_query(serial_port, "COM,1"), "COM,1")
+        _ca410_expect_ok(_ca410_serial_query(serial_port, f"OPR,{probe}"), f"OPR,{probe}")
+        _ca410_expect_ok(_ca410_serial_query(serial_port, f"FSC,{speed_code}"), f"FSC,{speed_code}")
+        _ca410_expect_ok(_ca410_serial_query(serial_port, f"MMS,{measurement_method_code}"), f"MMS,{measurement_method_code}")
+        _ca410_expect_ok(_ca410_serial_query(serial_port, f"FMS,{flicker_method_code}"), f"FMS,{flicker_method_code}")
+        mch_command = _ca410_mch_command(probe, calibration_channel)
+        _ca410_expect_ok(_ca410_serial_query(serial_port, mch_command), mch_command)
+        _ca410_expect_ok(_ca410_serial_query(serial_port, f"MDS,{mode_code}"), f"MDS,{mode_code}")
+        if stop_requested():
+            return {}
+        response = _ca410_serial_query(serial_port, "MES,2" if config.include_xyz else "MES,1")
+        return parse_ca410_measurement_response(response)
+
+
+def _ca410_serial_query(serial_port, command: str) -> str:
+    serial_port.write((command.rstrip("\r\n") + "\r").encode("ascii"))
+    response = bytes(serial_port.read_until(b"\r"))
+    if not response:
+        raise TimeoutError(f"CA-410 antwortet nicht auf {command}.")
+    return response.decode("ascii", errors="replace").strip()
+
+
+def _ca410_serial_port(address: str) -> str | None:
+    normalized = address.strip().upper()
+    if _is_direct_serial_address(normalized):
+        return normalized
+    if normalized.startswith("ASRL") and normalized.endswith("::INSTR"):
+        port = normalized[4:-7]
+        if port.isdigit():
+            return f"COM{port}"
+    return None
+
+
+def parse_ca410_measurement_response(response: str) -> dict[str, str]:
+    parts = [part.strip() for part in response.strip().strip("\r\n").split(",")]
+    if len(parts) < 8:
+        raise ValueError(f"Ungültige CA-410-Antwort: {response!r}")
+    status = parts[0]
+    if not status.startswith("OK"):
+        raise RuntimeError(f"CA-410 meldet Fehler {status}: {response}")
+    mode_code = parts[2]
+    fields = CA410_MODE_FIELDS.get(mode_code, ("Value1", "Value2", "Value3"))
+    values: dict[str, str] = {
+        "Status": status,
+        "Probe": parts[1],
+        "DisplayMode": mode_code,
+        fields[0]: parts[3],
+        fields[1]: parts[4],
+        fields[2]: parts[5],
+        "TempShift": parts[6],
+        "FMAFlickerPercent": parts[7],
+    }
+    if len(parts) >= 11:
+        values.update({"X": parts[8], "Y": parts[9], "Z": parts[10]})
+    return values
+
+
+def _ca410_csv(values: dict[str, str], mode_code: str, stopped: bool = False) -> str:
+    fields = CA410_MODE_FIELDS.get(mode_code, ("Value1", "Value2", "Value3"))
+    headers = ["Timestamp", "Status", "Probe", "DisplayMode", *fields, "TempShift", "FMAFlickerPercent", "X", "Y", "Z"]
+    row = [datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
+    row.extend(values.get(header, "") for header in headers[1:])
+    if stopped:
+        headers.append("StoppedByUser")
+        row.append("Yes")
+    return _csv_rows([headers, row])
+
+
+def _ca410_mode_code(value: str) -> str:
+    normalized = value.strip().replace(" ", "")
+    aliases = {
+        "0": "0",
+        "1": "1",
+        "5": "5",
+        "7": "7",
+        "8": "8",
+        "XYLV": "0",
+        "TCPDUVLV": "1",
+        "TCPLV": "1",
+        "UVLV": "5",
+        "U'V'LV": "5",
+        "XYZ": "7",
+        "ADPELV": "8",
+    }
+    key = normalized.upper()
+    if normalized in CA410_MODE_CODES:
+        return CA410_MODE_CODES[normalized]
+    if key in aliases:
+        return aliases[key]
+    raise ValueError(f"Unbekannter CA-410-Farbmodus: {value}")
+
+
+def _ca410_named_code(value: str, mapping: dict[str, str], label: str) -> str:
+    normalized = value.strip().upper().replace(" ", "")
+    aliases = {key.upper().replace(" ", ""): code for key, code in mapping.items()}
+    aliases.update({code: code for code in mapping.values()})
+    aliases.update({key.upper().replace(" ", "").replace(".", ""): code for key, code in mapping.items()})
+    compact = normalized.replace(".", "")
+    if normalized in aliases:
+        return aliases[normalized]
+    if compact in aliases:
+        return aliases[compact]
+    raise ValueError(f"Unbekannte {label}: {value}")
+
+
+def _ca410_probe(value: str) -> str:
+    normalized = value.strip().upper().replace("P", "")
+    if normalized == "ALL":
+        return "0"
+    try:
+        probe = int(normalized)
+    except ValueError as exc:
+        raise ValueError("CA-410-Probe muss 1-10 oder ALL sein.") from exc
+    if probe < 0 or probe > 10:
+        raise ValueError("CA-410-Probe muss 1-10 oder ALL sein.")
+    return str(probe)
+
+
+def _ca410_calibration_channel(value: str) -> str:
+    normalized = value.strip().upper().replace("CH", "")
+    try:
+        channel = int(normalized)
+    except ValueError as exc:
+        raise ValueError("CA-410-Kalibrierkanal muss 0-99 sein.") from exc
+    if channel < 0 or channel > 99:
+        raise ValueError("CA-410-Kalibrierkanal muss 0-99 sein.")
+    return str(channel)
+
+
+def _ca410_mch_command(probe: str, calibration_channel: str) -> str:
+    return f"MCH,{probe},{calibration_channel}"
+
+
+def _ca410_expect_ok(response: str, command: str) -> None:
+    status = response.strip().split(",", 1)[0]
+    if not status.startswith("OK"):
+        raise RuntimeError(f"CA-410-Befehl {command} fehlgeschlagen: {response.strip()}")
 
 
 def _34970a_wide_csv(results: list[tuple[str, list[int], list[str]]], stopped: bool = False) -> str:
@@ -1595,6 +1931,121 @@ def read_direct_serial_log(
             if data:
                 chunks.append(data)
     return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+def send_direct_serial_command(
+    port: str,
+    command: str,
+    baudrate: int,
+    bytesize: int = 8,
+    parity: str = "N",
+    stopbits: float = 1,
+    response_duration_s: float = 0.0,
+    stop_requested: StopCallback | None = None,
+) -> str:
+    stop_requested = stop_requested or (lambda: False)
+    if baudrate <= 0:
+        raise ValueError("Baudrate muss größer als 0 sein.")
+    if response_duration_s < 0:
+        raise ValueError("Antwort-Lesezeit darf nicht negativ sein.")
+    if serial is None:
+        raise RuntimeError("Direkter COM-Port-Zugriff benötigt pyserial. Bitte Abhängigkeiten neu installieren.")
+    chunks: list[bytes] = []
+    with serial.Serial(port=port, baudrate=baudrate, bytesize=bytesize, parity=parity, stopbits=stopbits, timeout=0.2, write_timeout=1.0) as serial_port:
+        serial_port.write(_decode_serial_command_text(command))
+        if hasattr(serial_port, "flush"):
+            serial_port.flush()
+        deadline = monotonic() + response_duration_s
+        while monotonic() < deadline and not stop_requested():
+            data = serial_port.read(serial_port.in_waiting or 1)
+            if data:
+                chunks.append(data)
+    return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+def _decode_serial_command_text(command: str) -> bytes:
+    text = command.replace("\\r", "\r").replace("\\n", "\n").replace("\\t", "\t")
+    return text.encode("utf-8")
+
+
+def is_ssh_address(address: str) -> bool:
+    return address.strip().lower().startswith("ssh://")
+
+
+def parse_ssh_target(address: str) -> SshTarget:
+    parsed = urlparse(address.strip())
+    if parsed.scheme.lower() != "ssh" or not parsed.hostname:
+        raise ValueError("SSH-Adresse muss im Format ssh://user@host[:port] angegeben werden.")
+    port = parsed.port or 22
+    if port <= 0:
+        raise ValueError("SSH-Port muss größer als 0 sein.")
+    return SshTarget(host=parsed.hostname, port=port, username=unquote(parsed.username or ""))
+
+
+def run_ssh_command(
+    address: str,
+    command: str,
+    username: str = "",
+    password: str = "",
+    timeout_s: float = 30.0,
+    stop_requested: StopCallback | None = None,
+) -> str:
+    stop_requested = stop_requested or (lambda: False)
+    if paramiko is None:
+        raise RuntimeError("SSH-Kommandos benötigen paramiko. Bitte Abhängigkeiten neu installieren.")
+    if not command.strip():
+        raise ValueError("SSH-Kommando darf nicht leer sein.")
+    if timeout_s <= 0:
+        raise ValueError("SSH-Timeout muss größer als 0 sein.")
+    target = parse_ssh_target(address)
+    username = username.strip() or target.username
+    if not username:
+        raise ValueError("SSH-Benutzer fehlt. In der Adresse ssh://user@host oder im Schritt eintragen.")
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        connect_kwargs = {
+            "hostname": target.host,
+            "port": target.port,
+            "username": username,
+            "timeout": timeout_s,
+            "banner_timeout": timeout_s,
+            "auth_timeout": timeout_s,
+            "look_for_keys": not bool(password),
+            "allow_agent": not bool(password),
+        }
+        if password:
+            connect_kwargs["password"] = password
+        client.connect(**connect_kwargs)
+        _stdin, stdout, stderr = client.exec_command(command, timeout=timeout_s)
+        channel = stdout.channel
+        deadline = monotonic() + timeout_s
+        stdout_chunks: list[bytes] = []
+        stderr_chunks: list[bytes] = []
+        while not channel.exit_status_ready():
+            if stop_requested():
+                channel.close()
+                raise RuntimeError("SSH-Kommando wurde gestoppt.")
+            if monotonic() >= deadline:
+                channel.close()
+                raise TimeoutError(f"SSH-Kommando hat nach {timeout_s:g} s kein Ende erreicht.")
+            if channel.recv_ready():
+                stdout_chunks.append(channel.recv(4096))
+            if channel.recv_stderr_ready():
+                stderr_chunks.append(channel.recv_stderr(4096))
+            sleep(0.05)
+        while channel.recv_ready():
+            stdout_chunks.append(channel.recv(4096))
+        while channel.recv_stderr_ready():
+            stderr_chunks.append(channel.recv_stderr(4096))
+        exit_status = channel.recv_exit_status()
+        stdout_text = b"".join(stdout_chunks).decode("utf-8", errors="replace")
+        stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")
+        if exit_status != 0:
+            raise RuntimeError(f"SSH-Kommando beendet mit Exit-Code {exit_status}: {stderr_text.strip() or stdout_text.strip()}")
+        return stdout_text.strip() or stderr_text.strip() or f"Exit {exit_status}"
+    finally:
+        client.close()
 
 
 _SERIAL_SCPI_SETTINGS: dict[str, tuple[int, str, str, str]] = {}
