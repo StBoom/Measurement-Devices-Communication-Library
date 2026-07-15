@@ -574,7 +574,7 @@ Erwartete Ausgabe: Touchstone-/S-Parameter-Artefakt und Excel-Metadaten.
 Statuswerte:
 
 - `getestet`: mit realem Gerät im aktuellen Python-Tool geprüft
-- `VBA übernommen`: aus dem vorhandenen VBA-Projekt übernommen, im Python-Tool noch nicht neu mit realem Gerät bestätigt
+- `VBA übernommen, getestet`: aus dem vorhandenen VBA-Projekt übernommen und im aktuellen Python-Tool mit realem Gerät geprüft
 - `commands from manual, untested`: SCPI-Kommandos aus Programmierhandbuch abgeleitet, aber noch nicht mit realem Laborgerät bestätigt
 - `offen`: noch zu testen oder zu konkretisieren
 - `nicht integriert`: bewusst nicht im VISA/SCPI-Tool umgesetzt
@@ -617,7 +617,7 @@ Statuswerte:
     Status:            getestet
     Notizen:           CA-410-Messung mit realem Gerät erfolgreich getestet; Standardkommunikation 38400 7E2, RTS/CTS, CR-Abschluss
 
-### Aus VBA Übernommen
+### Aus VBA Übernommen Und Getestet
 
 #### Keysight/Agilent E5071C
 
@@ -625,8 +625,8 @@ Statuswerte:
     IDN-Erkennung:     E5071C
     Funktionen:        Screenshot PNG, S-Parameter ja
     Nicht unterstützt: DMM/Messwert, Scope-Messwert, getimtes Messen, Waveform/Trace
-    Status:            VBA übernommen
-    Notizen:           Screenshot und Touchstone/S-Parameter aus bestehender Logik übernommen; Screenshot unterstützt aktives Fenster und im freien Ablauf zusätzlich die Anzeige inklusive Informationsfenstern/Overlays per `HCOP:PAGE:WIND ALL`
+    Status:            VBA übernommen, getestet
+    Notizen:           Screenshot und Touchstone/S-Parameter aus bestehender VBA-Logik übernommen und im Python-Tool geprüft
 
 #### Rohde & Schwarz ZNB
 
@@ -634,8 +634,8 @@ Statuswerte:
     IDN-Erkennung:     ZNB
     Funktionen:        Screenshot PNG, S-Parameter ja
     Nicht unterstützt: DMM/Messwert, Scope-Messwert, getimtes Messen, Waveform/Trace
-    Status:            VBA übernommen
-    Notizen:           Screenshot und Touchstone/S-Parameter aus bestehender Logik übernommen
+    Status:            VBA übernommen, getestet
+    Notizen:           Screenshot und Touchstone/S-Parameter aus bestehender VBA-Logik übernommen und im Python-Tool geprüft. Screenshot unterstützt aktives Fenster und im freien Ablauf zusätzlich die Anzeige inklusive Informationsfenstern/Overlays per `HCOP:PAGE:WIND ALL`.
 
 #### Rohde & Schwarz FSW
 
@@ -643,8 +643,8 @@ Statuswerte:
     IDN-Erkennung:     FSW
     Funktionen:        Screenshot PNG
     Nicht unterstützt: DMM/Messwert, Scope-Messwert, getimtes Messen, Waveform/Trace, S-Parameter
-    Status:            VBA übernommen
-    Notizen:           Screenshot-Funktion aus bestehender Logik übernommen; Trace-Export aktuell nicht aktiviert
+    Status:            VBA übernommen, getestet
+    Notizen:           Screenshot-Funktion aus bestehender VBA-Logik übernommen und im Python-Tool geprüft; Trace-Export aktuell nicht aktiviert
 
 #### Keysight/Agilent/HP E740
 
@@ -652,8 +652,8 @@ Statuswerte:
     IDN-Erkennung:     E740
     Funktionen:        Screenshot WMF, Trace CSV
     Nicht unterstützt: DMM/Messwert, Scope-Messwert, getimtes Messen, S-Parameter
-    Status:            VBA übernommen
-    Notizen:           Spektrumanalysator-Export aus bestehender Logik übernommen
+    Status:            VBA übernommen, getestet
+    Notizen:           Spektrumanalysator-Export aus bestehender VBA-Logik übernommen und im Python-Tool geprüft
 
 #### HP/Agilent 4395A
 
@@ -661,8 +661,8 @@ Statuswerte:
     IDN-Erkennung:     4395A
     Funktionen:        Waveform/Trace ja
     Nicht unterstützt: DMM/Messwert, Scope-Messwert, getimtes Messen, Screenshot, S-Parameter
-    Status:            VBA übernommen
-    Notizen:           Waveform-/Trace-Export aus bestehender Logik übernommen
+    Status:            VBA übernommen, getestet
+    Notizen:           Waveform-/Trace-Export aus bestehender VBA-Logik übernommen und im Python-Tool geprüft
 
 ### Commands From Manual, Untested
 
@@ -836,6 +836,6 @@ Für neue Rückmeldungen reicht es, den Status und die Notizen im jeweiligen Ger
 
 ## Hinweise
 
-Der Python-Launcher `py` ist auf diesem Rechner vorhanden und die Python-Quellen wurden syntaktisch geprüft. Die Gerätetreiber-/VISA-Installation und ein angeschlossenes Messgerät sind für einen echten Kommunikationstest erforderlich.
+Für echte Kommunikationstests müssen die passenden Gerätetreiber/VISA-Runtimes installiert und die Messgeräte angeschlossen sein. Die hardware-unabhängigen Tests prüfen die Python-Logik ohne reale Geräte.
 
 Hardware-unabhängige Tests liegen unter `tests/` und nutzen Fake-Instrumente. Damit werden Profil-Erkennung, wichtige SCPI-Befehlsfolgen, Screenshot-Binärdaten-Normalisierung, Excel-Export, Sequenzen, serielle Logs/Kommandos, SSH, PicoScope-, Saleae-, 34970A-, CA-410- und Sweep-Sicherheitslogik geprüft, ohne echte Messgeräte anzusprechen.
