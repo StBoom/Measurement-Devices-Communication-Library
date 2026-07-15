@@ -283,14 +283,14 @@ class CA410Config:
     measurement_method: str = "Color+Flicker"
     flicker_method: str = "FMA"
     measurement_speed: str = "FAST"
-    sync_mode: str = "UNIV"
+    sync_mode: str = "INT"
     sync_value: str = "60.00"
     integration_mode: str = "Double-Frame"
     averaging_time_s: float = 0.0
     baudrate: int = 38400
     serial_format: str = "7E2"
     remote: bool = True
-    include_xyz: bool = True
+    include_xyz: bool = False
 
 
 def run_frequency_sweep(
@@ -1159,7 +1159,7 @@ def _execute_custom_sequence_step(
                 averaging_time_s=_float_param(params, "averaging_time_s", 0.0),
                 baudrate=_int_param(params, "baudrate", 38400),
                 serial_format=str(params.get("serial_format", "7E2")).strip() or "7E2",
-                include_xyz=_bool_param(params, "include_xyz", True),
+                include_xyz=_bool_param(params, "include_xyz", False),
             ),
             stop_requested=stop_requested,
         )
@@ -1526,21 +1526,25 @@ def _read_ca410_instrument(instrument: object, config: CA410Config, bytesize: in
         instrument.configure_serial(config.baudrate, bytesize, parity, stopbits)
     if _ca410_serial_port(str(getattr(instrument, "address", ""))) is not None and hasattr(instrument, "configure_termination"):
         instrument.configure_termination("\r", "\r")
+    query = lambda command: _ca410_logged_query(lambda sent: str(instrument.query(sent)), command)
     if config.remote:
-        _ca410_expect_ok(str(instrument.query("COM,1")), "COM,1")
-    _ca410_expect_ok(str(instrument.query(f"OPR,{probe}")), f"OPR,{probe}")
-    _ca410_apply_sync_settings(lambda command: str(instrument.query(command)), sync_mode_code, sync_value)
-    _ca410_expect_ok(str(instrument.query(f"FSC,{speed_code}")), f"FSC,{speed_code}")
-    _ca410_expect_ok(str(instrument.query(f"MMS,{measurement_method_code}")), f"MMS,{measurement_method_code}")
-    _ca410_apply_integration_setting(lambda command: str(instrument.query(command)), integration_mode_code)
-    _ca410_expect_ok(str(instrument.query(f"FMS,{flicker_method_code}")), f"FMS,{flicker_method_code}")
-    _ca410_expect_ok(str(instrument.query(_ca410_mch_command(probe, calibration_channel))), _ca410_mch_command(probe, calibration_channel))
-    _ca410_expect_ok(str(instrument.query(f"MDS,{mode_code}")), f"MDS,{mode_code}")
+        _ca410_expect_ok(query("COM,1"), "COM,1")
+    _ca410_expect_ok(query(f"OPR,{probe}"), f"OPR,{probe}")
+    _ca410_apply_sync_settings(query, sync_mode_code, sync_value)
+    _ca410_expect_ok(query(f"FSC,{speed_code}"), f"FSC,{speed_code}")
+    _ca410_expect_ok(query(f"MMS,{measurement_method_code}"), f"MMS,{measurement_method_code}")
+    _ca410_apply_integration_setting(query, integration_mode_code)
+    _ca410_expect_ok(query(f"FMS,{flicker_method_code}"), f"FMS,{flicker_method_code}")
+    _ca410_prepare_single_measurement(query)
+    _ca410_expect_ok(query(_ca410_mch_command(probe, calibration_channel)), _ca410_mch_command(probe, calibration_channel))
+    _ca410_apply_luminance_unit(query)
+    _ca410_expect_ok(query(f"MDS,{mode_code}"), f"MDS,{mode_code}")
     if stop_requested():
         return {}
-    response = str(instrument.query("MES,2" if config.include_xyz else "MES,1"))
+    allow_internal_sync_retry = measurement_method_code == "0" and flicker_method_code == "0"
+    response = _ca410_query_measurement(query, config.include_xyz, allow_internal_sync_retry)
     if config.averaging_time_s > 0:
-        return _average_ca410_values([parse_ca410_measurement_response(response), *_collect_ca410_average_values(lambda command: str(instrument.query(command)), config, stop_requested)])
+        return _average_ca410_values([parse_ca410_measurement_response(response), *_collect_ca410_average_values(query, config, stop_requested, allow_internal_sync_retry)])
     return parse_ca410_measurement_response(response)
 
 
@@ -1550,31 +1554,52 @@ def _read_ca410_direct_serial(port: str, config: CA410Config, bytesize: int, par
     timeout_s = 3.0
     with serial.Serial(port=port, baudrate=config.baudrate, bytesize=bytesize, parity=parity, stopbits=stopbits, timeout=timeout_s, write_timeout=timeout_s, rtscts=True) as serial_port:
         _serial_prepare_port(serial_port)
+        query = lambda command: _ca410_logged_query(lambda sent: _ca410_serial_query(serial_port, sent), command)
         if config.remote:
-            _ca410_expect_ok(_ca410_serial_query(serial_port, "COM,1"), "COM,1")
-        _ca410_expect_ok(_ca410_serial_query(serial_port, f"OPR,{probe}"), f"OPR,{probe}")
-        _ca410_apply_sync_settings(lambda command: _ca410_serial_query(serial_port, command), sync_mode_code, sync_value)
-        _ca410_expect_ok(_ca410_serial_query(serial_port, f"FSC,{speed_code}"), f"FSC,{speed_code}")
-        _ca410_expect_ok(_ca410_serial_query(serial_port, f"MMS,{measurement_method_code}"), f"MMS,{measurement_method_code}")
-        _ca410_apply_integration_setting(lambda command: _ca410_serial_query(serial_port, command), integration_mode_code)
-        _ca410_expect_ok(_ca410_serial_query(serial_port, f"FMS,{flicker_method_code}"), f"FMS,{flicker_method_code}")
+            _ca410_expect_ok(query("COM,1"), "COM,1")
+        _ca410_expect_ok(query(f"OPR,{probe}"), f"OPR,{probe}")
+        _ca410_apply_sync_settings(query, sync_mode_code, sync_value)
+        _ca410_expect_ok(query(f"FSC,{speed_code}"), f"FSC,{speed_code}")
+        _ca410_expect_ok(query(f"MMS,{measurement_method_code}"), f"MMS,{measurement_method_code}")
+        _ca410_apply_integration_setting(query, integration_mode_code)
+        _ca410_expect_ok(query(f"FMS,{flicker_method_code}"), f"FMS,{flicker_method_code}")
+        _ca410_prepare_single_measurement(query)
         mch_command = _ca410_mch_command(probe, calibration_channel)
-        _ca410_expect_ok(_ca410_serial_query(serial_port, mch_command), mch_command)
-        _ca410_expect_ok(_ca410_serial_query(serial_port, f"MDS,{mode_code}"), f"MDS,{mode_code}")
+        _ca410_expect_ok(query(mch_command), mch_command)
+        _ca410_apply_luminance_unit(query)
+        _ca410_expect_ok(query(f"MDS,{mode_code}"), f"MDS,{mode_code}")
         if stop_requested():
             return {}
-        response = _ca410_serial_query(serial_port, "MES,2" if config.include_xyz else "MES,1")
+        allow_internal_sync_retry = measurement_method_code == "0" and flicker_method_code == "0"
+        response = _ca410_query_measurement(query, config.include_xyz, allow_internal_sync_retry)
         if config.averaging_time_s > 0:
-            return _average_ca410_values([parse_ca410_measurement_response(response), *_collect_ca410_average_values(lambda command: _ca410_serial_query(serial_port, command), config, stop_requested)])
+            return _average_ca410_values([parse_ca410_measurement_response(response), *_collect_ca410_average_values(query, config, stop_requested, allow_internal_sync_retry)])
         return parse_ca410_measurement_response(response)
 
 
 def _ca410_serial_query(serial_port, command: str) -> str:
     serial_port.write((command.rstrip("\r\n") + "\r").encode("ascii"))
-    response = bytes(serial_port.read_until(b"\r"))
+    original_timeout = getattr(serial_port, "timeout", None)
+    timeout = _ca410_command_timeout_s(command)
+    if timeout is not None and hasattr(serial_port, "timeout"):
+        serial_port.timeout = timeout
+    try:
+        response = bytes(serial_port.read_until(b"\r"))
+    finally:
+        if timeout is not None and original_timeout is not None and hasattr(serial_port, "timeout"):
+            serial_port.timeout = original_timeout
     if not response:
         raise TimeoutError(f"CA-410 antwortet nicht auf {command}.")
     return response.decode("ascii", errors="replace").strip()
+
+
+def _ca410_command_timeout_s(command: str) -> float | None:
+    base = command.strip().upper().split(",", 1)[0]
+    if base == "ZRC":
+        return 30.0
+    if base == "MES":
+        return 20.0
+    return None
 
 
 def _ca410_apply_sync_settings(query: Callable[[str], str], sync_mode_code: str, sync_value: str) -> None:
@@ -1594,11 +1619,55 @@ def _ca410_apply_integration_setting(query: Callable[[str], str], integration_mo
         raise exc
 
 
-def _collect_ca410_average_values(query: Callable[[str], str], config: CA410Config, stop_requested: StopCallback) -> list[dict[str, str]]:
+def _ca410_apply_luminance_unit(query: Callable[[str], str]) -> None:
+    command = "LUS,1"
+    response = query(command)
+    try:
+        _ca410_expect_ok(response, command)
+    except RuntimeError:
+        LOGGER.info("CA-410 luminance unit command %s returned %s; continuing", command, response.strip())
+
+
+def _ca410_prepare_single_measurement(query: Callable[[str], str]) -> None:
+    for command in ("IMS,0", "TMS,0"):
+        response = query(command)
+        try:
+            _ca410_expect_ok(response, command)
+        except RuntimeError:
+            LOGGER.info("CA-410 setup command %s returned %s; continuing", command, response.strip())
+
+
+def _ca410_logged_query(query: Callable[[str], str], command: str) -> str:
+    response = query(command)
+    LOGGER.info("CA-410 command=%s response=%s", command, response.strip())
+    return response
+
+
+def _ca410_query_measurement(query: Callable[[str], str], include_xyz: bool, allow_internal_sync_retry: bool) -> str:
+    commands = ["MES,2", "MES,1"] if include_xyz else ["MES,1"]
+    response = ""
+    for command in commands:
+        response = query(command)
+        if not _ca410_response_status(response).startswith("ER"):
+            return response
+        LOGGER.info("CA-410 measurement command %s returned %s", command, response.strip())
+    if allow_internal_sync_retry:
+        LOGGER.info("CA-410 FMA measurement returned %s; retrying manual FMA sync SCS,4,60.00 with MES,1", response.strip())
+        _ca410_expect_ok(query("SCS,4,60.00"), "SCS,4,60.00")
+        response = query("MES,1")
+        if not _ca410_response_status(response).startswith("ER"):
+            return response
+        LOGGER.info("CA-410 measurement after sync retry returned %s; running zero calibration ZRC and retrying MES,1", response.strip())
+        _ca410_expect_ok(query("ZRC"), "ZRC")
+        return query("MES,1")
+    return response
+
+
+def _collect_ca410_average_values(query: Callable[[str], str], config: CA410Config, stop_requested: StopCallback, allow_internal_sync_retry: bool) -> list[dict[str, str]]:
     deadline = monotonic() + config.averaging_time_s
     results: list[dict[str, str]] = []
     while monotonic() < deadline and not stop_requested():
-        response = query("MES,2" if config.include_xyz else "MES,1")
+        response = _ca410_query_measurement(query, config.include_xyz, allow_internal_sync_retry)
         results.append(parse_ca410_measurement_response(response))
     return results
 
@@ -1635,11 +1704,11 @@ def _ca410_serial_port(address: str) -> str | None:
 
 def parse_ca410_measurement_response(response: str) -> dict[str, str]:
     parts = [part.strip() for part in response.strip().strip("\r\n").split(",")]
-    if len(parts) < 8:
-        raise ValueError(f"Ungültige CA-410-Antwort: {response!r}")
-    status = parts[0]
+    status = _ca410_response_status(response)
     if not status.startswith("OK"):
         raise RuntimeError(f"CA-410 meldet Fehler {status}: {response}")
+    if len(parts) < 8:
+        raise ValueError(f"Ungültige CA-410-Antwort: {response!r}")
     mode_code = parts[2]
     fields = CA410_MODE_FIELDS.get(mode_code, ("Value1", "Value2", "Value3"))
     values: dict[str, str] = {
@@ -1657,9 +1726,17 @@ def parse_ca410_measurement_response(response: str) -> dict[str, str]:
     return values
 
 
+def _ca410_response_status(response: str) -> str:
+    return response.strip().strip("\r\n").split(",", 1)[0].strip()
+
+
 def _ca410_csv(values: dict[str, str], mode_code: str, stopped: bool = False) -> str:
     fields = CA410_MODE_FIELDS.get(mode_code, ("Value1", "Value2", "Value3"))
-    headers = ["Timestamp", "Status", "Probe", "DisplayMode", *fields, "TempShift", "FMAFlickerPercent", "X", "Y", "Z", "AverageSamples"]
+    headers = ["Timestamp", "Status", "Probe", "DisplayMode", *fields, "TempShift", "FMAFlickerPercent"]
+    if any(values.get(header) for header in ("X", "Y", "Z")):
+        headers.extend(["X", "Y", "Z"])
+    if values.get("AverageSamples"):
+        headers.append("AverageSamples")
     row = [datetime.now().strftime("%Y-%m-%d %H:%M:%S")]
     row.extend(values.get(header, "") for header in headers[1:])
     if stopped:

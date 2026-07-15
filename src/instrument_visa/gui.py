@@ -178,7 +178,7 @@ class InstrumentVisaApp(tk.Tk):
         self.ca410_measurement_method_var = tk.StringVar(value=self.settings.get("ca410_measurement_method", "Color+Flicker"))
         self.ca410_flicker_method_var = tk.StringVar(value=self.settings.get("ca410_flicker_method", "FMA"))
         self.ca410_measurement_speed_var = tk.StringVar(value=self.settings.get("ca410_measurement_speed", "FAST"))
-        self.ca410_sync_mode_var = tk.StringVar(value=self.settings.get("ca410_sync_mode", "UNIV"))
+        self.ca410_sync_mode_var = tk.StringVar(value=self.settings.get("ca410_sync_mode", "INT"))
         self.ca410_sync_value_var = tk.StringVar(value=str(self.settings.get("ca410_sync_value", "60.00")))
         self.ca410_integration_mode_var = tk.StringVar(value=self.settings.get("ca410_integration_mode", "Double-Frame"))
         self.ca410_averaging_time_var = tk.StringVar(value=str(self.settings.get("ca410_averaging_time", "0")))
@@ -581,7 +581,7 @@ class InstrumentVisaApp(tk.Tk):
         ca410_count_entry.pack(side="left", padx=(0, 8))
         ca410_stop_button = ttk.Button(ca410_timing, text="Stop", command=self.stop_current_operation)
         ca410_stop_button.pack(side="left", padx=(8, 0))
-        ttk.Label(ca410, text="Defaults: UNIV, Double-Frame, FAST, Averaging 0 s. INT nutzt Sync-Wert in Hz, MANUAL in ms.").grid(row=4, column=0, sticky="w", padx=8, pady=(0, 8))
+        ttk.Label(ca410, text="Defaults: INT 60 Hz, Double-Frame, FAST, Averaging 0 s. UNIV nutzt automatische Sync-Erkennung, MANUAL den Sync-Wert in ms.").grid(row=4, column=0, sticky="w", padx=8, pady=(0, 8))
 
         spectrum = ttk.LabelFrame(measurement_area, text="Spektrumanalysator")
         spectrum.grid(row=6, column=0, sticky="ew", pady=(12, 0))
@@ -1130,7 +1130,7 @@ class InstrumentVisaApp(tk.Tk):
             "picoscope_digital": (self._default_sequence_device_name("PicoScope"), "D0-D7", "1500", "10000", "1"),
             "data_logger_34970a_read": (self._default_sequence_device_name("Datenlogger"), "TEMP", "1-20", "19200", "8N1"),
             "data_logger_34970a_plan": (self._default_sequence_device_name("Datenlogger"), "1-20:TEMP; 21-22:CURR_DC", "19200", "8N1", ""),
-            "ca410_read": (self._default_sequence_device_name("Farbmessgerät"), "xyLv", "1", "0", "Color+Flicker", "FMA", "FAST", "UNIV", "60.00", "Double-Frame", "0", "38400", "7E2"),
+            "ca410_read": (self._default_sequence_device_name("Farbmessgerät"), "xyLv", "1", "0", "Color+Flicker", "FMA", "FAST", "INT", "60.00", "Double-Frame", "0", "38400", "7E2"),
             "saleae_capture": (self._default_sequence_device_name("Saleae"), "D0-D7", "5", "10000000", "3.3"),
             "saleae_uart": (self._default_sequence_device_name("Saleae"), "0", "115200", "5", "10000000"),
             "saleae_i2c": (self._default_sequence_device_name("Saleae"), "0", "1", "5", "10000000"),
@@ -1745,7 +1745,7 @@ class InstrumentVisaApp(tk.Tk):
             self.status_var.set("Beispiel geladen: 34970A Messplan")
         elif example == "ca410_read":
             self.custom_sequence_devices = {"Farbmessgerät1": ca410_address}
-            self.custom_sequence_steps = [SequenceStep("Farbmessgerät1", "ca410_read", {"color_mode": "xyLv", "probe": "1", "calibration_channel": "0", "measurement_method": "Color+Flicker", "flicker_method": "FMA", "measurement_speed": "FAST", "sync_mode": "UNIV", "sync_value": "60.00", "integration_mode": "Double-Frame", "averaging_time_s": "0", "baudrate": "38400", "serial_format": "7E2"})]
+            self.custom_sequence_steps = [SequenceStep("Farbmessgerät1", "ca410_read", {"color_mode": "xyLv", "probe": "1", "calibration_channel": "0", "measurement_method": "Color+Flicker", "flicker_method": "FMA", "measurement_speed": "FAST", "sync_mode": "INT", "sync_value": "60.00", "integration_mode": "Double-Frame", "averaging_time_s": "0", "baudrate": "38400", "serial_format": "7E2"})]
             self._clear_custom_sequence_variable_defaults(repeat="1")
             self.status_var.set("Beispiel geladen: CA-410 Messwert")
         else:

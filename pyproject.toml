@@ -1,6 +1,6 @@
 [project]
 name = "measurement-devices-communication-library"
-version = "0.8.14"
+version = "0.8.15"
 description = "Measurement devices communication library and GUI for VISA/SCPI instruments."
 readme = "README.md"
 requires-python = ">=3.10"

@@ -53,6 +53,7 @@ from instrument_visa.sequence import (  # noqa: E402
     parse_34970a_channels,
     read_34970a_data_logger,
     DataLogger34970AConfig,
+    _ca410_command_timeout_s,
     parse_ca410_measurement_response,
     read_ca410_measurement,
     run_ssh_command,
@@ -1430,23 +1431,26 @@ class AcquisitionTests(unittest.TestCase):
             query_responses={
                 "COM,1": "OK00",
                 "OPR,1": "OK00",
-                "SCS,3": "OK00",
+                "SCS,4,60.00": "OK00",
                 "VSN,2": "OK00",
                 "FSC,1": "OK00",
                 "MMS,0": "OK00",
                 "FMS,0": "OK00",
+                "IMS,0": "OK00",
+                "TMS,0": "OK00",
                 "MCH,1,0": "OK00",
                 "MDS,0": "OK00",
-                "MES,2": "OK00,P1,0,0.3274345,0.4191236,4.8075729,+0.39,2.1047971,1.0,2.0,3.0",
+                "MES,1": "OK00,P1,0,0.3274345,0.4191236,4.8075729,+0.39,2.1047971",
             }
         )
 
         result = read_ca410_measurement(instrument, CA410Config())
 
         self.assertEqual(instrument.serial_configs, [(38400, 7, "E", 2.0)])
-        self.assertEqual(instrument.queries, ["COM,1", "OPR,1", "SCS,3", "FSC,1", "MMS,0", "VSN,2", "FMS,0", "MCH,1,0", "MDS,0", "MES,2"])
-        self.assertIn("Timestamp,Status,Probe,DisplayMode,x,y,Lv,TempShift,FMAFlickerPercent,X,Y,Z", str(result.content))
-        self.assertIn("OK00,P1,0,0.3274345,0.4191236,4.8075729,+0.39,2.1047971,1.0,2.0,3.0", str(result.content))
+        self.assertEqual(instrument.queries, ["COM,1", "OPR,1", "SCS,4,60.00", "FSC,1", "MMS,0", "VSN,2", "FMS,0", "IMS,0", "TMS,0", "MCH,1,0", "LUS,1", "MDS,0", "MES,1"])
+        self.assertIn("Timestamp,Status,Probe,DisplayMode,x,y,Lv,TempShift,FMAFlickerPercent", str(result.content))
+        self.assertNotIn("X,Y,Z", str(result.content))
+        self.assertIn("OK00,P1,0,0.3274345,0.4191236,4.8075729,+0.39,2.1047971", str(result.content))
 
     def test_custom_sequence_ca410_step(self) -> None:
         instrument = FakeInstrument(
@@ -1461,7 +1465,7 @@ class AcquisitionTests(unittest.TestCase):
                 "FMS,0": "OK00",
                 "MCH,1,2": "OK00",
                 "MDS,1": "OK00",
-                "MES,2": "OK00,P1,1,6500.0,0.001,120.5,+0.01,0.5,1.0,2.0,3.0",
+                "MES,1": "OK00,P1,1,6500.0,0.001,120.5,+0.01,0.5",
             }
         )
         instrument.address = "COM9"
@@ -1487,14 +1491,14 @@ class AcquisitionTests(unittest.TestCase):
             query_responses={
                 "COM,1": "OK00",
                 "OPR,1": "OK00",
-                "SCS,3": "OK00",
+                "SCS,4,60.00": "OK00",
                 "VSN,2": "OK00",
                 "FSC,1": "OK00",
                 "MMS,1": "OK00",
                 "FMS,0": "OK00",
                 "MCH,1,0": "OK00",
                 "MDS,0": "OK00",
-                "MES,2": "OK00,P1,0,0.2000000,0.4000000,10.000000,+0.00,0.0,1.0,2.0,3.0",
+                "MES,1": "OK00,P1,0,0.2000000,0.4000000,10.000000,+0.00,0.0",
             }
         )
 
@@ -1503,11 +1507,147 @@ class AcquisitionTests(unittest.TestCase):
         self.assertIn("AverageSamples", str(result.content))
         self.assertIn("0.2,0.4,10", str(result.content))
 
+    def test_ca410_retries_mes1_when_xyz_mes2_returns_error(self) -> None:
+        instrument = FakeInstrument(
+            query_responses={
+                "COM,1": "OK00",
+                "OPR,1": "OK00",
+                "SCS,4,60.00": "OK00",
+                "VSN,2": "OK00",
+                "FSC,1": "OK00",
+                "MMS,0": "OK00",
+                "FMS,0": "OK00",
+                "MCH,1,0": "OK00",
+                "MDS,0": "OK00",
+                "MES,2": "ER10",
+                "MES,1": "OK00,P1,0,0.3274345,0.4191236,4.8075729,+0.39,2.1047971",
+            }
+        )
+
+        result = read_ca410_measurement(instrument, CA410Config(include_xyz=True))
+
+        self.assertIn("MES,2", instrument.queries)
+        self.assertIn("MES,1", instrument.queries)
+        self.assertIn("OK00,P1,0,0.3274345,0.4191236,4.8075729,+0.39,2.1047971", str(result.content))
+
+    def test_ca410_short_error_response_reports_device_error(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "ER10"):
+            read_ca410_measurement(
+                FakeInstrument(
+                    query_responses={
+                        "COM,1": "OK00",
+                        "OPR,1": "OK00",
+                        "SCS,4,60.00": "OK00",
+                        "VSN,2": "OK00",
+                        "FSC,1": "OK00",
+                        "MMS,0": "OK00",
+                        "FMS,0": "OK00",
+                        "MCH,1,0": "OK00",
+                        "MDS,0": "OK00",
+                        "ZRC": "OK00",
+                        "MES,2": "ER10",
+                        "MES,1": "ER10",
+                    }
+                ),
+                CA410Config(include_xyz=True),
+            )
+
+    def test_ca410_retries_internal_sync_when_univ_measurement_fails(self) -> None:
+        instrument = FakeInstrument(
+            query_responses={
+                "COM,1": "OK00",
+                "OPR,1": "OK00",
+                "SCS,3": "OK00",
+                "SCS,4,60.00": "OK00",
+                "VSN,2": "OK00",
+                "FSC,1": "OK00",
+                "MMS,0": "OK00",
+                "FMS,0": "OK00",
+                "MCH,1,0": "OK00",
+                "MDS,0": "OK00",
+                "MES,1": "ER10",
+            }
+        )
+        instrument.query_responses["MES,1"] = "ER10"
+
+        class RetryInstrument(FakeInstrument):
+            def __init__(self) -> None:
+                super().__init__(query_responses={
+                    "COM,1": "OK00",
+                    "OPR,1": "OK00",
+                    "SCS,3": "OK00",
+                    "SCS,4,60.00": "OK00",
+                    "VSN,2": "OK00",
+                    "FSC,1": "OK00",
+                    "MMS,0": "OK00",
+                    "FMS,0": "OK00",
+                    "MCH,1,0": "OK00",
+                    "MDS,0": "OK00",
+                })
+                self.mes_calls = 0
+
+            def query(self, command: str) -> str:
+                if command == "MES,1":
+                    self.queries.append(command)
+                    self.mes_calls += 1
+                    return "ER10" if self.mes_calls == 1 else "OK00,P1,0,0.3274345,0.4191236,4.8075729,+0.39,2.1047971"
+                return super().query(command)
+
+        retry_instrument = RetryInstrument()
+
+        result = read_ca410_measurement(retry_instrument, CA410Config(sync_mode="UNIV"))
+
+        self.assertIn("SCS,3", retry_instrument.queries)
+        self.assertIn("SCS,4,60.00", retry_instrument.queries)
+        self.assertEqual(retry_instrument.queries.count("MES,1"), 2)
+        self.assertIn("OK00,P1,0,0.3274345,0.4191236,4.8075729,+0.39,2.1047971", str(result.content))
+
+    def test_ca410_retries_zero_calibration_when_measurement_still_fails(self) -> None:
+        class RetryInstrument(FakeInstrument):
+            def __init__(self) -> None:
+                super().__init__(query_responses={
+                    "COM,1": "OK00",
+                    "OPR,1": "OK00",
+                    "SCS,3": "OK00",
+                    "SCS,4,60.00": "OK00",
+                    "VSN,2": "OK00",
+                    "FSC,1": "OK00",
+                    "MMS,0": "OK00",
+                    "FMS,0": "OK00",
+                    "IMS,0": "ER10",
+                    "TMS,0": "OK00",
+                    "MCH,1,0": "OK00",
+                    "LUS,1": "OK00",
+                    "MDS,0": "OK00",
+                    "ZRC": "OK00",
+                })
+                self.mes_calls = 0
+
+            def query(self, command: str) -> str:
+                if command == "MES,1":
+                    self.queries.append(command)
+                    self.mes_calls += 1
+                    return "ER10" if self.mes_calls < 3 else "OK00,P1,0,0.3274345,0.4191236,4.8075729,+0.39,2.1047971"
+                return super().query(command)
+
+        instrument = RetryInstrument()
+
+        result = read_ca410_measurement(instrument, CA410Config(sync_mode="UNIV"))
+
+        self.assertIn("ZRC", instrument.queries)
+        self.assertEqual(instrument.queries.count("MES,1"), 3)
+        self.assertIn("OK00,P1,0,0.3274345,0.4191236,4.8075729,+0.39,2.1047971", str(result.content))
+
+    def test_ca410_long_timeout_commands(self) -> None:
+        self.assertEqual(_ca410_command_timeout_s("ZRC"), 30.0)
+        self.assertEqual(_ca410_command_timeout_s("MES,1"), 20.0)
+        self.assertIsNone(_ca410_command_timeout_s("COM,1"))
+
     def test_ca410_single_frame_requires_synchronous_mode(self) -> None:
         instrument = FakeInstrument()
 
         with self.assertRaisesRegex(ValueError, "Sync"):
-            read_ca410_measurement(instrument, CA410Config(measurement_method="Color", integration_mode="Single-Frame"))
+            read_ca410_measurement(instrument, CA410Config(measurement_method="Color", sync_mode="UNIV", integration_mode="Single-Frame"))
 
     def test_ca410_excel_export_appends_rows(self) -> None:
         from openpyxl import load_workbook
