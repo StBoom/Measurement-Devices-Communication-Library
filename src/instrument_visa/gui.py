@@ -2293,6 +2293,7 @@ class InstrumentVisaApp(tk.Tk):
         interval_s, count = self._data_logger_timing()
         completed = 0
         started = monotonic()
+        sheet_name = _measurement_run_sheet_name("34970A")
         with self._open_instrument() as instrument:
             info = instrument.info()
             while not self.operation_stop_event.is_set() and (count == 0 or completed < count):
@@ -2309,7 +2310,7 @@ class InstrumentVisaApp(tk.Tk):
                     ),
                     stop_requested=self.operation_stop_event.is_set,
                 )
-                export = append_result(self._output_path(), self.address_var.get().strip(), info.idn, result)
+                export = append_result(self._output_path(), self.address_var.get().strip(), info.idn, result, sheet_name=sheet_name)
                 completed += 1
                 self.logger.info("34970A data exported workbook=%s sheet=%s measurement=%s channels=%s baudrate=%s serial_format=%s index=%s", export.workbook_path, export.sheet_name, measurement, channels, baudrate, serial_format, completed)
                 if count and completed >= count:
@@ -2325,6 +2326,7 @@ class InstrumentVisaApp(tk.Tk):
         tasks = parse_34970a_measurement_plan(plan)
         completed = 0
         started = monotonic()
+        sheet_name = _measurement_run_sheet_name("34970A")
         with self._open_instrument() as instrument:
             info = instrument.info()
             while not self.operation_stop_event.is_set() and (count == 0 or completed < count):
@@ -2332,7 +2334,7 @@ class InstrumentVisaApp(tk.Tk):
                 if wait_s > 0 and self.operation_stop_event.wait(wait_s):
                     break
                 result = read_34970a_measurement_plan(instrument, tasks, baudrate=baudrate, serial_format_value=serial_format, stop_requested=self.operation_stop_event.is_set)
-                export = append_result(self._output_path(), self.address_var.get().strip(), info.idn, result)
+                export = append_result(self._output_path(), self.address_var.get().strip(), info.idn, result, sheet_name=sheet_name)
                 completed += 1
                 self.logger.info("34970A plan exported workbook=%s sheet=%s plan=%s baudrate=%s serial_format=%s index=%s", export.workbook_path, export.sheet_name, plan, baudrate, serial_format, completed)
                 if count and completed >= count:
@@ -2356,6 +2358,7 @@ class InstrumentVisaApp(tk.Tk):
         interval_s, count = self._ca410_timing()
         completed = 0
         started = monotonic()
+        sheet_name = _measurement_run_sheet_name("CA410")
         address = self.address_var.get().strip()
         ca410_address = self._serial_port_for_address(address) or address
         with create_sequence_instrument(ca410_address, timeout_ms=10000) as instrument:
@@ -2382,7 +2385,7 @@ class InstrumentVisaApp(tk.Tk):
                     ),
                     stop_requested=self.operation_stop_event.is_set,
                 )
-                export = append_result(self._output_path(), address, info.idn, result)
+                export = append_result(self._output_path(), address, info.idn, result, sheet_name=sheet_name)
                 completed += 1
                 self.logger.info("CA-410 exported workbook=%s sheet=%s color_mode=%s probe=%s calibration_channel=%s measurement_method=%s flicker_method=%s measurement_speed=%s sync_mode=%s sync_value=%s integration_mode=%s averaging_time_s=%s baudrate=%s serial_format=%s index=%s", export.workbook_path, export.sheet_name, color_mode, probe, calibration_channel, measurement_method, flicker_method, measurement_speed, sync_mode, sync_value, integration_mode, averaging_time_s, baudrate, serial_format, completed)
                 if count and completed >= count:
@@ -3785,6 +3788,11 @@ def _csv_rows(rows: list[list[object]]) -> str:
     writer = csv.writer(output, lineterminator="\n")
     writer.writerows(rows)
     return output.getvalue()
+
+
+def _measurement_run_sheet_name(prefix: str) -> str:
+    safe_prefix = "".join(character for character in prefix if character.isalnum())[:16] or "Messung"
+    return f"{safe_prefix}-{datetime.now().strftime('%H%M%S-%f')}"[:31]
 
 
 def _generator_settings_csv(frequency: str, power: str, rf_output: str) -> str:

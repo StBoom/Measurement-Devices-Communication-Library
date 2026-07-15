@@ -1379,7 +1379,7 @@ class AcquisitionTests(unittest.TestCase):
 
         self.assertEqual(instrument.queries, [])
 
-    def test_34970a_excel_export_appends_wide_rows_to_same_sheet(self) -> None:
+    def test_34970a_excel_export_appends_wide_rows_to_named_run_sheet(self) -> None:
         from openpyxl import load_workbook
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1387,18 +1387,34 @@ class AcquisitionTests(unittest.TestCase):
             first = AcquisitionResult(kind="34970A measurement plan", file_type="csv", content="Timestamp,CH1 TEMP [degC],CH21 CURR_DC [A]\n2026-07-08 14:00:00,23.5,0.1\n")
             second = AcquisitionResult(kind="34970A measurement plan", file_type="csv", content="Timestamp,CH1 TEMP [degC],CH21 CURR_DC [A]\n2026-07-08 14:00:05,23.6,0.2\n")
 
-            first_export = append_result(workbook_path, "COM7", "HEWLETT-PACKARD,34970A", first)
-            second_export = append_result(workbook_path, "COM7", "HEWLETT-PACKARD,34970A", second)
+            first_export = append_result(workbook_path, "COM7", "HEWLETT-PACKARD,34970A", first, sheet_name="34970A-Run1")
+            second_export = append_result(workbook_path, "COM7", "HEWLETT-PACKARD,34970A", second, sheet_name="34970A-Run1")
             workbook = load_workbook(workbook_path)
-            sheet = workbook["34970A Measurements"]
+            sheet = workbook["34970A-Run1"]
 
-            self.assertEqual(first_export.sheet_name, "34970A Measurements")
-            self.assertEqual(second_export.sheet_name, "34970A Measurements")
+            self.assertEqual(first_export.sheet_name, "34970A-Run1")
+            self.assertEqual(second_export.sheet_name, "34970A-Run1")
             self.assertEqual(sheet.max_row, 3)
             self.assertEqual(sheet["A1"].value, "Timestamp")
             self.assertEqual(sheet["B1"].value, "CH1 TEMP [degC]")
             self.assertEqual(sheet["A2"].value, "2026-07-08 14:00:00")
             self.assertEqual(sheet["B3"].value, 23.6)
+
+    def test_34970a_excel_export_different_run_sheets(self) -> None:
+        from openpyxl import load_workbook
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "results.xlsx"
+            content = "Timestamp,CH1 TEMP [degC]\n2026-07-08 14:00:00,23.5\n"
+
+            append_result(workbook_path, "COM7", "HEWLETT-PACKARD,34970A", AcquisitionResult(kind="34970A data logger", file_type="csv", content=content), sheet_name="34970A-Run1")
+            append_result(workbook_path, "COM7", "HEWLETT-PACKARD,34970A", AcquisitionResult(kind="34970A data logger", file_type="csv", content=content), sheet_name="34970A-Run2")
+            workbook = load_workbook(workbook_path)
+
+            self.assertIn("34970A-Run1", workbook.sheetnames)
+            self.assertIn("34970A-Run2", workbook.sheetnames)
+            self.assertEqual(workbook["34970A-Run1"].max_row, 2)
+            self.assertEqual(workbook["34970A-Run2"].max_row, 2)
 
     def test_34970a_excel_export_adds_late_stopped_header(self) -> None:
         from openpyxl import load_workbook
@@ -1441,17 +1457,16 @@ class AcquisitionTests(unittest.TestCase):
                 "TMS,0": "OK00",
                 "MCH,1,0": "OK00",
                 "MDS,0": "OK00",
-                "MES,1": "OK00,P1,0,0.3274345,0.4191236,4.8075729,+0.39,2.1047971",
+                "MES,2": "OK00,P1,0,0.3274345,0.4191236,4.8075729,+0.39,2.1047971,1.0,2.0,3.0",
             }
         )
 
         result = read_ca410_measurement(instrument, CA410Config())
 
         self.assertEqual(instrument.serial_configs, [(38400, 7, "E", 2.0)])
-        self.assertEqual(instrument.queries, ["COM,1", "OPR,1", "SCS,4,60.00", "FSC,1", "MMS,0", "VSN,2", "FMS,0", "IMS,0", "TMS,0", "MCH,1,0", "LUS,1", "MDS,0", "MES,1"])
-        self.assertIn("Timestamp,Status,Probe,DisplayMode,x,y,Lv,TempShift,FMAFlickerPercent", str(result.content))
-        self.assertNotIn("X,Y,Z", str(result.content))
-        self.assertIn("OK00,P1,0,0.3274345,0.4191236,4.8075729,+0.39,2.1047971", str(result.content))
+        self.assertEqual(instrument.queries, ["COM,1", "OPR,1", "SCS,4,60.00", "FSC,1", "MMS,0", "VSN,2", "FMS,0", "IMS,0", "TMS,0", "MCH,1,0", "LUS,1", "MDS,0", "MES,2"])
+        self.assertIn("Timestamp,Status,Probe,DisplayMode,x,y,Lv,TempShift,FMAFlickerPercent,X,Y,Z", str(result.content))
+        self.assertIn("OK00,P1,0,0.3274345,0.4191236,4.8075729,+0.39,2.1047971,1.0,2.0,3.0", str(result.content))
 
     def test_custom_sequence_ca410_step(self) -> None:
         instrument = FakeInstrument(
@@ -1466,7 +1481,7 @@ class AcquisitionTests(unittest.TestCase):
                 "FMS,0": "OK00",
                 "MCH,1,2": "OK00",
                 "MDS,1": "OK00",
-                "MES,1": "OK00,P1,1,6500.0,0.001,120.5,+0.01,0.5",
+                "MES,2": "OK00,P1,1,6500.0,0.001,120.5,+0.01,0.5,1.0,2.0,3.0",
             }
         )
         instrument.address = "COM9"
@@ -1499,7 +1514,7 @@ class AcquisitionTests(unittest.TestCase):
                 "FMS,0": "OK00",
                 "MCH,1,0": "OK00",
                 "MDS,0": "OK00",
-                "MES,1": "OK00,P1,0,0.2000000,0.4000000,10.000000,+0.00,0.0",
+                "MES,2": "OK00,P1,0,0.2000000,0.4000000,10.000000,+0.00,0.0,1.0,2.0,3.0",
             }
         )
 
@@ -1525,11 +1540,12 @@ class AcquisitionTests(unittest.TestCase):
             }
         )
 
-        result = read_ca410_measurement(instrument, CA410Config(include_xyz=True))
+        result = read_ca410_measurement(instrument, CA410Config())
 
         self.assertIn("MES,2", instrument.queries)
         self.assertIn("MES,1", instrument.queries)
         self.assertIn("OK00,P1,0,0.3274345,0.4191236,4.8075729,+0.39,2.1047971", str(result.content))
+        self.assertIn("X,Y,Z", str(result.content))
 
     def test_ca410_short_error_response_reports_device_error(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "ER10"):
@@ -1546,11 +1562,10 @@ class AcquisitionTests(unittest.TestCase):
                         "MCH,1,0": "OK00",
                         "MDS,0": "OK00",
                         "ZRC": "OK00",
-                        "MES,2": "ER10",
                         "MES,1": "ER10",
                     }
                 ),
-                CA410Config(include_xyz=True),
+                CA410Config(include_xyz=False),
             )
 
     def test_ca410_retries_internal_sync_when_univ_measurement_fails(self) -> None:
@@ -1596,7 +1611,7 @@ class AcquisitionTests(unittest.TestCase):
 
         retry_instrument = RetryInstrument()
 
-        result = read_ca410_measurement(retry_instrument, CA410Config(sync_mode="UNIV"))
+        result = read_ca410_measurement(retry_instrument, CA410Config(sync_mode="UNIV", include_xyz=False))
 
         self.assertIn("SCS,3", retry_instrument.queries)
         self.assertIn("SCS,4,60.00", retry_instrument.queries)
@@ -1633,7 +1648,7 @@ class AcquisitionTests(unittest.TestCase):
 
         instrument = RetryInstrument()
 
-        result = read_ca410_measurement(instrument, CA410Config(sync_mode="UNIV"))
+        result = read_ca410_measurement(instrument, CA410Config(sync_mode="UNIV", include_xyz=False))
 
         self.assertIn("ZRC", instrument.queries)
         self.assertEqual(instrument.queries.count("MES,1"), 3)
@@ -1650,7 +1665,7 @@ class AcquisitionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Sync"):
             read_ca410_measurement(instrument, CA410Config(measurement_method="Color", sync_mode="UNIV", integration_mode="Single-Frame"))
 
-    def test_ca410_excel_export_appends_rows(self) -> None:
+    def test_ca410_excel_export_appends_rows_to_named_run_sheet(self) -> None:
         from openpyxl import load_workbook
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1658,16 +1673,50 @@ class AcquisitionTests(unittest.TestCase):
             first = AcquisitionResult(kind="CA-410 measurement", file_type="csv", content="Timestamp,Status,Probe,DisplayMode,x,y,Lv\n2026-07-13 14:00:00,OK00,P1,0,0.1,0.2,100\n")
             second = AcquisitionResult(kind="CA-410 measurement", file_type="csv", content="Timestamp,Status,Probe,DisplayMode,x,y,Lv\n2026-07-13 14:00:01,OK00,P1,0,0.3,0.4,101\n")
 
-            first_export = append_result(workbook_path, "COM9", "Konica Minolta CA-410", first)
-            second_export = append_result(workbook_path, "COM9", "Konica Minolta CA-410", second)
+            first_export = append_result(workbook_path, "COM9", "Konica Minolta CA-410", first, sheet_name="CA410-Run1")
+            second_export = append_result(workbook_path, "COM9", "Konica Minolta CA-410", second, sheet_name="CA410-Run1")
             workbook = load_workbook(workbook_path)
-            sheet = workbook["CA-410 Measurements"]
+            sheet = workbook["CA410-Run1"]
 
-            self.assertEqual(first_export.sheet_name, "CA-410 Measurements")
-            self.assertEqual(second_export.sheet_name, "CA-410 Measurements")
+            self.assertEqual(first_export.sheet_name, "CA410-Run1")
+            self.assertEqual(second_export.sheet_name, "CA410-Run1")
             self.assertEqual(sheet.max_row, 3)
             self.assertEqual(sheet["B1"].value, "Status")
             self.assertEqual(sheet["E3"].value, 0.3)
+
+    def test_ca410_excel_export_different_run_sheets(self) -> None:
+        from openpyxl import load_workbook
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "results.xlsx"
+            content = "Timestamp,Status,Probe,DisplayMode,x,y,Lv\n2026-07-13 14:00:00,OK00,P1,0,0.1,0.2,100\n"
+
+            append_result(workbook_path, "COM9", "Konica Minolta CA-410", AcquisitionResult(kind="CA-410 measurement", file_type="csv", content=content), sheet_name="CA410-Run1")
+            append_result(workbook_path, "COM9", "Konica Minolta CA-410", AcquisitionResult(kind="CA-410 measurement", file_type="csv", content=content), sheet_name="CA410-Run2")
+            workbook = load_workbook(workbook_path)
+
+            self.assertIn("CA410-Run1", workbook.sheetnames)
+            self.assertIn("CA410-Run2", workbook.sheetnames)
+            self.assertEqual(workbook["CA410-Run1"].max_row, 2)
+            self.assertEqual(workbook["CA410-Run2"].max_row, 2)
+
+    def test_ca410_excel_export_adds_charts(self) -> None:
+        from openpyxl import load_workbook
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "results.xlsx"
+            first = AcquisitionResult(kind="CA-410 measurement", file_type="csv", content="Timestamp,Status,Probe,DisplayMode,x,y,Lv,TempShift,FMAFlickerPercent,X,Y,Z\n2026-07-13 14:00:00,OK00,P1,0,0.3127,0.3290,100,+0.01,0.5,95,100,108\n")
+            second = AcquisitionResult(kind="CA-410 measurement", file_type="csv", content="Timestamp,Status,Probe,DisplayMode,x,y,Lv,TempShift,FMAFlickerPercent,X,Y,Z\n2026-07-13 14:00:01,OK00,P1,0,0.3130,0.3295,101,+0.02,0.6,96,101,109\n")
+
+            append_result(workbook_path, "COM9", "Konica Minolta CA-410", first, sheet_name="CA410-Run1")
+            append_result(workbook_path, "COM9", "Konica Minolta CA-410", second, sheet_name="CA410-Run1")
+            workbook = load_workbook(workbook_path)
+            sheet = workbook["CA410-Run1"]
+
+            self.assertEqual(sheet.max_row, 3)
+            self.assertEqual(len(sheet._charts), 3)
+            self.assertEqual(sheet._charts[0].title.tx.rich.p[0].r[0].t, "CA-410 Weißpunkt / Farbort")
+            self.assertEqual(sheet._charts[1].title.tx.rich.p[0].r[0].t, "CA-410 Leuchtdichte")
 
     def test_parse_34970a_measurement_plan(self) -> None:
         tasks = parse_34970a_measurement_plan("1-4:VOLT_DC; 5:TEMP; 6-7:RES")

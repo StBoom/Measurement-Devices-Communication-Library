@@ -290,7 +290,7 @@ class CA410Config:
     baudrate: int = 38400
     serial_format: str = "7E2"
     remote: bool = True
-    include_xyz: bool = False
+    include_xyz: bool = True
 
 
 def run_frequency_sweep(
@@ -1159,7 +1159,7 @@ def _execute_custom_sequence_step(
                 averaging_time_s=_float_param(params, "averaging_time_s", 0.0),
                 baudrate=_int_param(params, "baudrate", 38400),
                 serial_format=str(params.get("serial_format", "7E2")).strip() or "7E2",
-                include_xyz=_bool_param(params, "include_xyz", False),
+                include_xyz=_bool_param(params, "include_xyz", True),
             ),
             stop_requested=stop_requested,
         )
@@ -1732,9 +1732,7 @@ def _ca410_response_status(response: str) -> str:
 
 def _ca410_csv(values: dict[str, str], mode_code: str, stopped: bool = False) -> str:
     fields = CA410_MODE_FIELDS.get(mode_code, ("Value1", "Value2", "Value3"))
-    headers = ["Timestamp", "Status", "Probe", "DisplayMode", *fields, "TempShift", "FMAFlickerPercent"]
-    if any(values.get(header) for header in ("X", "Y", "Z")):
-        headers.extend(["X", "Y", "Z"])
+    headers = ["Timestamp", "Status", "Probe", "DisplayMode", *fields, "TempShift", "FMAFlickerPercent", "X", "Y", "Z"]
     if values.get("AverageSamples"):
         headers.append("AverageSamples")
     row = [datetime.now().strftime("%Y-%m-%d %H:%M:%S")]

@@ -35,12 +35,12 @@ class ExportResult:
     sheet_name: str | None = None
 
 
-def append_result(workbook_path: Path, address: str, idn: str, result: AcquisitionResult) -> ExportResult:
+def append_result(workbook_path: Path, address: str, idn: str, result: AcquisitionResult, sheet_name: str | None = None) -> ExportResult:
     with _workbook_lock(workbook_path):
-        return _append_result_unlocked(workbook_path, address, idn, result)
+        return _append_result_unlocked(workbook_path, address, idn, result, sheet_name)
 
 
-def _append_result_unlocked(workbook_path: Path, address: str, idn: str, result: AcquisitionResult) -> ExportResult:
+def _append_result_unlocked(workbook_path: Path, address: str, idn: str, result: AcquisitionResult, preferred_sheet_name: str | None = None) -> ExportResult:
     artifact: Path | None = None
     result_sheet_name: str | None = None
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -71,9 +71,9 @@ def _append_result_unlocked(workbook_path: Path, address: str, idn: str, result:
         sheet.append([timestamp, address, idn, result.kind, result.file_type, target])
     elif result.file_type == "csv":
         if result.kind in {"34970A data logger", "34970A measurement plan"}:
-            data_sheet = _get_or_create_sheet(workbook, "34970A Measurements")
+            data_sheet = _get_or_create_sheet(workbook, preferred_sheet_name or "34970A Measurements")
         elif result.kind == "CA-410 measurement":
-            data_sheet = _get_or_create_sheet(workbook, "CA-410 Measurements")
+            data_sheet = _get_or_create_sheet(workbook, preferred_sheet_name or "CA-410 Measurements")
         else:
             data_sheet = workbook.create_sheet(_unique_sheet_name(workbook, result.kind))
         result_sheet_name = data_sheet.title
@@ -94,6 +94,8 @@ def _append_result_unlocked(workbook_path: Path, address: str, idn: str, result:
             _add_waveform_chart(data_sheet)
         elif result.kind in {"frequency sweep", "voltage sweep"}:
             _add_sweep_chart(data_sheet, result.kind)
+        elif result.kind == "CA-410 measurement":
+            _add_ca410_charts(data_sheet)
         _format_sheet(data_sheet)
     elif result.file_type.startswith("s") and result.file_type.endswith("p"):
         artifact = _artifact_path(workbook_path, result.file_type)
@@ -268,6 +270,73 @@ def _add_sweep_chart(sheet, kind: str) -> None:
     sheet.add_chart(chart, _chart_anchor(sheet))
 
 
+def _add_ca410_charts(sheet) -> None:
+    header_row = _find_ca410_header_row(sheet)
+    if header_row is None:
+        return
+    headers = {str(sheet.cell(header_row, column).value or "").strip().lower(): column for column in range(1, sheet.max_column + 1)}
+    first_data_row = header_row + 1
+    value_columns = [column for name, column in headers.items() if name in {"x", "y", "lv", "tcp", "duv", "fmaflickerpercent", "tempshift"}]
+    max_row = _last_numeric_row(sheet, first_data_row, value_columns)
+    if max_row <= header_row:
+        return
+
+    sheet._charts = []
+    anchor_column = get_column_letter(min(sheet.max_column + 2, 14))
+    _add_ca410_white_point_chart(sheet, headers, header_row, max_row, f"{anchor_column}2")
+    _add_ca410_line_chart(sheet, headers, header_row, max_row, ["lv"], "CA-410 Leuchtdichte", "Lv", f"{anchor_column}20")
+    _add_ca410_line_chart(sheet, headers, header_row, max_row, ["fmaflickerpercent", "tempshift"], "CA-410 Flicker / TempShift", "Value", f"{anchor_column}38")
+    _add_ca410_line_chart(sheet, headers, header_row, max_row, ["tcp", "duv"], "CA-410 Farbtemperatur / duv", "Value", f"{anchor_column}56")
+
+
+def _add_ca410_white_point_chart(sheet, headers: dict[str, int], header_row: int, max_row: int, anchor: str) -> None:
+    x_column = headers.get("x")
+    y_column = headers.get("y")
+    if x_column is None or y_column is None:
+        return
+    if not any(isinstance(sheet.cell(row, x_column).value, (int, float)) and isinstance(sheet.cell(row, y_column).value, (int, float)) for row in range(header_row + 1, max_row + 1)):
+        return
+    chart = ScatterChart()
+    chart.title = "CA-410 Weißpunkt / Farbort"
+    chart.x_axis.title = "x"
+    chart.y_axis.title = "y"
+    chart.legend = None
+    chart.width = 18
+    chart.height = 14
+    try:
+        chart.x_axis.scaling.min = 0
+        chart.x_axis.scaling.max = 1
+        chart.y_axis.scaling.min = 0
+        chart.y_axis.scaling.max = 1
+    except AttributeError:
+        pass
+    x_values = Reference(sheet, min_col=x_column, min_row=header_row + 1, max_row=max_row)
+    y_values = Reference(sheet, min_col=y_column, min_row=header_row + 1, max_row=max_row)
+    chart.series.append(Series(y_values, x_values, title="x/y"))
+    sheet.add_chart(chart, anchor)
+
+
+def _add_ca410_line_chart(sheet, headers: dict[str, int], header_row: int, max_row: int, header_names: list[str], title: str, y_axis_title: str, anchor: str) -> None:
+    columns = [headers[name] for name in header_names if name in headers and any(isinstance(sheet.cell(row, headers[name]).value, (int, float)) for row in range(header_row + 1, max_row + 1))]
+    if not columns:
+        return
+    chart = LineChart()
+    chart.title = title
+    chart.x_axis.title = "Messung"
+    chart.y_axis.title = y_axis_title
+    chart.legend.position = "r"
+    chart.width = 24
+    chart.height = 12
+    for column in columns:
+        data = Reference(sheet, min_col=column, min_row=header_row, max_row=max_row)
+        chart.add_data(data, titles_from_data=True)
+    timestamp_column = headers.get("timestamp")
+    if timestamp_column is not None:
+        categories = Reference(sheet, min_col=timestamp_column, min_row=header_row + 1, max_row=max_row)
+        chart.set_categories(categories)
+    sheet.add_chart(chart, anchor)
+
+
 def _sweep_chart_columns(sheet, header_row: int, max_row: int, x_column: int, y_column: int, x_header: str) -> tuple[int, int, int, int]:
     source_rows = [row for row in range(header_row + 1, max_row + 1) if isinstance(sheet.cell(row, y_column).value, (int, float))]
     if len(source_rows) <= MAX_CHART_POINTS:
@@ -316,6 +385,15 @@ def _find_sweep_header_row(sheet, x_header: str) -> int | None:
         values = [sheet.cell(row, column).value for column in range(1, sheet.max_column + 1)]
         normalized = {str(value).strip().lower() for value in values if value is not None}
         if {x_header, "value"}.issubset(normalized):
+            return row
+    return None
+
+
+def _find_ca410_header_row(sheet) -> int | None:
+    for row in range(1, sheet.max_row + 1):
+        values = [sheet.cell(row, column).value for column in range(1, sheet.max_column + 1)]
+        normalized = {str(value).strip().lower() for value in values if value is not None}
+        if {"timestamp", "status", "probe", "displaymode"}.issubset(normalized) and ({"x", "y", "lv"}.issubset(normalized) or "tcp" in normalized):
             return row
     return None
 
