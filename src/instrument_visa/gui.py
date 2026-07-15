@@ -74,7 +74,7 @@ from .sequence import (
 from .visa_client import InstrumentInfo, VisaInstrument, list_resources
 
 
-DEFAULT_ADDRESS = "USB0::0x0957::0x1796::MY58104189::0::INSTR"
+DEFAULT_ADDRESS = ""
 SETTINGS_PATH = Path("gui_settings.json")
 SCOPE_MEASUREMENTS = ("Vpp", "Vrms", "Frequency", "Period", "Vmax", "Vmin")
 ON_OFF_VALUES = ("ON", "OFF")
@@ -171,7 +171,7 @@ class InstrumentVisaApp(tk.Tk):
         self.data_logger_34970a_baudrate_var = tk.StringVar(value=str(self.settings.get("data_logger_34970a_baudrate", "19200")))
         self.data_logger_34970a_serial_format_var = tk.StringVar(value=self.settings.get("data_logger_34970a_serial_format", "8N1"))
         self.data_logger_34970a_interval_var = tk.StringVar(value=str(self.settings.get("data_logger_34970a_interval", "5")))
-        self.data_logger_34970a_count_var = tk.StringVar(value=str(self.settings.get("data_logger_34970a_count", "0")))
+        self.data_logger_34970a_count_var = tk.StringVar(value=str(self.settings.get("data_logger_34970a_count", "1")))
         self.ca410_color_mode_var = tk.StringVar(value=self.settings.get("ca410_color_mode", "xyLv"))
         self.ca410_probe_var = tk.StringVar(value=str(self.settings.get("ca410_probe", "1")))
         self.ca410_calibration_channel_var = tk.StringVar(value=str(self.settings.get("ca410_calibration_channel", "0")))
@@ -195,8 +195,8 @@ class InstrumentVisaApp(tk.Tk):
         self.power_supply_voltage_var = tk.StringVar(value=self.settings.get("power_supply_voltage", "5 V"))
         self.power_supply_current_var = tk.StringVar(value=self.settings.get("power_supply_current", "0.5 A"))
         self.power_supply_output_var = tk.StringVar(value=self.settings.get("power_supply_output", "OFF"))
-        self.power_supply_max_voltage_var = tk.StringVar(value=str(self.settings.get("power_supply_max_voltage", "32")))
-        self.power_supply_max_current_var = tk.StringVar(value=str(self.settings.get("power_supply_max_current", "10")))
+        self.power_supply_max_voltage_var = tk.StringVar(value=str(self.settings.get("power_supply_max_voltage", "5")))
+        self.power_supply_max_current_var = tk.StringVar(value=str(self.settings.get("power_supply_max_current", "0.5")))
         self.sequence_generator_address_var = tk.StringVar(value=self.settings.get("sequence_generator_address", self.address_var.get()))
         self.sequence_measurement_address_var = tk.StringVar(value=self.settings.get("sequence_measurement_address", self.address_var.get()))
         self.sequence_source_type_var = tk.StringVar(value=self.settings.get("sequence_source_type", "Signalgenerator"))
@@ -221,7 +221,7 @@ class InstrumentVisaApp(tk.Tk):
         self.custom_sequence_variable_start_var = tk.StringVar(value=self.settings.get("custom_sequence_variable_start", "100 MHz"))
         self.custom_sequence_variable_step_var = tk.StringVar(value=self.settings.get("custom_sequence_variable_step", "1 MHz"))
         self.custom_sequence_end_rf_off_var = tk.BooleanVar(value=bool(self.settings.get("custom_sequence_end_rf_off", True)))
-        self.custom_sequence_end_supply_off_var = tk.BooleanVar(value=bool(self.settings.get("custom_sequence_end_supply_off", False)))
+        self.custom_sequence_end_supply_off_var = tk.BooleanVar(value=bool(self.settings.get("custom_sequence_end_supply_off", True)))
         self.custom_sequence_window: tk.Toplevel | None = None
         self.custom_sequence_tree: ttk.Treeview | None = None
         self.custom_sequence_device_tree: ttk.Treeview | None = None
@@ -1112,10 +1112,10 @@ class InstrumentVisaApp(tk.Tk):
             return
         action = self._selected_custom_sequence_action()[1]
         defaults = {
-            "generator_set_frequency": (self._default_sequence_device_name("Signalgenerator"), "${frequency}", "-30 dBm", self.generator_max_power_var.get(), "ON"),
-            "generator_set_power": (self._default_sequence_device_name("Signalgenerator"), self.generator_power_var.get(), self.generator_max_power_var.get(), "ON", "ON"),
+            "generator_set_frequency": (self._default_sequence_device_name("Signalgenerator"), "${frequency}", "-30 dBm", self.generator_max_power_var.get(), "OFF"),
+            "generator_set_power": (self._default_sequence_device_name("Signalgenerator"), self.generator_power_var.get(), self.generator_max_power_var.get(), "OFF", "ON"),
             "generator_rf": (self._default_sequence_device_name("Signalgenerator"), "OFF", "", "", ""),
-            "power_supply_set": (self._default_sequence_device_name("Netzgerät"), "${voltage}", self.power_supply_current_var.get(), str(self._safe_power_supply_channel_setting()), "ON"),
+            "power_supply_set": (self._default_sequence_device_name("Netzgerät"), "${voltage}", self.power_supply_current_var.get(), str(self._safe_power_supply_channel_setting()), "OFF"),
             "power_supply_output": (self._default_sequence_device_name("Netzgerät"), "OFF", str(self._safe_power_supply_channel_setting()), "", ""),
             "power_supply_master_output": (self._default_sequence_device_name("Netzgerät"), "OFF", str(self._safe_power_supply_channel_setting()), "", ""),
             "dmm_read": (self._default_sequence_device_name("Multimeter"), "", "", "", ""),
