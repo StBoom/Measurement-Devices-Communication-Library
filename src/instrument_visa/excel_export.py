@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import csv
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from io import StringIO
-from math import ceil
+from math import ceil, isfinite
 from pathlib import Path
 from uuid import uuid4
 from zipfile import BadZipFile
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.chart import LineChart, Reference, ScatterChart, Series
 from openpyxl.drawing.image import Image as ExcelImage
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -22,6 +24,8 @@ from .acquisition import AcquisitionResult
 MAX_CHART_POINTS = 2000
 CHART_WIDTH = 30
 CHART_HEIGHT = 15
+_WORKBOOK_LOCKS: dict[Path, threading.Lock] = {}
+_WORKBOOK_LOCKS_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -32,6 +36,11 @@ class ExportResult:
 
 
 def append_result(workbook_path: Path, address: str, idn: str, result: AcquisitionResult) -> ExportResult:
+    with _workbook_lock(workbook_path):
+        return _append_result_unlocked(workbook_path, address, idn, result)
+
+
+def _append_result_unlocked(workbook_path: Path, address: str, idn: str, result: AcquisitionResult) -> ExportResult:
     artifact: Path | None = None
     result_sheet_name: str | None = None
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -46,7 +55,7 @@ def append_result(workbook_path: Path, address: str, idn: str, result: Acquisiti
             sheet.title = "Results"
             _initialize_results_sheet(sheet)
         else:
-            sheet = workbook.active
+            sheet = _get_or_create_results_sheet(workbook)
     else:
         workbook = Workbook()
         sheet = workbook.active
@@ -95,11 +104,21 @@ def append_result(workbook_path: Path, address: str, idn: str, result: Acquisiti
         artifact.write_text(str(result.content), encoding="utf-8")
         sheet.append([timestamp, address, idn, result.kind, result.file_type, str(artifact)])
     else:
-        sheet.append([timestamp, address, idn, result.kind, result.file_type, result.content])
+        sheet.append([timestamp, address, idn, result.kind, result.file_type, _safe_excel_text(result.content)])
 
     _format_sheet(sheet)
     workbook.save(workbook_path)
     return ExportResult(workbook_path=workbook_path, artifact_path=artifact, sheet_name=result_sheet_name)
+
+
+def _workbook_lock(workbook_path: Path) -> threading.Lock:
+    resolved = workbook_path.expanduser().resolve(strict=False)
+    with _WORKBOOK_LOCKS_LOCK:
+        lock = _WORKBOOK_LOCKS.get(resolved)
+        if lock is None:
+            lock = threading.Lock()
+            _WORKBOOK_LOCKS[resolved] = lock
+        return lock
 
 
 def _append_csv(sheet, content: str) -> None:
@@ -134,14 +153,33 @@ def _get_or_create_sheet(workbook, name: str):
     return workbook.create_sheet(name[:31])
 
 
+def _get_or_create_results_sheet(workbook):
+    if "Results" in workbook.sheetnames:
+        sheet = workbook["Results"]
+        if sheet.max_row == 1 and sheet.max_column == 1 and sheet["A1"].value is None:
+            _initialize_results_sheet(sheet)
+        return sheet
+    sheet = workbook.create_sheet("Results", 0)
+    _initialize_results_sheet(sheet)
+    return sheet
+
+
 def _coerce_excel_value(value: str) -> str | float:
     value = value.strip()
     if not value:
         return ""
     try:
-        return float(value)
+        parsed = float(value)
     except ValueError:
-        return value
+        return _safe_excel_text(value)
+    return parsed if isfinite(parsed) else _safe_excel_text(value)
+
+
+def _safe_excel_text(value: object) -> str:
+    text = ILLEGAL_CHARACTERS_RE.sub("", str(value))
+    if text.startswith(("=", "+", "-", "@")):
+        return "'" + text
+    return text
 
 
 def _initialize_results_sheet(sheet) -> None:

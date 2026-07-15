@@ -153,7 +153,10 @@ class SaleaeInstrument:
         return _capture_with_analyzer(self, "i2c", "I2C", "I2C", channels, config.duration_s, config.sample_rate, config.threshold_v, settings, output_dir, stop_requested, config.device_id)
 
     def capture_spi(self, config: SaleaeSpiConfig, output_dir: Path, stop_requested=None) -> AcquisitionResult:
-        channels = _unique_channels([config.mosi_channel, config.miso_channel, config.clock_channel, config.enable_channel])
+        channel_values = [config.mosi_channel, config.miso_channel, config.clock_channel]
+        if config.enable_channel >= 0:
+            channel_values.append(config.enable_channel)
+        channels = _unique_channels(channel_values)
         settings = {
             "MOSI": int(config.mosi_channel),
             "MISO": int(config.miso_channel),
@@ -209,8 +212,6 @@ def parse_saleae_channels(value: str) -> list[int]:
             channels.append(int(part))
     unique: list[int] = []
     for channel in channels:
-        if channel < 0:
-            continue
         if channel < 0 or channel > 15:
             raise ValueError("Saleae-Kanäle müssen zwischen D0 und D15 liegen.")
         if channel not in unique:

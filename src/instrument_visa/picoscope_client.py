@@ -244,6 +244,8 @@ def parse_pico_digital_channels(value: str | list[int]) -> list[int]:
                 start_text, end_text = token.split("-", 1)
                 start = int(start_text.removeprefix("D"))
                 end = int(end_text.removeprefix("D"))
+                if end < start:
+                    raise ValueError("PicoScope-Digitalkanalbereich ist rückwärts angegeben.")
                 channels.extend(range(start, end + 1))
             else:
                 channels.append(int(token))
@@ -345,6 +347,7 @@ def _run_block(dll, handle: int, samples: int, timebase: int, timeout_s: float, 
         status = dll.ps2000aIsReady(handle, ctypes.byref(ready))
         _check_pico_status("ps2000aIsReady", status)
         if monotonic() > deadline:
+            _stop_capture(dll, handle)
             raise TimeoutError("PicoScope Block-Aufnahme hat nicht rechtzeitig abgeschlossen.")
         sleep(0.01)
 

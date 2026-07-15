@@ -28,23 +28,41 @@ class VisaInstrument:
         self.close()
 
     def open(self) -> None:
-        self._resource_manager = pyvisa.ResourceManager()
-        self._instrument = self._resource_manager.open_resource(self.address)
-        self._instrument.timeout = self.timeout_ms
-        self._instrument.write_termination = "\n"
-        self._instrument.read_termination = "\n"
-        if _is_asrl_address(self.address):
-            _configure_default_serial(self._instrument)
-        if self.address.startswith(("ASRL", "USB")):
-            sleep(2.5)
+        resource_manager = pyvisa.ResourceManager()
+        try:
+            instrument = resource_manager.open_resource(self.address)
+            instrument.timeout = self.timeout_ms
+            instrument.write_termination = "\n"
+            instrument.read_termination = "\n"
+            if _is_asrl_address(self.address):
+                _configure_default_serial(instrument)
+            self._resource_manager = resource_manager
+            self._instrument = instrument
+            if self.address.startswith(("ASRL", "USB")):
+                sleep(2.5)
+        except Exception:
+            try:
+                resource_manager.close()
+            finally:
+                self._resource_manager = None
+                self._instrument = None
+            raise
 
     def close(self) -> None:
-        if self._instrument is not None:
-            self._instrument.close()
-            self._instrument = None
-        if self._resource_manager is not None:
-            self._resource_manager.close()
-            self._resource_manager = None
+        instrument = self._instrument
+        resource_manager = self._resource_manager
+        self._instrument = None
+        self._resource_manager = None
+        instrument_error: Exception | None = None
+        if instrument is not None:
+            try:
+                instrument.close()
+            except Exception as exc:
+                instrument_error = exc
+        if resource_manager is not None:
+            resource_manager.close()
+        if instrument_error is not None:
+            raise instrument_error
 
     def write(self, command: str) -> None:
         self._require_open().write(command)
@@ -63,6 +81,13 @@ class VisaInstrument:
         if stopbits is not None and hasattr(instrument, "stop_bits"):
             instrument.stop_bits = _pyvisa_stop_bits(stopbits)
 
+    def configure_termination(self, write_termination: str | None = None, read_termination: str | None = None) -> None:
+        instrument = self._require_open()
+        if write_termination is not None:
+            instrument.write_termination = write_termination
+        if read_termination is not None:
+            instrument.read_termination = read_termination
+
     def query_binary(self, command: str) -> bytes:
         instrument = self._require_open()
         original_termination = instrument.read_termination
@@ -72,12 +97,14 @@ class VisaInstrument:
         finally:
             instrument.read_termination = original_termination
 
-    def read_raw_after_write(self, command: str) -> bytes:
+    def read_raw_after_write(self, command: str, delay_s: float = 0.0) -> bytes:
         instrument = self._require_open()
         original_termination = instrument.read_termination
         instrument.read_termination = None
         try:
             instrument.write(command)
+            if delay_s:
+                sleep(delay_s)
             return bytes(instrument.read_raw())
         finally:
             instrument.read_termination = original_termination

@@ -1,4 +1,4 @@
-# Measurement Devices Communication Library
+﻿# Measurement Devices Communication Library
 
 Standalone-Python-Projekt zur Ablösung des vorhandenen VBA-Add-ins für Messgerätekommunikation.
 
@@ -139,15 +139,17 @@ instrument-visa generator-rf --rf off --config config.ini
 instrument-visa sequence-run --sequence-file ablauf.json --output results.xlsx
 ```
 
+`instrument-visa list` zeigt VISA-Ressourcen sowie zusätzlich direkt gefundene Windows-COM-Ports, PicoScope-2000A-Geräte und eine laufende Saleae-Logic-2-Automation an.
+
 ## Oberfläche
 
-Die einfache Oberfläche kann direkt aus dem Projektordner gestartet werden:
+Nach `py -m pip install -e .` kann die Oberfläche aus dem Projektordner so gestartet werden:
 
 ```powershell
 py -m instrument_visa.gui
 ```
 
-Nach `py -m pip install -e .` steht zusätzlich dieser Befehl zur Verfügung:
+Alternativ steht nach der Installation dieser Befehl zur Verfügung:
 
 ```powershell
 instrument-visa-gui
@@ -160,7 +162,7 @@ measurement-devices
 measurement-devices-gui
 ```
 
-Die Oberfläche bietet Geräte-Suche, Setup-Prüfung, IDN-Test, DMM-Messwert, Scope-Messwert, getimtes Messen, Screenshot, Waveform-Export, S-Parameter-Export, Signalgenerator-Basisbedienung, Netzgerät-Basisbedienung, 34970A-Datenlogger-Messungen, Spektrumanalysator-Trace-Export und automatische Abläufe in eine auswählbare Excel-Datei. Nach `IDN testen` wird ein Geräteprofil erkannt und die passenden Bereiche werden aktiviert. Für Oszilloskope sollte `Scope Messwert` genutzt werden, da `DMM Messwert` den Multimeter-Befehl `:READ?` sendet. Beim Waveform-Export können `CH1` bis `CH4` beliebig kombiniert werden. Zusätzlich ist der Punktmodus `RAW`, `NORMAL` oder `MAXIMUM` auswählbar. Jede Waveform-Messung wird zur besseren Übersicht in ein eigenes Tabellenblatt geschrieben.
+Die Oberfläche bietet Geräte-Suche, Setup-Prüfung, IDN-Test, Gerät-aus-Liste-entfernen, DMM-Messwert, Scope-Messwert, getimtes Messen, Screenshot, Waveform-Export, S-Parameter-Export, Signalgenerator-Basisbedienung, Netzgerät-Basisbedienung, getimtes Schalten für Generatoren/Netzgeräte, 34970A-Datenlogger-Messungen, Spektrumanalysator-Trace-Export und automatische Abläufe in eine auswählbare Excel-Datei. Nach `IDN testen` wird ein Geräteprofil erkannt und die passenden Bereiche werden aktiviert. Für Oszilloskope sollte `Scope Messwert` genutzt werden, da `DMM Messwert` den Multimeter-Befehl `:READ?` sendet. Beim Waveform-Export können `CH1` bis `CH4` beliebig kombiniert werden. Zusätzlich ist der Punktmodus `RAW`, `NORMAL` oder `MAXIMUM` auswählbar. Jede Waveform-Messung wird zur besseren Übersicht in ein eigenes Tabellenblatt geschrieben.
 
 Der Button `Setup prüfen` im Bereich `Verbindung` prüft das Zielsystem auf VISA Runtime, gefundene VISA-Ressourcen, COM-Ports, PicoSDK 2000A und Saleae Logic-2-Automation. Das Ergebnis wird als Diagnosefenster angezeigt und enthält konkrete Empfehlungen, welche Runtime oder welcher Treiber fehlt. Wenn Ressourcen gefunden werden, wird die Geräteauswahl in der Oberfläche direkt aktualisiert. Für Details zu konkreten Gerätefamilien auf Ziel-PCs siehe `dependencies/INSTALLATION_KOLLEGEN.md`.
 
@@ -168,13 +170,19 @@ Der Signalgenerator-Bereich kann Frequenz, Pegel und RF-Ausgang lesen bzw. setze
 
 Der Netzgerät-Bereich unterstützt R&S/Hameg HMP-Geräte wie HMP4030. Pro Kanal können Spannung und Stromlimit gesetzt, Soll-/Istwerte gelesen und der ausgewählte Ausgang aktiviert oder deaktiviert werden. Wenn ein HMP-Gerät sowohl als direkter Windows-COM-Port als auch als VISA-ASRL-Ressource gefunden wird, sollte die VISA-ASRL-Adresse verwendet werden, z. B. `ASRL4::INSTR`. Als Sicherheitsgrenzen werden Maximalspannung und Maximalstrom lokal geprüft, bevor Befehle gesendet werden. Die Implementierung nutzt `INST:NSEL`, `VOLT`, `CURR`, `MEAS:VOLT?`, `MEAS:CURR?`, `OUTP:SEL` und `OUTP:GEN`.
 
+Der Bereich `Getimtes Schalten` wird für Signalgenerator- und Netzgeräteprofile eingeblendet. Er kann RF bzw. Netzgeräteausgänge mit einstellbarer ON-/OFF-Dauer und Wiederholungszahl schalten. Optional wird vor dem Schalten ein sicherer Startzustand gesetzt; am Ende kann der Ausgang automatisch abgeschaltet werden.
+
 Der `34970A Datenlogger`-Bereich unterstützt Agilent/HP/Keysight 34970A/34972A über direkte Windows-COM-Ports oder VISA-ASRL-Adressen. Für das getestete Setup sind die Defaults `19200`, `8N1`, Messplan `1-20:TEMP; 21-22:CURR_DC`, Intervall `5 s` und Anzahl `0=endlos`. `Kanäle messen` misst eine Messart über die eingetragenen Kanäle; `Messplan messen` führt gemischte Kanalgruppen aus. Die Messung läuft wiederholt bis zur eingestellten Anzahl oder bis `Stop`. Ergebnisse werden zeilenweise in das Excel-Blatt `34970A Measurements` geschrieben, mit `Timestamp` und Kanälen nebeneinander, z. B. `CH1 TEMP [degC]` bis `CH22 CURR_DC [A]`. Nach erfolgreichem `IDN testen` werden funktionierende serielle Einstellungen gespeichert und beim nächsten Zugriff bevorzugt verwendet.
 
 Der `Spektrumanalysator`-Bereich wird für erkannte Spektrumanalysator-Profile eingeblendet. `Trace exportieren` nutzt die bestehende Waveform-/Trace-Logik des Geräteprofils; `Screenshot` ist nur aktiv, wenn das Profil Hardcopy/Screenshot unterstützt.
 
-Der Bereich `Automatischer Ablauf` öffnet über `Freier Ablauf-Editor` ein eigenes Fenster, in dem mehrere Geräte benannt, einzelne Schritte in eine Ablauf-Liste eingefügt und mit Wiederholungen, Pause sowie einer optional pro Durchlauf hochgezählten Variable ausgeführt werden können. Unterstützt sind Generator-Frequenz/Pegel/RF, Netzgerät-Spannung/Ausgänge, DMM-Messwert, Scope-Messwert, Scope-/Spektrumanalysator-Waveform/Trace, Screenshots, serielle Logs von ASRL/COM-Geräten, einfache Parallel-Messphasen und Wartezeiten. Im Gerätebereich des freien Editors können vorhandene Windows-COM-Ports über `COM-Port` und `suchen` ermittelt und mit `übernehmen` direkt als serielles Gerät eingetragen werden, z. B. `COM3` oder `COM12`; manuelles Eintragen bleibt möglich. Für VISA-Seriell geht weiterhin eine Adresse wie `ASRL3::INSTR`. Der Schritt `Seriellen Log aufzeichnen` liest passiv mit und bietet `Dauer [s]`, `Baudrate` und `Format`, z. B. `8N1`, `7E1`, `7O1` oder `8N2`. Der Schritt `Parallel-Messphase` startet mehrere einfache Aufgaben gleichzeitig über eine Dauer und ein Messintervall; Aufgaben werden mit Semikolon getrennt eingetragen, z. B. `DMM1:dmm; Scope1:scope:Vpp:1; Seriell1:serial:115200:8N1`. DMM- und Scope-Werte werden in ein eigenes Tabellenblatt geschrieben, serielle Parallel-Logs zusätzlich als Textdatei exportiert. Variablen werden in Parametern als `${name}` verwendet, z. B. `${frequency}` oder `${voltage}`. Der freie Ablauf wird als eigenes Excel-Tabellenblatt mit Durchlauf, Schritt, Gerät, Aktion, Parametern, Wert und Status gespeichert. Serielle Logs werden zusätzlich als Textdatei neben der Excel-Datei abgelegt und im Ergebnisblatt referenziert. Der Editor enthält Vorlagen für getimtes DMM- und Scope-Messen, RF- und Netzteil-Schalten, Generator+DMM, Generator+Oszilloskop, Netzteil+DMM, Netzteil+Oszilloskop und Generator+Spektrumanalysator; fertige Abläufe können als JSON importiert und exportiert werden. Exportierte JSON-Abläufe können über die Kommandozeile mit `instrument-visa sequence-run --sequence-file <datei.json> --output <xlsx>` ausgeführt werden. Die bisherigen Spezialbereiche für getimtes Messen, getimtes Schalten sowie die alten festen Sweep-Eingaben im Hauptfenster sind zugunsten des freien Editors ausgeblendet.
+Der Bereich `Automatischer Ablauf` öffnet über `Freier Ablauf-Editor` ein eigenes Fenster, in dem mehrere Geräte benannt, einzelne Schritte in eine Ablauf-Liste eingefügt und mit Wiederholungen, Pause sowie einer optional pro Durchlauf hochgezählten Variable ausgeführt werden können. Unterstützt sind Generator-Frequenz/Pegel/RF, Netzgerät-Spannung/Ausgänge, DMM-Messwert, Scope-Messwert, Scope-/Spektrumanalysator-Waveform/Trace, Screenshots, serielle Logs von ASRL/COM-Geräten, einfache Parallel-Messphasen und Wartezeiten. Im Gerätebereich des freien Editors können vorhandene Windows-COM-Ports über `COM-Port` und `suchen` ermittelt und mit `übernehmen` direkt als serielles Gerät eingetragen werden, z. B. `COM3` oder `COM12`; manuelles Eintragen bleibt möglich. Für VISA-Seriell geht weiterhin eine Adresse wie `ASRL3::INSTR`. Der Schritt `Seriellen Log aufzeichnen` liest passiv mit und bietet `Dauer [s]`, `Baudrate` und `Format`, z. B. `8N1`, `7E1`, `7O1`, `7E2`, `8E1`, `8O1` oder `8N2`. Der Schritt `Parallel-Messphase` startet mehrere einfache Aufgaben gleichzeitig über eine Dauer und ein Messintervall; Aufgaben werden mit Semikolon getrennt eingetragen, z. B. `DMM1:dmm; Scope1:scope:Vpp:1; Seriell1:serial:115200:8N1`. DMM- und Scope-Werte werden in ein eigenes Tabellenblatt geschrieben, serielle Parallel-Logs zusätzlich als Textdatei exportiert. Variablen werden in Parametern als `${name}` verwendet, z. B. `${frequency}` oder `${voltage}`. Der freie Ablauf wird als eigenes Excel-Tabellenblatt mit Durchlauf, Schritt, Gerät, Aktion, Parametern, Wert und Status gespeichert. Serielle Logs werden zusätzlich als Textdatei neben der Excel-Datei abgelegt und im Ergebnisblatt referenziert. Der Editor enthält Vorlagen für getimtes DMM- und Scope-Messen, RF- und Netzteil-Schalten, Generator+DMM, Generator+Oszilloskop, Netzteil+DMM, Netzteil+Oszilloskop, Generator+Spektrumanalysator, Screenshot, Kurve/Trace, Parallel-Messphase, serielles Kommando mit Log, SSH-Kommando, PicoScope analog, Saleae UART, 34970A-Messplan und CA-410-Messwert; fertige Abläufe können als JSON importiert und exportiert werden. Exportierte JSON-Abläufe können über die Kommandozeile mit `instrument-visa sequence-run --sequence-file <datei.json> --output <xlsx>` ausgeführt werden. Die bisherigen Spezialbereiche für getimtes Messen, getimtes Schalten sowie die alten festen Sweep-Eingaben im Hauptfenster sind zugunsten des freien Editors ausgeblendet.
+
+Aktueller Hinweis zum freien Ablauf: Als serielle Formate sind `8N1`, `7E1`, `7O1`, `7E2`, `8E1`, `8O1` und `8N2` auswählbar. Serielle Logs werden als Textdatei neben der Excel-Datei abgelegt. Saleae-Aufnahmen werden im Ordner `<excelname>_artifacts` abgelegt. PicoScope-Aufnahmen werden als CSV-Inhalt in Excel-Tabellenblätter exportiert.
 
 Zusätzlich zum passiven Schritt `Seriellen Log aufzeichnen` unterstützt der freie Ablauf-Editor den Schritt `Serielles Kommando senden`. Damit kann für COM-Ports und VISA-ASRL-Geräte beliebiger Text gesendet werden; Escape-Sequenzen wie `\r`, `\n` und `\t` werden in echte Steuerzeichen umgewandelt, sodass z. B. `*IDN?\n` oder gerätespezifische ASCII-Protokolle möglich sind. Optional zeichnet `Antwort lesen [s]` direkt nach dem Senden für eine feste Zeit die Antwort auf; ohne Antwortzeit wird nur gesendet. Das ist für Spezialgeräte gedacht, die zwar als serielles Interface erkannt werden, aber kein eigenes Geräteprofil haben.
+
+Der freie Ablauf-Editor bietet bis zu zwölf Wertefelder pro Schritt. Dadurch sind beim CA-410-Schritt neben Farbmodus, Probe, Kalibrierkanal, Messmethode, Sync und Integration auch Flicker-Methode, Messgeschwindigkeit, Baudrate und serielles Format direkt einstellbar.
 
 Der freie Ablauf-Editor unterstützt außerdem SSH-Geräte. Dafür ein Gerät mit Adresse im Format `ssh://user@host` oder `ssh://user@host:2222` eintragen und den Schritt `SSH: Kommando ausführen` verwenden. Der Schritt bietet Kommando, optional abweichenden Benutzer, optional Passwort und Timeout in Sekunden. Ohne Passwort nutzt die SSH-Bibliothek vorhandene SSH-Keys bzw. den Agent; mit Passwort wird Passwort-Authentifizierung verwendet. Die Standardausgabe des Kommandos wird als Schrittwert in das Ablauf-Ergebnis geschrieben, ein nicht-null Exit-Code bricht den Schritt mit Fehlerstatus ab.
 
@@ -231,7 +239,7 @@ Die folgenden Geräteprofile sind als best-effort implementiert, aber noch nicht
 - Keysight/Agilent InfiniiVision 7000, darunter DSO7034B/MSO7034: Scope-Messwert, getimtes Scope-Messen, Screenshot und Waveform-Export mit 7000-Series-Programmer-SCPI (`:MEASure...`, `:WAVeform...`, `:DISPlay:DATA? PNG, SCREEN, COLOR`)
 - HP/Agilent 54600/54620, darunter 54622D: Scope-Messwert, Screenshot und Waveform-Export mit 54620-Series-Programmer-SCPI. Screenshot nutzt BMP, da das 54622D-Manual bei `:DISPlay:DATA?` nur `TIFF | BMP` nennt.
 - HP 8591A: Trace-A-Export best-effort über alten HP-IB-Befehl `TRA?`. Screenshot/Hardcopy ist als HP-GL/Plotter-Capture über `GETPLOT` aktiviert und wird als `.hpgl` abgelegt.
-- Agilent E4402B ESA: Screenshot WMF und Trace CSV best-effort über ESA/E740-ähnliche SCPI-/Mass-Memory-Befehle (`:MMEM:STOR:SCR`, `:MMEM:STOR:TRAC TRACE1,"R:INTUI.CSV"`, `:MMEM:DATA?`).
+- Agilent E4402B ESA: Screenshot WMF und Trace CSV best-effort über ESA/E740-ähnliche SCPI-/Mass-Memory-Befehle (`:MMEM:STOR:SCR`, `:MMEM:STOR:TRAC TRACE1,"R:<temp>.CSV"`, `:MMEM:DATA?`). Temporäre Dateien auf dem Gerät bekommen eindeutige Namen und werden nach dem Auslesen gelöscht.
 - Keithley 2000: DMM-Messwert und getimtes DMM-Messen über `:READ?`, laut Keithley-Manual als `:ABORt`, `:INITiate`, `:FETCh?`-Sequenz beschrieben
 - Tektronix TDS400, darunter TDS420A: Scope-Messwert, Screenshot und Waveform-Export mit TDS-Family-Programmer-SCPI (`MEASUrement:IMMed...`, `DATa:SOUrce`, `DATa:ENCdg ASCii`, `CURVe?`, `HARDCopy START`). Screenshot nutzt TIFF, da PNG im TDS400A-Manual nicht als sicher unterstütztes Hardcopy-Format aufgeführt ist.
 - Tektronix TDS3000/MDO/MSO/DPO: Scope-Messwert und Screenshot best-effort aktiviert; Waveform-Export ist aktuell nur für TDS400 aktiviert
@@ -248,7 +256,7 @@ Agilent/HP/Keysight 34970A/34972A Datenlogger können im freien Ablauf über `Ag
 
 Konica Minolta CA-410 Display Color Analyzer können über einen virtuellen COM-Port oder eine VISA-ASRL-Adresse genutzt werden. In der GUI den COM-Port auswählen und `Als CA-410` drücken; danach erscheint der Bereich `Konica Minolta CA-410`. Unterstützt ist das Lesen einzelner Messwerte mit den offiziellen CA-410-Kommandos `COM,1`, `OPR,<probe>`, `SCS,<sync>`, `FSC,<speed>`, `MMS,<method>`, `VSN,<integration>`, `FMS,<method>`, `MCH,<probe>,<channel>`, `MDS,<mode>` und `MES,2`. Standardparameter sind `38400`, `7E2`, RTS/CTS und CR-Abschluss. Einstellbar sind Probe, Kalibrierkanal `0..99`, Messmethode `Color+Flicker`, `Color` oder `Flicker`, Flicker-Methode `FMA` oder `JEITA`, Messgeschwindigkeit `SLOW`, `FAST`, `LTD.AUTO` oder `AUTO`, Sync-Modus `UNIV`, `INT`, `EXT`, `NTSC`, `PAL` oder `MANUAL`, Integration `Double-Frame` oder `Single-Frame`, eine optionale Averaging-Zeit in Sekunden sowie die Farbmodi `xyLv`, `TcpduvLv`, `uvLv`, `XYZ` und `AdPeLv`. Sinnvolle Voreinstellungen sind `UNIV`, `Double-Frame`, `FAST` und `Averaging 0 s`; `INT` nutzt den Sync-Wert als Frequenz in Hz, `MANUAL` als Integrationszeit in ms. `Single-Frame` ist nur für reine Farbmessung mit Sync `NTSC`, `PAL`, `EXT` oder `INT` sinnvoll und wird deshalb nur mit Messmethode `Color` und einem passenden Sync-Modus akzeptiert. Die Averaging-Zeit ist softwareseitig umgesetzt: Innerhalb der eingestellten Zeit werden mehrere `MES`-Messungen ausgeführt und numerische Ergebnisfelder gemittelt; bei `0 s` wird genau ein Messwert aufgenommen. Der Kalibrierkanal und die weiteren CA-410-Einstellungen werden in `gui_settings.json` gespeichert und beim nächsten Start wieder geladen. Zusätzlich werden, sofern vom Gerät geliefert, `X`, `Y`, `Z`, Temperaturdrift und FMA-Flicker-Prozentwert exportiert. Ergebnisse werden in das gemeinsame Excel-Blatt `CA-410 Measurements` geschrieben. Für USB-Verbindung benötigt Windows den Konica-Minolta-USB-Treiber für den virtuellen COM-Port; bei echter RS-232-Verbindung ist ggf. nur der USB-RS232-Adaptertreiber nötig. Die offizielle Communication-Specification-PDF liegt lokal unter `Manuals/CA-410_Communication_Specifications_V1.08.pdf`.
 
-Saleae Logic Analyzer können im freien Ablauf über `SALEAE::LOCAL` als Geräteadresse vorbereitet werden. Dafür muss Saleae Logic 2 installiert sein und die Automation-Schnittstelle aktiviert sein, entweder in der Logic-2-Oberfläche oder per Start mit `Logic.exe --automation`; der Standardport ist `10430`. Für Python-Installationen wird zusätzlich das Extra `saleae` bzw. das Paket `logic2-automation` benötigt. EXE-Releases enthalten dieses Paket, sofern sie mit dem normalen Build-Skript ohne `-SkipInstall` gebaut wurden. Unterstützt sind `Saleae: Digital aufnehmen` mit Kanälen wie `D0-D7`, Dauer, Sample-Rate und Schwellwert sowie Analyzer-Schritte für `Saleae: UART dekodieren`, `Saleae: I2C dekodieren`, `Saleae: SPI dekodieren` und `Saleae: CAN dekodieren`. Die Saleae-Aufnahme wird als `.sal` gespeichert, Rohdaten bzw. Analyzer-Exporte werden als CSV in einem `saleae_output`-Ordner abgelegt und im Ablauf-Ergebnis referenziert. Die Saleae-Automation-Dokumentation ist extern bei Saleae verfügbar; lokal abgelegte Manual-Kopien unter `Manuals\...` sind optional und werden nicht versioniert oder in Releases mitverteilt. Die Integration ist mit Hardware noch zu testen.
+Saleae Logic Analyzer können im freien Ablauf über `SALEAE::LOCAL` als Geräteadresse vorbereitet werden. Dafür muss Saleae Logic 2 installiert sein und die Automation-Schnittstelle aktiviert sein, entweder in der Logic-2-Oberfläche oder per Start mit `Logic.exe --automation`; der Standardport ist `10430`. Für Python-Installationen wird zusätzlich das Extra `saleae` bzw. das Paket `logic2-automation` benötigt. EXE-Releases enthalten dieses Paket, sofern sie mit dem normalen Build-Skript ohne `-SkipInstall` gebaut wurden. Unterstützt sind `Saleae: Digital aufnehmen` mit Kanälen wie `D0-D7`, Dauer, Sample-Rate und Schwellwert sowie Analyzer-Schritte für `Saleae: UART dekodieren`, `Saleae: I2C dekodieren`, `Saleae: SPI dekodieren` und `Saleae: CAN dekodieren`. Die Saleae-Aufnahme wird als `.sal` gespeichert, Rohdaten bzw. Analyzer-Exporte werden als CSV im Ablauf-Artefaktordner `<excelname>_artifacts` abgelegt und im Ablauf-Ergebnis referenziert. Die Saleae-Automation-Dokumentation ist extern bei Saleae verfügbar; lokal abgelegte Manual-Kopien unter `Manuals\...` sind optional und werden nicht versioniert oder in Releases mitverteilt. Die Integration ist mit Hardware noch zu testen.
 
 ## Geräte-Testabläufe
 
@@ -333,7 +341,7 @@ Erwartetes Profil: `hp_8591a`
 GUI-Test:
 
 1. `IDN testen` ausführen.
-2. Bereich `Allgemein` mit `Screenshot` und, falls sichtbar, `Oszilloskop/Waveform` für Trace verwenden.
+2. Bereich `Spektrumanalysator` mit `Screenshot` und `Trace exportieren` verwenden. Falls zusätzlich der Waveform-Bereich sichtbar ist, kann dort ebenfalls der Trace-Export getestet werden.
 3. Zuerst `Waveform` testen. Das liest Trace A.
 4. Danach `Screenshot` testen. Die Ausgabe ist HP-GL, kein Bitmap.
 
@@ -368,12 +376,12 @@ Verwendete Befehle:
 :SYST:TIME ...
 :SYST:DATE ...
 :DISP:MENU:STATE 0
-:MMEM:STOR:TRAC TRACE1,"R:INTUI.CSV"
-:MMEM:DATA? 'R:INTUI.CSV'
-:MMEM:DEL 'R:INTUI.CSV'
-:MMEM:STOR:SCR 'R:INTUI.WMF'
-:MMEM:DATA? 'R:INTUI.WMF'
-:MMEM:DEL 'R:INTUI.WMF'
+:MMEM:STOR:TRAC TRACE1,"R:<temp>.CSV"
+:MMEM:DATA? 'R:<temp>.CSV'
+:MMEM:DEL 'R:<temp>.CSV'
+:MMEM:STOR:SCR 'R:<temp>.WMF'
+:MMEM:DATA? 'R:<temp>.WMF'
+:MMEM:DEL 'R:<temp>.WMF'
 ```
 
 Erwartete Ausgabe:
@@ -424,14 +432,15 @@ Sicherheit: Das Tool prüft Maximalspannung und Maximalstrom lokal, bevor Setzbe
 
 ### Automatischer Ablauf Mit Signalgenerator
 
-Der Ablauf ist für Tests wie `Generator einstellen -> Messgerät messen -> nächsten Frequenzpunkt` gedacht.
+Generator-Sweeps werden im Bereich `Automatischer Ablauf` über den Button `Freier Ablauf-Editor` erstellt. Der Ablauf ist für Tests wie `Generator einstellen -> Messgerät messen -> nächsten Frequenzpunkt` gedacht.
 
 GUI-Test:
 
 1. Generator und Messgerät separat mit `IDN testen` prüfen.
-2. Im Bereich `Automatischer Ablauf` als Quellgerät `Signalgenerator` auswählen.
-3. Quell-Adresse und Messgerät-Adresse eintragen oder über `aktuelle Adresse` übernehmen.
-4. Für den ersten Test kleine Punktzahl wählen:
+2. Im Bereich `Automatischer Ablauf` den `Freier Ablauf-Editor` öffnen.
+3. Generator und Messgerät in der Geräteliste anlegen oder aus den gefundenen Geräten übernehmen.
+4. Eine passende Vorlage wie `Generator + Multimeter` oder `Generator + Oszilloskop` einfügen.
+5. Für den ersten Test kleine Punktzahl wählen:
    - Start: `100 MHz`
    - Stop: `102 MHz`
    - Schritt: `1 MHz`
@@ -439,10 +448,10 @@ GUI-Test:
    - Wartezeit: `0.5`
    - Messart: `DMM` oder `Scope`
    - `RF am Ende aus`: aktiv
-5. `Ablauf starten` ausführen.
-6. Bei Bedarf `Stop` drücken. RF wird bei Stop oder Fehler sicherheitshalber ausgeschaltet.
+6. `Ablauf starten` ausführen.
+7. Bei Bedarf `Stop` drücken. RF wird bei Stop oder Fehler sicherheitshalber ausgeschaltet.
 
-Erwartete Ausgabe: Excel-Tabellenblatt `FrequencySweep...` mit Sollfrequenz, Pegel, Generator-IDN, Messgerät-IDN, Messwert, Status und Zusammenfassung.
+Erwartete Ausgabe: Excel-Tabellenblatt `custom sequence...` mit Durchlauf, Schritt, Gerät, Aktion, Parametern, Wert und Status. Die Backend-Funktion `run_frequency_sweep` erzeugt weiterhin `FrequencySweep...`, ist in der GUI aber nicht der primäre Bedienpfad.
 
 Grenzen:
 
@@ -452,14 +461,15 @@ Grenzen:
 
 ### Automatischer Ablauf Mit Netzgerät
 
-Der Ablauf ist für Tests wie `Netzteilspannung einstellen -> Messgerät messen -> nächsten Spannungspunkt` gedacht, z. B. Last-/Kennlinienmessungen oder DUT-Verhalten über Versorgungsspannung.
+Netzgerät-Sweeps werden im Bereich `Automatischer Ablauf` über den Button `Freier Ablauf-Editor` erstellt. Der Ablauf ist für Tests wie `Netzteilspannung einstellen -> Messgerät messen -> nächsten Spannungspunkt` gedacht, z. B. Last-/Kennlinienmessungen oder DUT-Verhalten über Versorgungsspannung.
 
 GUI-Test:
 
 1. Netzgerät und Messgerät separat mit `IDN testen` prüfen.
-2. Im Bereich `Automatischer Ablauf` als Quellgerät `Netzgerät` auswählen.
-3. Quell-Adresse und Messgerät-Adresse eintragen oder über `aktuelle Adresse` übernehmen.
-4. Für den ersten Test kleine Punktzahl und sichere Grenzen wählen:
+2. Im Bereich `Automatischer Ablauf` den `Freier Ablauf-Editor` öffnen.
+3. Netzgerät und Messgerät in der Geräteliste anlegen oder aus den gefundenen Geräten übernehmen.
+4. Eine passende Vorlage wie `Netzgerät + Multimeter` oder `Netzgerät + Oszilloskop` einfügen.
+5. Für den ersten Test kleine Punktzahl und sichere Grenzen wählen:
    - Netzteil Kanal: `1`
    - Netzteil Start: `0 V`
    - Stop: `2 V`
@@ -469,9 +479,9 @@ GUI-Test:
    - Max. A im Netzgerät-Bereich: z. B. `0.5`
    - Wartezeit: `0.5`
    - Messart: `DMM` oder `Scope`
-   - `RF am Ende aus`: aktiv. Beim Netzgerät bedeutet diese Option: Master-Ausgang am Ende aus.
-5. `Ablauf starten` ausführen.
-6. Bei Bedarf `Stop` drücken. Das Netzgerät wird bei Stop oder Fehler sicherheitshalber über `OUTP:GEN 0` ausgeschaltet.
+   - `Netzgerät am Ende aus`: aktiv
+6. `Ablauf starten` ausführen.
+7. Bei Bedarf `Stop` drücken. Das Netzgerät wird bei Stop oder Fehler sicherheitshalber über `OUTP:GEN 0` ausgeschaltet.
 
 Verwendete Befehle je Spannungspunkt:
 
@@ -489,7 +499,7 @@ Am Ende bzw. bei Stop/Fehler:
 OUTP:GEN 0
 ```
 
-Erwartete Ausgabe: Excel-Tabellenblatt `VoltageSweep...` mit Sollspannung, Stromlimit, Netzgerät-IDN, Messgerät-IDN, Messwert, Status und Zusammenfassung.
+Erwartete Ausgabe: Excel-Tabellenblatt `custom sequence...` mit Durchlauf, Schritt, Gerät, Aktion, Parametern, Wert und Status. Die Backend-Funktion `run_voltage_sweep` erzeugt weiterhin `VoltageSweep...`, ist in der GUI aber nicht der primäre Bedienpfad.
 
 Grenzen:
 
@@ -555,7 +565,7 @@ GUI-Test:
 2. Bereich `Netzwerkanalysator` muss sichtbar sein.
 3. S-Parameter-Ports und Format auswählen.
 4. `S-Parameter exportieren` ausführen.
-5. Optional `Screenshot` testen.
+5. Optional `Screenshot` testen. Im freien Ablauf kann beim Schritt `Gerät: Screenshot erfassen` für ZNB zusätzlich `ZNB mit Infofenstern` aktiviert werden; dann werden Informationsfenster/Overlays über `HCOP:PAGE:WIND ALL` mit in denselben Screenshot aufgenommen. Es entstehen keine mehreren Screenshots.
 
 Erwartete Ausgabe: Touchstone-/S-Parameter-Artefakt und Excel-Metadaten.
 
@@ -616,7 +626,7 @@ Statuswerte:
     Funktionen:        Screenshot PNG, S-Parameter ja
     Nicht unterstützt: DMM/Messwert, Scope-Messwert, getimtes Messen, Waveform/Trace
     Status:            VBA übernommen
-    Notizen:           Screenshot und Touchstone/S-Parameter aus bestehender Logik übernommen
+    Notizen:           Screenshot und Touchstone/S-Parameter aus bestehender Logik übernommen; Screenshot unterstützt aktives Fenster und im freien Ablauf zusätzlich die Anzeige inklusive Informationsfenstern/Overlays per `HCOP:PAGE:WIND ALL`
 
 #### Rohde & Schwarz ZNB
 
@@ -828,4 +838,4 @@ Für neue Rückmeldungen reicht es, den Status und die Notizen im jeweiligen Ger
 
 Der Python-Launcher `py` ist auf diesem Rechner vorhanden und die Python-Quellen wurden syntaktisch geprüft. Die Gerätetreiber-/VISA-Installation und ein angeschlossenes Messgerät sind für einen echten Kommunikationstest erforderlich.
 
-Hardware-unabhängige Tests liegen unter `tests/` und nutzen ein Fake-Instrument. Damit werden Profil-Erkennung, wichtige SCPI-Befehlsfolgen und Screenshot-Binärdaten-Normalisierung geprüft, ohne echte Messgeräte anzusprechen.
+Hardware-unabhängige Tests liegen unter `tests/` und nutzen Fake-Instrumente. Damit werden Profil-Erkennung, wichtige SCPI-Befehlsfolgen, Screenshot-Binärdaten-Normalisierung, Excel-Export, Sequenzen, serielle Logs/Kommandos, SSH, PicoScope-, Saleae-, 34970A-, CA-410- und Sweep-Sicherheitslogik geprüft, ohne echte Messgeräte anzusprechen.

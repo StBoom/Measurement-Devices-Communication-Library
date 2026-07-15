@@ -1,0 +1,4 @@
+include README.md
+include config.example.ini
+include scripts/build_exe.ps1
+include scripts/package_release.ps1

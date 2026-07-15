@@ -65,6 +65,7 @@ from .sequence import (
     parse_34970a_measurement_plan,
     run_frequency_sweep,
     run_custom_sequence,
+    sanitized_step_params,
     run_timed_switch,
     run_voltage_sweep,
     set_preferred_serial_scpi_settings,
@@ -81,10 +82,12 @@ CHANNEL_VALUES = ("1", "2", "3", "4")
 POINT_MODE_VALUES = ("RAW", "NORMAL", "MAXIMUM")
 PICOSCOPE_RANGE_VALUES = ("100MV", "200MV", "500MV", "1V", "2V", "5V", "10V", "20V")
 DATA_LOGGER_34970A_MEASUREMENTS = ("VOLT_DC", "RES", "FRES", "CURR_DC", "TEMP")
+CUSTOM_SEQUENCE_VALUE_KEYS = tuple(f"value{index}" for index in range(1, 13))
+CUSTOM_SEQUENCE_PARAM_KEYS = ("device", *CUSTOM_SEQUENCE_VALUE_KEYS)
 CUSTOM_SEQUENCE_ACTIONS = (
     ("Allgemein: Warten", "wait", ("device", "seconds")),
     ("Allgemein: Parallel-Messphase", "parallel_phase", ("device", "duration_s", "interval_s", "tasks")),
-    ("Gerät: Screenshot erfassen", "capture_screenshot", ("device",)),
+    ("Gerät: Screenshot erfassen", "capture_screenshot", ("device", "znb_full_page")),
     ("Multimeter: Messwert lesen", "dmm_read", ("device",)),
     ("Oszilloskop: Messwert lesen", "scope_measure", ("device", "measurement", "channel")),
     ("Oszilloskop/Spektrum: Kurve erfassen", "capture_waveform", ("device", "channels", "point_mode")),
@@ -101,11 +104,11 @@ CUSTOM_SEQUENCE_ACTIONS = (
     ("PicoScope: Digital erfassen", "picoscope_digital", ("device", "channels", "logic_level_mv", "samples", "interval_us")),
     ("Agilent 34970A: Kanäle messen", "data_logger_34970a_read", ("device", "measurement", "channels", "baudrate", "serial_format")),
     ("Agilent 34970A: Messplan", "data_logger_34970a_plan", ("device", "plan", "baudrate", "serial_format")),
-    ("Konica Minolta CA-410: Messwert", "ca410_read", ("device", "color_mode", "probe", "calibration_channel", "measurement_method", "sync_mode", "sync_value", "integration_mode", "averaging_time_s")),
+    ("Konica Minolta CA-410: Messwert", "ca410_read", ("device", "color_mode", "probe", "calibration_channel", "measurement_method", "flicker_method", "measurement_speed", "sync_mode", "sync_value", "integration_mode", "averaging_time_s", "baudrate", "serial_format")),
     ("Saleae: Digital aufnehmen", "saleae_capture", ("device", "channels", "duration_s", "sample_rate", "threshold_v")),
     ("Saleae: UART dekodieren", "saleae_uart", ("device", "channel", "baudrate", "duration_s", "sample_rate")),
     ("Saleae: I2C dekodieren", "saleae_i2c", ("device", "sda", "scl", "duration_s", "sample_rate")),
-    ("Saleae: SPI dekodieren", "saleae_spi", ("device", "mosi", "miso", "clock", "duration_s")),
+    ("Saleae: SPI dekodieren", "saleae_spi", ("device", "mosi", "miso", "clock", "duration_s", "sample_rate", "enable")),
     ("Saleae: CAN dekodieren", "saleae_can", ("device", "channel", "bitrate", "duration_s", "sample_rate")),
 )
 CUSTOM_SEQUENCE_FILE_VERSION = 1
@@ -130,7 +133,7 @@ CUSTOM_SEQUENCE_EXAMPLES = (
     ("CA-410 Messwert", "ca410_read"),
 )
 SEQUENCE_DEVICE_ROLES = ("Multimeter", "Netzgerät", "Oszilloskop", "Signalgenerator", "Spektrumanalysator", "Netzwerkanalysator", "Seriell", "SSH", "PicoScope", "Saleae", "Datenlogger", "Farbmessgerät", "Gerät")
-SERIAL_FORMAT_VALUES = ("8N1", "7E1", "7O1", "8E1", "8O1", "8N2")
+SERIAL_FORMAT_VALUES = ("8N1", "7E1", "7O1", "7E2", "8E1", "8O1", "8N2")
 
 
 class InstrumentVisaApp(tk.Tk):
@@ -142,6 +145,7 @@ class InstrumentVisaApp(tk.Tk):
         self.geometry(self.settings.get("window_geometry", "1280x760"))
         self.minsize(900, 680)
         self.saved_devices = self._load_saved_devices()
+        self.forgotten_devices = self._load_forgotten_devices()
         self.last_found_resources: list[str] = []
         self.resource_display_map: dict[str, str] = {}
         self.logger = setup_logging()
@@ -348,6 +352,8 @@ class InstrumentVisaApp(tk.Tk):
         idn_button.grid(row=0, column=3, padx=8, pady=8)
         setup_check_button = ttk.Button(connection, text="Setup prüfen", command=self.check_setup)
         setup_check_button.grid(row=0, column=4, padx=8, pady=8)
+        remove_device_button = ttk.Button(connection, text="Gerät entfernen", command=self.remove_selected_device)
+        remove_device_button.grid(row=0, column=5, padx=8, pady=8)
         ttk.Label(connection, text="VISA-Adresse").grid(row=1, column=0, sticky="w", padx=8, pady=(0, 8))
         address_entry = ttk.Entry(connection, textvariable=self.address_var)
         address_entry.grid(row=1, column=1, sticky="ew", padx=8, pady=(0, 8))
@@ -357,7 +363,7 @@ class InstrumentVisaApp(tk.Tk):
         ca410_profile_button.grid(row=1, column=2, padx=8, pady=(0, 8))
         ttk.Label(connection, text="Gerätetyp").grid(row=2, column=0, sticky="w", padx=8, pady=(0, 8))
         ttk.Label(connection, textvariable=self.device_type_var).grid(row=2, column=1, sticky="w", padx=8, pady=(0, 8))
-        ttk.Label(connection, textvariable=self.profile_var).grid(row=2, column=2, columnspan=3, sticky="w", padx=8, pady=(0, 8))
+        ttk.Label(connection, textvariable=self.profile_var).grid(row=2, column=2, columnspan=4, sticky="w", padx=8, pady=(0, 8))
 
         export = ttk.LabelFrame(controls_frame, text="Export")
         export.grid(row=1, column=0, sticky="ew", padx=12, pady=6)
@@ -665,7 +671,6 @@ class InstrumentVisaApp(tk.Tk):
 
         timed_switch = ttk.LabelFrame(controls_frame, text="Getimtes Schalten")
         timed_switch.grid(row=5, column=0, sticky="ew", padx=12, pady=6)
-        timed_switch.grid_remove()
         timed_switch.columnconfigure(1, weight=1)
         timed_switch.columnconfigure(3, weight=1)
         ttk.Label(timed_switch, text="Quellgerät").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 4))
@@ -703,7 +708,7 @@ class InstrumentVisaApp(tk.Tk):
 
         self._scope_widgets = [scope_value_button, measurement_combo, channel_spinbox, waveform_button, *waveform_checkbuttons, all_button, none_button, point_mode_combo]
         self._scope_screenshot_widgets = [scope_screenshot_button]
-        self._connection_widgets = [self.resource_combo, search_button, idn_button, setup_check_button, address_entry, ca410_profile_button]
+        self._connection_widgets = [self.resource_combo, search_button, idn_button, setup_check_button, remove_device_button, address_entry, ca410_profile_button]
         self._dmm_widgets = [dmm_value_button]
         self._vna_widgets = [sparameter_button, sparameter_format_combo, *sparameter_checkbuttons]
         self._vna_screenshot_widgets = [vna_screenshot_button]
@@ -750,6 +755,7 @@ class InstrumentVisaApp(tk.Tk):
             "spectrum": spectrum,
             "generator": generator,
             "power_supply": power_supply,
+            "timed_switch": timed_switch,
         }
         self._sequence_widgets = [
             custom_sequence_button,
@@ -804,10 +810,33 @@ class InstrumentVisaApp(tk.Tk):
         self._apply_saved_profile_for_address()
 
     def test_idn(self) -> None:
+        address = self.address_var.get().strip()
+        if address:
+            self._unforget_device(address)
         self._run_worker("IDN-Abfrage läuft...", self._test_idn)
 
     def check_setup(self) -> None:
         self._run_worker("Setup wird geprüft...", self._check_setup)
+
+    def remove_selected_device(self) -> None:
+        address = self._selected_or_current_device_address()
+        if not address:
+            messagebox.showinfo("Gerät entfernen", "Bitte zuerst ein Gerät auswählen oder eine Adresse eintragen.")
+            return
+        label = self._resource_display_label(address)
+        if not messagebox.askyesno("Gerät entfernen", f"Dieses Gerät aus der Liste entfernen?\n\n{label}"):
+            return
+        removed = self._forget_device(address)
+        if removed:
+            self.status_var.set(f"Gerät entfernt: {address}")
+            self._append_log(f"Gerät entfernt: {address}")
+        else:
+            self.status_var.set(f"Gerät aus aktueller Liste entfernt: {address}")
+        self._clear_removed_device_references(address)
+        self._refresh_resource_combo(self.last_found_resources)
+        self._refresh_custom_sequence_resource_combo()
+        self._apply_saved_profile_for_address()
+        self._save_settings()
 
     def read_value(self) -> None:
         self._run_worker("DMM-Messwert wird gelesen...", self._read_value)
@@ -830,7 +859,8 @@ class InstrumentVisaApp(tk.Tk):
             messagebox.showerror("CA-410", "CA-410 wird aktuell über COM-Port oder ASRL...::INSTR unterstützt.")
             return
         profile = self._ca410_profile()
-        self._remember_device(address, "Konica Minolta CA-410", profile)
+        self._unforget_device(address)
+        self._remember_device(address, "Konica Minolta CA-410", profile, force=True)
         self._apply_profile(profile)
         self.status_var.set("Adresse als Konica Minolta CA-410 gespeichert.")
 
@@ -1057,28 +1087,24 @@ class InstrumentVisaApp(tk.Tk):
         action_combo = ttk.Combobox(steps, textvariable=self.custom_sequence_action_var, values=action_values, state="readonly", width=52)
         action_combo.grid(row=0, column=1, sticky="ew", padx=8, pady=8)
         action_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_custom_sequence_param_defaults())
-        self.custom_sequence_param_vars = {
-            "device": tk.StringVar(value="Signalgenerator1"),
-            "value1": tk.StringVar(value="${frequency}"),
-            "value2": tk.StringVar(value="-30 dBm"),
-            "value3": tk.StringVar(value="0"),
-            "value4": tk.StringVar(value="1"),
-            "value5": tk.StringVar(value=""),
-            "value6": tk.StringVar(value=""),
-            "value7": tk.StringVar(value=""),
-            "value8": tk.StringVar(value=""),
-        }
-        for row, (label, key) in enumerate((("Gerät", "device"), ("Wert 1", "value1"), ("Wert 2", "value2"), ("Wert 3", "value3"), ("Wert 4", "value4"), ("Wert 5", "value5"), ("Wert 6", "value6"), ("Wert 7", "value7"), ("Wert 8", "value8")), start=1):
+        self.custom_sequence_param_vars = {"device": tk.StringVar(value="Signalgenerator1")}
+        self.custom_sequence_param_vars.update({key: tk.StringVar(value="") for key in CUSTOM_SEQUENCE_VALUE_KEYS})
+        self.custom_sequence_param_vars["value1"].set("${frequency}")
+        self.custom_sequence_param_vars["value2"].set("-30 dBm")
+        self.custom_sequence_param_vars["value3"].set("0")
+        self.custom_sequence_param_vars["value4"].set("1")
+        param_rows = (("Gerät", "device"), *((f"Wert {index}", f"value{index}") for index in range(1, 13)))
+        for row, (label, key) in enumerate(param_rows, start=1):
             label_widget = ttk.Label(steps, text=label)
             label_widget.grid(row=row, column=0, sticky="w", padx=8, pady=(0, 8))
             self.custom_sequence_param_labels[key] = label_widget
             entry = ttk.Entry(steps, textvariable=self.custom_sequence_param_vars[key], width=52)
             entry.grid(row=row, column=1, sticky="ew", padx=8, pady=(0, 8))
             self.custom_sequence_param_widgets[key] = entry
-        ttk.Label(steps, text="Variablen werden mit ${name} genutzt, z. B. ${frequency}.", wraplength=500).grid(row=10, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8))
+        ttk.Label(steps, text="Variablen werden mit ${name} genutzt, z. B. ${frequency}.", wraplength=500).grid(row=14, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8))
         self.custom_sequence_step_button = ttk.Button(steps, text="Schritt hinzufügen", command=self._add_custom_sequence_step)
-        self.custom_sequence_step_button.grid(row=11, column=1, sticky="ew", padx=8, pady=(0, 8))
-        ttk.Button(steps, text="Bearbeiten abbrechen", command=self._cancel_custom_sequence_step_edit).grid(row=12, column=1, sticky="ew", padx=8, pady=(0, 8))
+        self.custom_sequence_step_button.grid(row=15, column=1, sticky="ew", padx=8, pady=(0, 8))
+        ttk.Button(steps, text="Bearbeiten abbrechen", command=self._cancel_custom_sequence_step_edit).grid(row=16, column=1, sticky="ew", padx=8, pady=(0, 8))
         self._refresh_custom_sequence_param_defaults()
 
     def _refresh_custom_sequence_param_defaults(self) -> None:
@@ -1095,7 +1121,7 @@ class InstrumentVisaApp(tk.Tk):
             "dmm_read": (self._default_sequence_device_name("Multimeter"), "", "", "", ""),
             "scope_measure": (self._default_sequence_device_name("Oszilloskop"), self.measurement_var.get(), str(self.channel_var.get()), "", ""),
             "capture_waveform": (self._default_sequence_device_name("Oszilloskop"), "1", self.point_mode_var.get(), "", ""),
-            "capture_screenshot": (self._default_sequence_device_name("Oszilloskop"), "", "", "", ""),
+            "capture_screenshot": (self._default_sequence_device_name("Oszilloskop"), "OFF", "", "", ""),
             "serial_log": (self._default_sequence_device_name("Seriell"), "10", "115200", "8N1", ""),
             "serial_command": (self._default_sequence_device_name("Seriell"), "*IDN?\\n", "115200", "8N1", "1"),
             "ssh_command": (self._default_sequence_device_name("SSH"), "uname -a", "", "", "30"),
@@ -1104,25 +1130,26 @@ class InstrumentVisaApp(tk.Tk):
             "picoscope_digital": (self._default_sequence_device_name("PicoScope"), "D0-D7", "1500", "10000", "1"),
             "data_logger_34970a_read": (self._default_sequence_device_name("Datenlogger"), "TEMP", "1-20", "19200", "8N1"),
             "data_logger_34970a_plan": (self._default_sequence_device_name("Datenlogger"), "1-20:TEMP; 21-22:CURR_DC", "19200", "8N1", ""),
-            "ca410_read": (self._default_sequence_device_name("Farbmessgerät"), "xyLv", "1", "0", "Color+Flicker", "UNIV", "60.00", "Double-Frame", "0"),
+            "ca410_read": (self._default_sequence_device_name("Farbmessgerät"), "xyLv", "1", "0", "Color+Flicker", "FMA", "FAST", "UNIV", "60.00", "Double-Frame", "0", "38400", "7E2"),
             "saleae_capture": (self._default_sequence_device_name("Saleae"), "D0-D7", "5", "10000000", "3.3"),
             "saleae_uart": (self._default_sequence_device_name("Saleae"), "0", "115200", "5", "10000000"),
             "saleae_i2c": (self._default_sequence_device_name("Saleae"), "0", "1", "5", "10000000"),
-            "saleae_spi": (self._default_sequence_device_name("Saleae"), "0", "1", "2", "5"),
+            "saleae_spi": (self._default_sequence_device_name("Saleae"), "0", "1", "2", "5", "10000000", "-1"),
             "saleae_can": (self._default_sequence_device_name("Saleae"), "0", "500000", "5", "10000000"),
             "wait": ("", "0.5", "", "", ""),
         }.get(action, ("", "", "", "", ""))
-        for key, value in zip(("device", "value1", "value2", "value3", "value4", "value5", "value6", "value7", "value8"), defaults):
+        for key, value in zip(CUSTOM_SEQUENCE_PARAM_KEYS, defaults):
             self.custom_sequence_param_vars[key].set(value)
-        for key in ("device", "value1", "value2", "value3", "value4", "value5", "value6", "value7", "value8"):
-            if key not in dict(zip(("device", "value1", "value2", "value3", "value4", "value5", "value6", "value7", "value8"), defaults)):
+        default_keys = set(CUSTOM_SEQUENCE_PARAM_KEYS[: len(defaults)])
+        for key in CUSTOM_SEQUENCE_PARAM_KEYS:
+            if key not in default_keys:
                 self.custom_sequence_param_vars[key].set("")
         self._refresh_custom_sequence_param_labels(action)
         self._refresh_custom_sequence_param_widgets(action)
 
     def _refresh_custom_sequence_param_labels(self, action: str) -> None:
         labels = self._custom_sequence_param_labels(action)
-        for key, fallback in (("device", "Gerät"), ("value1", "Wert 1"), ("value2", "Wert 2"), ("value3", "Wert 3"), ("value4", "Wert 4"), ("value5", "Wert 5"), ("value6", "Wert 6"), ("value7", "Wert 7"), ("value8", "Wert 8")):
+        for key, fallback in (("device", "Gerät"), *((f"value{index}", f"Wert {index}") for index in range(1, 13))):
             label = self.custom_sequence_param_labels.get(key)
             if label is not None:
                 label.configure(text=labels.get(key, fallback))
@@ -1138,7 +1165,7 @@ class InstrumentVisaApp(tk.Tk):
             "dmm_read": {"device": "Multimeter"},
             "scope_measure": {"device": "Oszilloskop", "value1": "Messwert", "value2": "Kanal"},
             "capture_waveform": {"device": "Oszilloskop/Spektrum", "value1": "Kanäle", "value2": "Punktmodus"},
-            "capture_screenshot": {"device": "Gerät"},
+            "capture_screenshot": {"device": "Gerät", "value1": "ZNB mit Infofenstern"},
             "serial_log": {"device": "Serielles Gerät", "value1": "Dauer [s]", "value2": "Baudrate", "value3": "Format"},
             "serial_command": {"device": "Serielles Gerät", "value1": "Kommando", "value2": "Baudrate", "value3": "Format", "value4": "Antwort lesen [s]"},
             "ssh_command": {"device": "SSH-Gerät", "value1": "Kommando", "value2": "Benutzer optional", "value3": "Passwort optional", "value4": "Timeout [s]"},
@@ -1147,19 +1174,19 @@ class InstrumentVisaApp(tk.Tk):
             "picoscope_digital": {"device": "PicoScope", "value1": "Kanäle", "value2": "Logikpegel [mV]", "value3": "Samples", "value4": "Intervall [us]"},
             "data_logger_34970a_read": {"device": "34970A", "value1": "Messart", "value2": "Kanäle", "value3": "Baudrate", "value4": "Format"},
             "data_logger_34970a_plan": {"device": "34970A", "value1": "Messplan", "value2": "Baudrate", "value3": "Format", "value4": ""},
-            "ca410_read": {"device": "CA-410", "value1": "Farbmodus", "value2": "Probe", "value3": "Kal.-Kanal", "value4": "Messmethode", "value5": "Sync", "value6": "Sync-Wert", "value7": "Integration", "value8": "Averaging [s]"},
+            "ca410_read": {"device": "CA-410", "value1": "Farbmodus", "value2": "Probe", "value3": "Kal.-Kanal", "value4": "Messmethode", "value5": "Flicker", "value6": "Speed", "value7": "Sync", "value8": "Sync-Wert", "value9": "Integration", "value10": "Averaging [s]", "value11": "Baud", "value12": "Format"},
             "saleae_capture": {"device": "Saleae", "value1": "Kanäle", "value2": "Dauer [s]", "value3": "Sample-Rate", "value4": "Schwelle [V]"},
             "saleae_uart": {"device": "Saleae", "value1": "Kanal", "value2": "Baudrate", "value3": "Dauer [s]", "value4": "Sample-Rate"},
             "saleae_i2c": {"device": "Saleae", "value1": "SDA", "value2": "SCL", "value3": "Dauer [s]", "value4": "Sample-Rate"},
-            "saleae_spi": {"device": "Saleae", "value1": "MOSI", "value2": "MISO", "value3": "Clock", "value4": "Dauer [s]"},
+            "saleae_spi": {"device": "Saleae", "value1": "MOSI", "value2": "MISO", "value3": "Clock", "value4": "Dauer [s]", "value5": "Sample-Rate", "value6": "Enable (-1=aus)"},
             "saleae_can": {"device": "Saleae", "value1": "Kanal", "value2": "Bitrate", "value3": "Dauer [s]", "value4": "Sample-Rate"},
             "wait": {"device": "", "value1": "Sekunden"},
         }.get(action, {})
 
     def _refresh_custom_sequence_param_widgets(self, action: str) -> None:
         combo_values = self._custom_sequence_param_combo_values(action)
-        visible_keys = set(("device", "value1", "value2", "value3", "value4", "value5", "value6", "value7", "value8")[: len(self._custom_sequence_action_params(action))])
-        for key in ("value1", "value2", "value3", "value4", "value5", "value6", "value7", "value8"):
+        visible_keys = set(CUSTOM_SEQUENCE_PARAM_KEYS[: len(self._custom_sequence_action_params(action))])
+        for key in CUSTOM_SEQUENCE_VALUE_KEYS:
             current = self.custom_sequence_param_widgets.get(key)
             if current is None:
                 continue
@@ -1174,7 +1201,7 @@ class InstrumentVisaApp(tk.Tk):
                 widget = ttk.Entry(current.master, textvariable=self.custom_sequence_param_vars[key], width=52)
             widget.grid(**grid_info)
             self.custom_sequence_param_widgets[key] = widget
-        for key in ("device", "value1", "value2", "value3", "value4", "value5", "value6", "value7", "value8"):
+        for key in CUSTOM_SEQUENCE_PARAM_KEYS:
             label = self.custom_sequence_param_labels.get(key)
             widget = self.custom_sequence_param_widgets.get(key)
             if label is not None and widget is not None:
@@ -1202,6 +1229,8 @@ class InstrumentVisaApp(tk.Tk):
             return {"value1": SCOPE_MEASUREMENTS, "value2": CHANNEL_VALUES}
         if action == "capture_waveform":
             return {"value2": POINT_MODE_VALUES}
+        if action == "capture_screenshot":
+            return {"value1": ON_OFF_VALUES}
         if action == "serial_log":
             return {"value3": SERIAL_FORMAT_VALUES}
         if action == "serial_command":
@@ -1213,7 +1242,7 @@ class InstrumentVisaApp(tk.Tk):
         if action == "data_logger_34970a_plan":
             return {"value3": SERIAL_FORMAT_VALUES}
         if action == "ca410_read":
-            return {"value1": CA410_COLOR_MODES, "value4": CA410_MEASUREMENT_METHODS, "value5": CA410_SYNC_MODES, "value7": CA410_INTEGRATION_MODES}
+            return {"value1": CA410_COLOR_MODES, "value4": CA410_MEASUREMENT_METHODS, "value5": CA410_FLICKER_METHODS, "value6": CA410_MEASUREMENT_SPEEDS, "value7": CA410_SYNC_MODES, "value9": CA410_INTEGRATION_MODES, "value12": SERIAL_FORMAT_VALUES}
         return {}
 
     def _apply_custom_sequence_variable_unit_defaults(self) -> None:
@@ -1278,14 +1307,18 @@ class InstrumentVisaApp(tk.Tk):
         except tk.TclError:
             self.custom_sequence_device_select_combo = None
             return
-        if labels and not self.custom_sequence_device_select_var.get():
+        current = self.custom_sequence_device_select_var.get().strip()
+        if current and current not in self.custom_sequence_device_select_map:
+            self.custom_sequence_device_select_var.set("")
+            current = ""
+        if labels and not current:
             self.custom_sequence_device_select_var.set(labels[0])
 
     def _apply_selected_resource_as_custom_sequence_device(self, event: tk.Event | None = None) -> None:
         if self.custom_sequence_device_select_var is None or self.custom_sequence_device_address_var is None or self.custom_sequence_device_name_var is None:
             return
         label = self.custom_sequence_device_select_var.get().strip()
-        address = self.custom_sequence_device_select_map.get(label, label)
+        address = self.custom_sequence_device_select_map.get(label, "")
         if not address:
             return
         self.custom_sequence_device_address_var.set(address)
@@ -1422,7 +1455,7 @@ class InstrumentVisaApp(tk.Tk):
     def _add_custom_sequence_step(self) -> None:
         try:
             label, action, param_names = self._selected_custom_sequence_action()
-            raw_values = [self.custom_sequence_param_vars[key].get().strip() for key in ("device", "value1", "value2", "value3", "value4", "value5", "value6", "value7", "value8")]
+            raw_values = [self.custom_sequence_param_vars[key].get().strip() for key in CUSTOM_SEQUENCE_PARAM_KEYS]
             values_by_name = dict(zip(param_names, raw_values))
             device = values_by_name.pop("device", "")
             params = {name: value for name, value in values_by_name.items() if value != ""}
@@ -1486,10 +1519,11 @@ class InstrumentVisaApp(tk.Tk):
         self._refresh_custom_sequence_param_widgets(step.action)
         param_names = self._custom_sequence_action_params(step.action)
         values = {"device": step.device, **{name: str(value) for name, value in step.params.items()}}
-        for key, param_name in zip(("device", "value1", "value2", "value3", "value4", "value5", "value6", "value7", "value8"), param_names):
+        for key, param_name in zip(CUSTOM_SEQUENCE_PARAM_KEYS, param_names):
             self.custom_sequence_param_vars[key].set(values.get(param_name, ""))
-        for key in ("value1", "value2", "value3", "value4", "value5", "value6", "value7", "value8"):
-            if key not in dict(zip(("device", "value1", "value2", "value3", "value4", "value5", "value6", "value7", "value8"), param_names)):
+        param_keys = set(CUSTOM_SEQUENCE_PARAM_KEYS[: len(param_names)])
+        for key in CUSTOM_SEQUENCE_VALUE_KEYS:
+            if key not in param_keys:
                 self.custom_sequence_param_vars[key].set("")
         if self.custom_sequence_step_button is not None:
             self.custom_sequence_step_button.configure(text="Schritt aktualisieren")
@@ -1665,7 +1699,7 @@ class InstrumentVisaApp(tk.Tk):
             self.status_var.set("Beispiel geladen: Netzgerät getimt schalten")
         elif example == "screenshot":
             self.custom_sequence_devices = {"Gerät1": current_address}
-            self.custom_sequence_steps = [SequenceStep("Gerät1", "capture_screenshot")]
+            self.custom_sequence_steps = [SequenceStep("Gerät1", "capture_screenshot", {"znb_full_page": "OFF"})]
             self._clear_custom_sequence_variable_defaults(repeat="1")
             self.status_var.set("Beispiel geladen: Screenshot speichern")
         elif example == "waveform":
@@ -1711,7 +1745,7 @@ class InstrumentVisaApp(tk.Tk):
             self.status_var.set("Beispiel geladen: 34970A Messplan")
         elif example == "ca410_read":
             self.custom_sequence_devices = {"Farbmessgerät1": ca410_address}
-            self.custom_sequence_steps = [SequenceStep("Farbmessgerät1", "ca410_read", {"color_mode": "xyLv", "probe": "1", "calibration_channel": "0", "measurement_method": "Color+Flicker"})]
+            self.custom_sequence_steps = [SequenceStep("Farbmessgerät1", "ca410_read", {"color_mode": "xyLv", "probe": "1", "calibration_channel": "0", "measurement_method": "Color+Flicker", "flicker_method": "FMA", "measurement_speed": "FAST", "sync_mode": "UNIV", "sync_value": "60.00", "integration_mode": "Double-Frame", "averaging_time_s": "0", "baudrate": "38400", "serial_format": "7E2"})]
             self._clear_custom_sequence_variable_defaults(repeat="1")
             self.status_var.set("Beispiel geladen: CA-410 Messwert")
         else:
@@ -2505,7 +2539,7 @@ class InstrumentVisaApp(tk.Tk):
 
     def _run_sequence(self, config: FrequencySweepConfig | VoltageSweepConfig, source_address: str, measurement_address: str) -> str:
         try:
-            with VisaInstrument(source_address, timeout_ms=10000) as source, VisaInstrument(measurement_address, timeout_ms=10000) as measurement_instrument:
+            with create_sequence_instrument(source_address, timeout_ms=10000) as source, create_sequence_instrument(measurement_address, timeout_ms=10000) as measurement_instrument:
                 if isinstance(config, VoltageSweepConfig):
                     sweep = run_voltage_sweep(
                         source,
@@ -2556,6 +2590,7 @@ class InstrumentVisaApp(tk.Tk):
                 stop_requested=self.sequence_stop_event.is_set,
                 progress=lambda message: self._messages.put(("progress", message)),
                 step_result_export=lambda _device, info, result: self._export_custom_sequence_step_result(info, result),
+                artifact_dir=self._output_path().with_name(f"{self._output_path().stem}_artifacts"),
             )
             first_device = next(iter(config.devices))
             result = AcquisitionResult(kind="custom sequence", file_type="csv", content=result_data.csv_content)
@@ -2587,7 +2622,7 @@ class InstrumentVisaApp(tk.Tk):
 
     def _run_timed_switch(self, config: TimedSwitchConfig, address: str) -> str:
         try:
-            with VisaInstrument(address, timeout_ms=10000) as source:
+            with create_sequence_instrument(address, timeout_ms=10000) as source:
                 result_data = run_timed_switch(
                     source,
                     config,
@@ -2938,6 +2973,9 @@ class InstrumentVisaApp(tk.Tk):
         return Path(output)
 
     def _run_worker(self, status: str, action) -> None:
+        if self.operation_running:
+            self._append_log("Es läuft bereits eine Aktion. Bitte erst stoppen oder Abschluss abwarten.")
+            return
         self.operation_stop_event.clear()
         self._set_operation_running(True)
         self.status_var.set(status)
@@ -3103,9 +3141,13 @@ class InstrumentVisaApp(tk.Tk):
             current_label = self._resource_display_label(current_address, numbering)
             if current_label in self.resource_display_map:
                 self.resource_var.set(current_label)
+            else:
+                self.resource_var.set("")
         elif values:
             self.resource_var.set(values[0])
             self.address_var.set(self.resource_display_map[values[0]])
+        else:
+            self.resource_var.set("")
 
     def _manual_device_resources(self) -> list[str]:
         return [
@@ -3115,7 +3157,7 @@ class InstrumentVisaApp(tk.Tk):
         ]
 
     def _known_device_addresses(self) -> list[str]:
-        return sorted(self.saved_devices, key=lambda address: self._resource_display_label(address).lower())
+        return sorted((address for address in self.saved_devices if not self._is_forgotten_device(address)), key=lambda address: self._resource_display_label(address).lower())
 
     def _resource_display_addresses(self, resources: list[str]) -> list[str]:
         addresses: list[str] = []
@@ -3171,6 +3213,44 @@ class InstrumentVisaApp(tk.Tk):
             return str(saved.get("address", address)).strip() or address
         return address
 
+    def _selected_or_current_device_address(self) -> str:
+        selected = self.resource_var.get().strip()
+        current_address = self.address_var.get().strip()
+        if selected:
+            mapped = self.resource_display_map.get(selected, selected).strip()
+            if current_address and self._canonical_address(current_address) != self._canonical_address(mapped):
+                return current_address
+            if mapped:
+                return mapped
+        return current_address
+
+    def _forget_device(self, address: str) -> bool:
+        canonical_address = self._canonical_address(address)
+        self.forgotten_devices.add(canonical_address)
+        removed = False
+        for known_address in list(self.saved_devices):
+            if self._canonical_address(known_address) == canonical_address:
+                del self.saved_devices[known_address]
+                removed = True
+        self.last_found_resources = [resource for resource in self.last_found_resources if self._canonical_address(resource) != canonical_address]
+        if self._canonical_address(self.address_var.get().strip()) == canonical_address:
+            self.address_var.set("")
+        return removed
+
+    def _unforget_device(self, address: str) -> None:
+        self.forgotten_devices.discard(self._canonical_address(address))
+
+    def _is_forgotten_device(self, address: str) -> bool:
+        return self._canonical_address(address) in self.forgotten_devices
+
+    def _clear_removed_device_references(self, address: str) -> None:
+        canonical_address = self._canonical_address(address)
+        for variable in (self.sequence_generator_address_var, self.sequence_measurement_address_var, self.switch_address_var):
+            if self._canonical_address(variable.get().strip()) == canonical_address:
+                variable.set("")
+        self.custom_sequence_devices = {name: device_address for name, device_address in self.custom_sequence_devices.items() if self._canonical_address(device_address) != canonical_address}
+        self._refresh_custom_sequence_device_tree()
+
     def _saved_device_for_address(self, address: str) -> dict | None:
         saved = self.saved_devices.get(address)
         if isinstance(saved, dict):
@@ -3187,11 +3267,11 @@ class InstrumentVisaApp(tk.Tk):
     def _canonical_address(self, address: str) -> str:
         normalized = address.strip().upper()
         if normalized.startswith("COM") and normalized[3:].isdigit():
-            return normalized
+            return f"COM{int(normalized[3:])}"
         if normalized.startswith("ASRL") and normalized.endswith("::INSTR"):
             port = normalized[4:-7]
             if port.isdigit():
-                return f"COM{port}"
+                return f"COM{int(port)}"
         parts = address.split("::")
         if len(parts) >= 6 and parts[-1] == "INSTR" and parts[-2].isdigit():
             return "::".join([*parts[:-2], parts[-1]])
@@ -3228,6 +3308,7 @@ class InstrumentVisaApp(tk.Tk):
         screenshot_enabled = profile.supports_screenshot
         generator_enabled = profile.supports_signal_generator
         power_supply_enabled = profile.supports_power_supply
+        timed_switch_enabled = generator_enabled or power_supply_enabled
         if power_supply_enabled:
             max_channel = hmp_channel_count(profile.model_family)
             if self._power_supply_channel_spinbox is not None:
@@ -3249,6 +3330,7 @@ class InstrumentVisaApp(tk.Tk):
         self._set_section_visible("spectrum", spectrum_enabled)
         self._set_section_visible("generator", generator_enabled)
         self._set_section_visible("power_supply", power_supply_enabled)
+        self._set_section_visible("timed_switch", timed_switch_enabled)
         self._set_widgets_enabled(self._scope_widgets, scope_enabled)
         self._set_widgets_enabled(self._scope_screenshot_widgets, scope_enabled and screenshot_enabled and not spectrum_enabled and not vna_enabled)
         self._set_widgets_enabled(self._dmm_widgets, dmm_enabled)
@@ -3266,17 +3348,20 @@ class InstrumentVisaApp(tk.Tk):
         self._set_widgets_enabled(self._spectrum_screenshot_widgets, spectrum_enabled and screenshot_enabled)
         self._set_widgets_enabled(self._generator_widgets, generator_enabled)
         self._set_widgets_enabled(self._power_supply_widgets, power_supply_enabled)
+        self._set_widgets_enabled(self._switch_widgets, timed_switch_enabled and not self.switch_running and not self.sequence_running and not self.timed_running)
+        self._set_widgets_enabled(self._switch_stop_widgets, timed_switch_enabled and self.switch_running)
         if self.sequence_running:
             self._set_sequence_running(True)
         if self.switch_running:
             self._set_switch_running(True)
 
     def _apply_profile_message(self, message: object) -> None:
-        if isinstance(message, tuple) and len(message) in {3, 4}:
+        if isinstance(message, tuple) and len(message) in {3, 4, 5}:
             profile, address, idn = message[:3]
             serial_settings = message[3] if len(message) == 4 else None
             if isinstance(profile, DeviceProfile) and isinstance(address, str) and isinstance(idn, str):
-                self._remember_device(address, idn, profile)
+                force = bool(message[4]) if len(message) == 5 else False
+                self._remember_device(address, idn, profile, force=force or self._is_forgotten_device(address))
                 if self._is_serial_settings(serial_settings):
                     self._remember_serial_settings(address, serial_settings)
                 self._apply_profile(profile)
@@ -3313,17 +3398,38 @@ class InstrumentVisaApp(tk.Tk):
 
     def _set_operation_running(self, running: bool) -> None:
         self.operation_running = running
+        self._set_widgets_enabled(self._connection_widgets, not running)
+        if running:
+            self._set_widgets_enabled(self._scope_widgets, False)
+            self._set_widgets_enabled(self._scope_screenshot_widgets, False)
+            self._set_widgets_enabled(self._dmm_widgets, False)
+            self._set_widgets_enabled(self._timed_widgets, False)
+            self._set_widgets_enabled(self._timed_dmm_widgets, False)
+            self._set_widgets_enabled(self._timed_scope_widgets, False)
+            self._set_widgets_enabled(self._vna_widgets, False)
+            self._set_widgets_enabled(self._vna_screenshot_widgets, False)
+            self._set_widgets_enabled(self._spectrum_widgets, False)
+            self._set_widgets_enabled(self._spectrum_screenshot_widgets, False)
+            self._set_widgets_enabled(self._generator_widgets, False)
+            self._set_widgets_enabled(self._power_supply_widgets, False)
+            self._set_widgets_enabled(self._sequence_widgets, False)
         data_logger_enabled = self.current_profile.key == "keysight_34970a" or "34970" in self.current_profile.model_family or self.current_profile.device_type == "Datenlogger"
         ca410_enabled = self.current_profile.key == "konica_minolta_ca410"
         self._set_widgets_enabled(self._data_logger_widgets, data_logger_enabled and not running)
         self._set_widgets_enabled(self._data_logger_stop_widgets, data_logger_enabled and running)
         self._set_widgets_enabled(self._ca410_widgets, ca410_enabled and not running)
         self._set_widgets_enabled(self._ca410_stop_widgets, ca410_enabled and running)
+        if not running:
+            self._apply_profile(self.current_profile)
 
-    def _remember_device(self, address: str, idn: str, profile: DeviceProfile) -> None:
+    def _remember_device(self, address: str, idn: str, profile: DeviceProfile, force: bool = False) -> None:
         if not address:
             return
         canonical_address = self._canonical_address(address)
+        if canonical_address in self.forgotten_devices and not force:
+            return
+        if force:
+            self.forgotten_devices.discard(canonical_address)
         for known_address in list(self.saved_devices):
             if known_address != canonical_address and self._canonical_address(known_address) == canonical_address:
                 del self.saved_devices[known_address]
@@ -3349,7 +3455,7 @@ class InstrumentVisaApp(tk.Tk):
     def _remember_serial_unknown(self, address: str) -> None:
         if not address or self._saved_device_for_address(address):
             return
-        self._remember_device(address, "Serielles Gerät ohne IDN", self._serial_unknown_profile())
+        self._remember_device(address, "Serielles Gerät ohne IDN", self._serial_unknown_profile(), force=self._is_forgotten_device(address))
 
     def _remember_serial_settings(self, address: str, settings: tuple[int, str, str, str]) -> None:
         saved = self._saved_device_for_address(address)
@@ -3443,7 +3549,7 @@ class InstrumentVisaApp(tk.Tk):
             self._apply_profile(self.current_profile)
             self._set_widgets_enabled(self._sequence_widgets, True)
             self._set_widgets_enabled(self._sequence_stop_widgets, False)
-            self._set_widgets_enabled(self._switch_widgets, True)
+            self._set_widgets_enabled(self._switch_widgets, self.current_profile.supports_signal_generator or self.current_profile.supports_power_supply)
             self._set_widgets_enabled(self._switch_stop_widgets, False)
 
     def _set_switch_running(self, running: bool) -> None:
@@ -3472,7 +3578,7 @@ class InstrumentVisaApp(tk.Tk):
             self._set_widgets_enabled(self._power_supply_widgets, False)
         else:
             self._apply_profile(self.current_profile)
-            self._set_widgets_enabled(self._switch_widgets, True)
+            self._set_widgets_enabled(self._switch_widgets, self.current_profile.supports_signal_generator or self.current_profile.supports_power_supply)
             self._set_widgets_enabled(self._switch_stop_widgets, False)
             self._set_widgets_enabled(self._sequence_widgets, True)
             self._set_widgets_enabled(self._sequence_stop_widgets, False)
@@ -3511,6 +3617,12 @@ class InstrumentVisaApp(tk.Tk):
         if isinstance(devices, dict):
             return {str(address): device for address, device in devices.items() if isinstance(device, dict)}
         return {}
+
+    def _load_forgotten_devices(self) -> set[str]:
+        devices = self.settings.get("forgotten_devices", [])
+        if isinstance(devices, list):
+            return {self._canonical_address(str(address)) for address in devices if str(address).strip()}
+        return set()
 
     def _step_from_settings(self, data: dict) -> SequenceStep:
         params = data.get("params", {})
@@ -3601,6 +3713,7 @@ class InstrumentVisaApp(tk.Tk):
             "switch_end_off": self.switch_end_off_var.get(),
             "switch_power_mode": self.switch_power_mode_var.get(),
             "devices": self.saved_devices,
+            "forgotten_devices": sorted(self.forgotten_devices),
         }
         SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
 
@@ -3648,7 +3761,7 @@ def _generator_settings_csv(frequency: str, power: str, rf_output: str) -> str:
 
 
 def _format_step_params(params: dict[str, object]) -> str:
-    return "; ".join(f"{key}={value}" for key, value in params.items())
+    return "; ".join(f"{key}={value}" for key, value in sanitized_step_params(params).items())
 
 
 def _read_sequence_data_file(path: Path) -> dict:

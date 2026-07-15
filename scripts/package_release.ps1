@@ -115,7 +115,7 @@ foreach ($folder in @("src", "tests", "scripts")) {
     }
 }
 
-foreach ($file in @("README.md", "pyproject.toml", "config.example.ini")) {
+foreach ($file in @("README.md", "pyproject.toml", "MANIFEST.in", "config.example.ini")) {
     $source = Join-Path $projectRoot $file
     if (Test-Path -LiteralPath $source) {
         Copy-Item -LiteralPath $source -Destination $pythonRelease -Force
@@ -123,6 +123,10 @@ foreach ($file in @("README.md", "pyproject.toml", "config.example.ini")) {
 }
 
 Get-ChildItem -LiteralPath $pythonRelease -Recurse -Directory -Filter "__pycache__" | ForEach-Object {
+    Remove-Item -LiteralPath $_.FullName -Recurse -Force
+}
+
+Get-ChildItem -LiteralPath $pythonRelease -Recurse -Directory -Filter "*.egg-info" | ForEach-Object {
     Remove-Item -LiteralPath $_.FullName -Recurse -Force
 }
 

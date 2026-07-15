@@ -5,7 +5,10 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import csv
 import logging
+from math import isfinite
 from io import StringIO
+from pathlib import Path
+from threading import Lock
 from time import monotonic, sleep
 from typing import Callable, Literal
 from urllib.parse import urlparse, unquote
@@ -46,6 +49,7 @@ LOGGER = logging.getLogger("instrument_visa")
 ProgressCallback = Callable[[str], None]
 StopCallback = Callable[[], bool]
 StepResultExportCallback = Callable[[str, InstrumentInfo, AcquisitionResult], str]
+SENSITIVE_PARAM_KEYS = {"password", "passwort", "secret", "token", "api_key", "apikey"}
 
 
 def parse_json_bool(value: object, default: bool) -> bool:
@@ -715,6 +719,7 @@ def run_custom_sequence(
     stop_requested: StopCallback | None = None,
     progress: ProgressCallback | None = None,
     step_result_export: StepResultExportCallback | None = None,
+    artifact_dir: Path | None = None,
 ) -> CustomSequenceResult:
     stop_requested = stop_requested or (lambda: False)
     progress = progress or (lambda message: None)
@@ -746,7 +751,7 @@ def run_custom_sequence(
                 address = ""
                 idn = ""
                 try:
-                    value = _execute_custom_sequence_step(step, params, instruments, device_infos, config, stop_requested, step_result_export)
+                    value = _execute_custom_sequence_step(step, params, instruments, device_infos, config, stop_requested, step_result_export, artifact_dir)
                     if isinstance(value, AcquisitionResult):
                         value = _custom_step_result_value(step, value, device_infos, step_result_export)
                     ok_count += 1
@@ -1011,6 +1016,7 @@ def _execute_custom_sequence_step(
     config: CustomSequenceConfig,
     stop_requested: StopCallback,
     step_result_export: StepResultExportCallback | None,
+    artifact_dir: Path | None,
 ) -> object:
     if step.action == "wait":
         seconds = _float_param(params, "seconds", 0.0)
@@ -1076,7 +1082,7 @@ def _execute_custom_sequence_step(
         point_mode = str(params.get("point_mode", "RAW")).strip() or "RAW"
         return capture_waveform(instrument, info.idn, channels or None, point_mode)
     if step.action == "capture_screenshot":
-        return capture_screenshot(instrument, info.idn)
+        return capture_screenshot(instrument, info.idn, znb_full_page=_bool_param(params, "znb_full_page", False))
     if step.action == "serial_log":
         duration_s = _float_param(params, "duration_s", 1.0)
         if duration_s < 0:
@@ -1185,7 +1191,7 @@ def _execute_custom_sequence_step(
                 sample_rate=_int_param(params, "sample_rate", 10_000_000),
                 threshold_v=_float_param(params, "threshold_v", 3.3),
             ),
-            output_dir=_sequence_artifact_dir(step_result_export),
+            output_dir=_sequence_artifact_dir(artifact_dir),
             stop_requested=stop_requested,
         )
     if step.action == "saleae_uart":
@@ -1197,7 +1203,7 @@ def _execute_custom_sequence_step(
                 sample_rate=_int_param(params, "sample_rate", 10_000_000),
                 threshold_v=_float_param(params, "threshold_v", 3.3),
             ),
-            output_dir=_sequence_artifact_dir(step_result_export),
+            output_dir=_sequence_artifact_dir(artifact_dir),
             stop_requested=stop_requested,
         )
     if step.action == "saleae_i2c":
@@ -1209,7 +1215,7 @@ def _execute_custom_sequence_step(
                 sample_rate=_int_param(params, "sample_rate", 10_000_000),
                 threshold_v=_float_param(params, "threshold_v", 3.3),
             ),
-            output_dir=_sequence_artifact_dir(step_result_export),
+            output_dir=_sequence_artifact_dir(artifact_dir),
             stop_requested=stop_requested,
         )
     if step.action == "saleae_spi":
@@ -1223,7 +1229,7 @@ def _execute_custom_sequence_step(
                 sample_rate=_int_param(params, "sample_rate", 10_000_000),
                 threshold_v=_float_param(params, "threshold_v", 3.3),
             ),
-            output_dir=_sequence_artifact_dir(step_result_export),
+            output_dir=_sequence_artifact_dir(artifact_dir),
             stop_requested=stop_requested,
         )
     if step.action == "saleae_can":
@@ -1235,7 +1241,7 @@ def _execute_custom_sequence_step(
                 sample_rate=_int_param(params, "sample_rate", 10_000_000),
                 threshold_v=_float_param(params, "threshold_v", 3.3),
             ),
-            output_dir=_sequence_artifact_dir(step_result_export),
+            output_dir=_sequence_artifact_dir(artifact_dir),
             stop_requested=stop_requested,
         )
     raise ValueError(f"Unbekannte Aktion: {step.action}")
@@ -1393,7 +1399,15 @@ def _custom_cleanup_row(started: float, info: InstrumentInfo, device: str, actio
 
 
 def _format_params(params: dict[str, object]) -> str:
-    return "; ".join(f"{key}={value}" for key, value in params.items())
+    return "; ".join(f"{key}={_redacted_param_value(key, value)}" for key, value in params.items())
+
+
+def sanitized_step_params(params: dict[str, object]) -> dict[str, object]:
+    return {key: _redacted_param_value(key, value) for key, value in params.items()}
+
+
+def _redacted_param_value(key: str, value: object) -> object:
+    return "***" if key.strip().lower() in SENSITIVE_PARAM_KEYS else value
 
 
 def _string_param(params: dict[str, object], name: str) -> str:
@@ -1423,7 +1437,12 @@ def _bool_param(params: dict[str, object], name: str, default: bool) -> bool:
     value = params.get(name, default)
     if isinstance(value, bool):
         return value
-    return str(value).strip().upper() in {"1", "TRUE", "JA", "YES", "ON"}
+    normalized = str(value).strip().upper()
+    if normalized in {"1", "TRUE", "JA", "YES", "ON"}:
+        return True
+    if normalized in {"0", "FALSE", "NEIN", "NO", "OFF"}:
+        return False
+    raise ValueError(f"Parameter {name} muss ein Bool-Wert sein.")
 
 
 def read_34970a_data_logger(instrument: object, config: DataLogger34970AConfig, stop_requested: StopCallback | None = None) -> AcquisitionResult:
@@ -1494,8 +1513,9 @@ def read_ca410_measurement(instrument: object, config: CA410Config, stop_request
     if stop_requested():
         return AcquisitionResult(kind="CA-410 measurement", file_type="csv", content=_ca410_csv({}, mode_code, stopped=True))
     address = str(getattr(instrument, "address", ""))
-    if isinstance(instrument, DirectSerialInstrument) and _is_direct_serial_address(address):
-        values = _read_ca410_direct_serial(address, config, bytesize, parity, stopbits, mode_code, probe, calibration_channel, measurement_method_code, flicker_method_code, speed_code, sync_mode_code, sync_value, integration_mode_code, stop_requested)
+    serial_port = _ca410_serial_port(address) if isinstance(instrument, DirectSerialInstrument) else None
+    if serial_port is not None:
+        values = _read_ca410_direct_serial(serial_port, config, bytesize, parity, stopbits, mode_code, probe, calibration_channel, measurement_method_code, flicker_method_code, speed_code, sync_mode_code, sync_value, integration_mode_code, stop_requested)
     else:
         values = _read_ca410_instrument(instrument, config, bytesize, parity, stopbits, mode_code, probe, calibration_channel, measurement_method_code, flicker_method_code, speed_code, sync_mode_code, sync_value, integration_mode_code, stop_requested)
     return AcquisitionResult(kind="CA-410 measurement", file_type="csv", content=_ca410_csv(values, values.get("DisplayMode", mode_code), stopped=stop_requested()))
@@ -1504,6 +1524,8 @@ def read_ca410_measurement(instrument: object, config: CA410Config, stop_request
 def _read_ca410_instrument(instrument: object, config: CA410Config, bytesize: int, parity: str, stopbits: float, mode_code: str, probe: str, calibration_channel: str, measurement_method_code: str, flicker_method_code: str, speed_code: str, sync_mode_code: str, sync_value: str, integration_mode_code: str, stop_requested: StopCallback) -> dict[str, str]:
     if hasattr(instrument, "configure_serial"):
         instrument.configure_serial(config.baudrate, bytesize, parity, stopbits)
+    if _ca410_serial_port(str(getattr(instrument, "address", ""))) is not None and hasattr(instrument, "configure_termination"):
+        instrument.configure_termination("\r", "\r")
     if config.remote:
         _ca410_expect_ok(str(instrument.query("COM,1")), "COM,1")
     _ca410_expect_ok(str(instrument.query(f"OPR,{probe}")), f"OPR,{probe}")
@@ -1819,7 +1841,7 @@ def _normalize_34970a_measurement(value: str) -> str:
 
 def _34970a_read_command(measurement: str, channel_list: str, range_value: str, resolution: str, thermocouple_type: str) -> str:
     if measurement == "TEMP":
-        sensor_type = thermocouple_type.strip().upper()
+        sensor_type = _34970a_thermocouple_type(thermocouple_type)
         if not sensor_type or sensor_type in {"AUTO", "DEF", "DEFAULT"}:
             return f"MEAS:TEMP? (@{channel_list})"
         return f"MEAS:TEMP? TC,{sensor_type},(@{channel_list})"
@@ -1841,6 +1863,21 @@ def _34970a_optional_numeric_param(value: str, default: str = "") -> str:
     normalized = value.strip().upper().replace(",", ".")
     if not normalized or normalized in {"AUTO", "DEF", "DEFAULT"}:
         return default
+    try:
+        parsed = float(normalized)
+    except ValueError as exc:
+        raise ValueError("34970A range/resolution must be numeric, AUTO or DEF.") from exc
+    if not isfinite(parsed) or parsed <= 0:
+        raise ValueError("34970A range/resolution must be a finite value greater than 0.")
+    return normalized
+
+
+def _34970a_thermocouple_type(value: str) -> str:
+    normalized = value.strip().upper()
+    if not normalized or normalized in {"AUTO", "DEF", "DEFAULT"}:
+        return normalized
+    if normalized not in {"B", "E", "J", "K", "N", "R", "S", "T"}:
+        raise ValueError("34970A thermocouple type must be B, E, J, K, N, R, S or T.")
     return normalized
 
 
@@ -1867,10 +1904,8 @@ def _csv_text_rows(text: str) -> list[list[str]]:
     return list(csv.reader(StringIO(text)))
 
 
-def _sequence_artifact_dir(step_result_export: StepResultExportCallback | None):
-    from pathlib import Path
-
-    return Path("saleae_output")
+def _sequence_artifact_dir(artifact_dir: Path | None) -> Path:
+    return artifact_dir if artifact_dir is not None else Path("saleae_output")
 
 
 def parse_serial_format(value: str) -> tuple[int, str, float]:
@@ -1943,9 +1978,10 @@ def run_parallel_phase(
     started = monotonic()
     measurement_tasks = [task for task in tasks if task.action in {"dmm", "scope"}]
     serial_tasks = [task for task in tasks if task.action == "serial"]
+    instrument_locks = {device: Lock() for device in instruments}
 
     with ThreadPoolExecutor(max_workers=max(1, len(tasks))) as executor:
-        futures = [executor.submit(_parallel_serial_task, task, instruments[task.device], device_infos[task.device], duration_s, stop_requested, step_result_export) for task in serial_tasks]
+        futures = [executor.submit(_parallel_serial_task, task, instruments[task.device], device_infos[task.device], duration_s, stop_requested, step_result_export, instrument_locks[task.device]) for task in serial_tasks]
         index = 1
         next_sample = started
         while monotonic() - started < duration_s and not stop_requested():
@@ -1954,7 +1990,7 @@ def run_parallel_phase(
                 _sleep_interruptible(wait_s, stop_requested)
             if stop_requested() or monotonic() - started > duration_s:
                 break
-            sample_futures = [executor.submit(_parallel_measurement_task, task, instruments[task.device], device_infos[task.device]) for task in measurement_tasks]
+            sample_futures = [executor.submit(_parallel_measurement_task, task, instruments[task.device], device_infos[task.device], instrument_locks[task.device]) for task in measurement_tasks]
             for future in as_completed(sample_futures):
                 task, value, status = future.result()
                 rows.append([index, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), f"{monotonic() - started:.3f}", task.device, task.action, value, status])
@@ -1978,12 +2014,13 @@ def run_parallel_phase(
     return "; ".join(parts)
 
 
-def _parallel_measurement_task(task: ParallelTask, instrument: object, info: InstrumentInfo) -> tuple[ParallelTask, object, str]:
+def _parallel_measurement_task(task: ParallelTask, instrument: object, info: InstrumentInfo, instrument_lock: Lock) -> tuple[ParallelTask, object, str]:
     try:
-        if task.action == "dmm":
-            return task, read_value(instrument).content, "OK"
-        if task.action == "scope":
-            return task, read_scope_measurement(instrument, task.measurement, task.channel, info.idn).content, "OK"
+        with instrument_lock:
+            if task.action == "dmm":
+                return task, read_value(instrument).content, "OK"
+            if task.action == "scope":
+                return task, read_scope_measurement(instrument, task.measurement, task.channel, info.idn).content, "OK"
         return task, "", f"ERROR: Unsupported task {task.action}"
     except Exception as exc:
         return task, "", f"ERROR: {exc}"
@@ -1996,12 +2033,14 @@ def _parallel_serial_task(
     duration_s: float,
     stop_requested: StopCallback,
     step_result_export: StepResultExportCallback | None,
+    instrument_lock: Lock,
 ) -> str:
     bytesize, parity, stopbits = parse_serial_format(task.serial_format)
-    if _is_direct_serial_address(info.address):
-        content = read_direct_serial_log(info.address, duration_s, task.baudrate, bytesize, parity, stopbits, stop_requested)
-    else:
-        content = instrument.read_serial_log(duration_s, baudrate=task.baudrate, bytesize=bytesize, parity=parity, stopbits=stopbits, stop_requested=stop_requested)
+    with instrument_lock:
+        if _is_direct_serial_address(info.address):
+            content = read_direct_serial_log(info.address, duration_s, task.baudrate, bytesize, parity, stopbits, stop_requested)
+        else:
+            content = instrument.read_serial_log(duration_s, baudrate=task.baudrate, bytesize=bytesize, parity=parity, stopbits=stopbits, stop_requested=stop_requested)
     if step_result_export is None:
         return f"{task.device}: serial log {len(content)} Zeichen"
     result = AcquisitionResult(kind="serial log", file_type="txt", content=content)
@@ -2103,7 +2142,8 @@ def run_ssh_command(
     if not username:
         raise ValueError("SSH-Benutzer fehlt. In der Adresse ssh://user@host oder im Schritt eintragen.")
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.load_system_host_keys()
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     try:
         connect_kwargs = {
             "hostname": target.host,

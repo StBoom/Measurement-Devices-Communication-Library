@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import csv
+from io import StringIO
 import logging
+from math import isfinite
 from dataclasses import dataclass
 from datetime import datetime
 from time import sleep
+from uuid import uuid4
 
 from .config import SParameterConfig
 from .profiles import detect_profile, hmp_channel_count
@@ -28,6 +32,7 @@ class SimpleScreenshotCommand:
     setup: tuple[str, ...] = ()
     cleanup: tuple[str, ...] = ()
     delay_s: float = 0.0
+    raw: bool = False
 
 
 @dataclass(frozen=True)
@@ -100,8 +105,8 @@ def set_power_supply(
 
     LOGGER.info("SCPI action=power_supply_set profile=%s channel=%s voltage=%s current=%s output=%s", profile.key, channel, voltage, current, output_enabled)
     instrument.write(f"INST:NSEL {channel}")
-    instrument.write(f"VOLT {voltage}")
-    instrument.write(f"CURR {current}")
+    instrument.write(f"VOLT {voltage_value:g}")
+    instrument.write(f"CURR {current_value:g}")
     instrument.write(f"OUTP:SEL {'1' if output_enabled else '0'}")
     if output_enabled:
         instrument.write("OUTP:GEN 1")
@@ -145,7 +150,7 @@ def read_signal_generator_settings(instrument: VisaInstrument, idn: str) -> Sign
         return SignalGeneratorSettings(
             frequency=_strip_prefixed_value(frequency, "RF"),
             power=_strip_prefixed_value(level, "LEVEL:RF"),
-            rf_output="OFF" if level.upper().startswith("LEVEL:RF:OFF") else "ON",
+            rf_output=_legacy_rf_output_from_level(level),
         )
     return SignalGeneratorSettings(
         frequency=instrument.query(":SOUR:FREQ:CW?").strip(),
@@ -173,6 +178,7 @@ def set_signal_generator(
         raise ValueError("Frequency must not be empty")
     if not power:
         raise ValueError("Power must not be empty")
+    _parse_frequency_hz(frequency)
     requested_power_dbm = _parse_dbm(power)
     if requested_power_dbm > max_power_dbm:
         raise ValueError(f"Requested power {requested_power_dbm:g} dBm exceeds max power {max_power_dbm:g} dBm")
@@ -310,6 +316,7 @@ SIMPLE_SCREENSHOTS = {
         setup=(":HARD:INKS ON",),
         query=":DISP:DATA? PNG, SCR, COL",
         delay_s=2.0,
+        raw=True,
     ),
     "agilent_54600": SimpleScreenshotCommand(
         file_type="bmp",
@@ -319,16 +326,19 @@ SIMPLE_SCREENSHOTS = {
         file_type="png",
         setup=("SAVE:IMAG:FILEF PNG", "HARDCopy:INKS ON"),
         query="HARDCOPY START",
+        raw=True,
     ),
     "tektronix_tds30": SimpleScreenshotCommand(
         file_type="png",
         setup=("SAVE:IMAG:FILEF PNG", "HARD:INKS ON"),
         query="HARD:STAR",
+        raw=True,
     ),
     "tektronix_tds400": SimpleScreenshotCommand(
         file_type="tiff",
         setup=("HARDCopy:FORMat TIFF",),
         query="HARDCOPY START",
+        raw=True,
     ),
     "rs_hameg_hms": SimpleScreenshotCommand(
         file_type="bmp",
@@ -344,11 +354,12 @@ SIMPLE_SCREENSHOTS = {
         file_type="bmp",
         setup=("HARDCOPY_SETUP DEV,BMP,PORT,GPIB",),
         query="SCREEN_DUMP",
+        raw=True,
     ),
 }
 
 
-def capture_screenshot(instrument: VisaInstrument, idn: str, title: str = "") -> AcquisitionResult:
+def capture_screenshot(instrument: VisaInstrument, idn: str, title: str = "", znb_full_page: bool = False) -> AcquisitionResult:
     profile = detect_profile(idn)
     LOGGER.info("SCPI action=screenshot profile=%s idn=%s", profile.key, idn)
     simple_command = _simple_screenshot_command(idn)
@@ -356,16 +367,18 @@ def capture_screenshot(instrument: VisaInstrument, idn: str, title: str = "") ->
         return _capture_simple_screenshot(instrument, simple_command)
 
     if profile.key in {"hp_e740", "hp_agilent_e4402b"}:
+        screenshot_path = f"R:{_instrument_temp_filename('IV', 'WMF')}"
         _set_e740_date_time(instrument)
         if title:
+            _validate_scpi_text_literal(title, "Screenshot title")
             instrument.write(f":DISP:ANN:Title:Data '{title}'")
         instrument.write(":DISP:MENU:STATE 0")
         try:
             data = _store_read_delete_binary(
                 instrument,
-                store_command=":MMEM:STOR:SCR 'R:INTUI.WMF'",
-                read_command=":MMEM:DATA? 'R:INTUI.WMF';*WAI",
-                delete_command=":MMEM:DEL 'R:INTUI.WMF'",
+                store_command=f":MMEM:STOR:SCR '{screenshot_path}'",
+                read_command=f":MMEM:DATA? '{screenshot_path}';*WAI",
+                delete_command=f":MMEM:DEL '{screenshot_path}'",
             )
         finally:
             instrument.write(":DISP:MENU:STATE 1")
@@ -376,59 +389,66 @@ def capture_screenshot(instrument: VisaInstrument, idn: str, title: str = "") ->
         return AcquisitionResult(kind="screenshot", file_type="hpgl", content=data)
 
     if profile.key == "keysight_e5071c":
+        menu_state = instrument.query(":DISP:MENU:STATE?").strip()
         instrument.write(":DISP:MENU:STATE 0")
         instrument.write(":HCOP:SDUM:DATA:FORM PNG")
         display_status = instrument.query(":DISP:IMAG?").strip()
         menu_status = instrument.query(":DISP:SKEY:STAT?").strip()
-        instrument.write(":DISP:IMAG INV")
-        instrument.write(":DISP:SKEY:STAT 0")
-        sleep(0.25)
-        data = instrument.query_binary(":HCOP:SDUM:DATA?")
-        instrument.write(f":DISP:IMAG {display_status}")
-        instrument.write(f":DISP:SKEY:STAT {menu_status}")
+        try:
+            instrument.write(":DISP:IMAG INV")
+            instrument.write(":DISP:SKEY:STAT 0")
+            sleep(0.25)
+            data = instrument.query_binary(":HCOP:SDUM:DATA?")
+        finally:
+            instrument.write(f":DISP:IMAG {display_status}")
+            instrument.write(f":DISP:SKEY:STAT {menu_status}")
+            instrument.write(f":DISP:MENU:STATE {menu_state}")
         return AcquisitionResult(kind="screenshot", file_type="png", content=data)
 
     if profile.key == "rs_fsw":
+        screenshot_path = f"C:\\R_S\\Instr\\user\\{_instrument_temp_filename('kilo', 'png')}"
         data = _store_read_binary(
             instrument,
             setup=(
                 "HCOP:DEV:LANG PNG;*WAI",
                 "HCOP:DEST1 MMEM;*WAI",
-                "MMEM:NAME 'C:\\R_S\\Instr\\user\\screenshot.png';*WAI",
+                f"MMEM:NAME '{screenshot_path}';*WAI",
                 "HCOP:PAGE:WIND:COUN;*WAI",
                 "HCOP:CONT WIND 1;*WAI",
             ),
             store_command="HCOP;*WAI",
-            read_command="MMEM:DATA? 'C:\\R_S\\Instr\\user\\screenshot.png';*WAI",
+            read_command=f"MMEM:DATA? '{screenshot_path}';*WAI",
         )
         return AcquisitionResult(kind="screenshot", file_type="png", content=data)
 
     if profile.key == "keysight_n90":
+        screenshot_path = f"D:\\{_instrument_temp_filename('KILO', 'PNG')}"
         menu_status = instrument.query("DISP:FSCR:STAT?;*WAI").strip()
         instrument.write("DISP:FSCR:STAT 1;*WAI")
         sleep(0.2)
         try:
             data = _store_read_delete_binary(
                 instrument,
-                store_command="MMEM:STOR:SCR 'D:\\\\PICTURE.PNG';*WAI",
-                read_command="MMEM:DATA? 'D:\\\\PICTURE.PNG';*WAI",
-                delete_command="MMEM:DEL 'D:\\\\PICTURE.PNG';*WAI",
+                store_command=f"MMEM:STOR:SCR '{screenshot_path}';*WAI",
+                read_command=f"MMEM:DATA? '{screenshot_path}';*WAI",
+                delete_command=f"MMEM:DEL '{screenshot_path}';*WAI",
             )
         finally:
             instrument.write(f"DISP:FSCR:STAT {menu_status};*WAI")
         return AcquisitionResult(kind="screenshot", file_type="png", content=data)
 
     if profile.key == "rs_znb":
+        screenshot_path = f"C:\\Screenshots\\{_instrument_temp_filename('kilo', 'png')}"
         data = _store_read_delete_binary(
             instrument,
             setup=(
                 "HCOP:DEV:LANG PNG;*WAI",
-                "MMEM:NAME 'C:\\Screenshots\\screenshot.png';*WAI",
-                "HCOP:PAGE:WIND ACT",
+                f"MMEM:NAME '{screenshot_path}';*WAI",
+                f"HCOP:PAGE:WIND {'ALL' if znb_full_page else 'ACT'}",
             ),
             store_command="HCOP;*WAI",
-            read_command="MMEM:DATA? 'C:\\Screenshots\\screenshot.png';*WAI",
-            delete_command="MMEM:DEL 'C:\\Screenshots\\screenshot.png';*WAI",
+            read_command=f"MMEM:DATA? '{screenshot_path}';*WAI",
+            delete_command=f"MMEM:DEL '{screenshot_path}';*WAI",
         )
         return AcquisitionResult(kind="screenshot", file_type="png", content=data)
 
@@ -445,14 +465,15 @@ def capture_waveform(
     LOGGER.info("SCPI action=waveform profile=%s channels=%s point_mode=%s", profile.key, channels, point_mode)
 
     if profile.key in {"hp_e740", "hp_agilent_e4402b"}:
+        trace_path = f"R:{_instrument_temp_filename('IV', 'CSV')}"
         _set_e740_date_time(instrument)
         instrument.write(":DISP:MENU:STATE 0")
         try:
             content = _store_read_delete_text(
                 instrument,
-                store_command=':MMEM:STOR:TRAC TRACE1,"R:INTUI.CSV"',
-                read_command=":MMEM:DATA? 'R:INTUI.CSV'",
-                delete_command=":MMEM:DEL 'R:INTUI.CSV'",
+                store_command=f':MMEM:STOR:TRAC TRACE1,"{trace_path}"',
+                read_command=f":MMEM:DATA? '{trace_path}'",
+                delete_command=f":MMEM:DEL '{trace_path}'",
             )
         finally:
             instrument.write(":DISP:MENU:STATE 1")
@@ -506,37 +527,41 @@ def capture_sparameters(instrument: VisaInstrument, idn: str, config: SParameter
     ports = config.selected_ports
     if not ports:
         raise ValueError("At least one S-parameter port must be selected")
+    sparameter_format = _validate_sparameter_format(config.format)
 
     if profile.key == "keysight_e5071c":
         file_type = f"s{len(ports)}p"
+        snp_path = f"D:\\{_instrument_temp_filename('KILO', file_type)}"
         port_list = ",".join(str(port) for port in ports)
         content = _store_read_delete_text(
             instrument,
             setup=(
                 ":SYST:BEEP:COMP:STAT OFF",
-                f":MMEM:STOR:SNP:FORM {config.format}; *WAI",
+                f":MMEM:STOR:SNP:FORM {sparameter_format}; *WAI",
                 f":MMEM:STOR:SNP:TYPE:S{len(ports)}P {port_list};*WAI",
             ),
-            store_command=f":MMEM:STOR:SNP 'D:\\SNP01.{file_type}';*WAI",
-            read_command=f":MMEM:TRAN? 'D:\\SNP01.{file_type}';*WAI",
-            delete_command=f":MMEM:DEL 'D:\\SNP01.{file_type}';*WAI",
+            store_command=f":MMEM:STOR:SNP '{snp_path}';*WAI",
+            read_command=f":MMEM:TRAN? '{snp_path}';*WAI",
+            delete_command=f":MMEM:DEL '{snp_path}';*WAI",
         )
         return AcquisitionResult(kind="sparameters", file_type=file_type, content=_strip_ieee_header(content))
 
     if profile.key == "rs_znb":
         file_type = f"s{len(ports)}p"
-        znb_format = {"DB": "LOGP", "AUTO": "COMP", "RI": "COMP", "MA": "LINP"}.get(config.format, config.format)
+        snp_path = f"Traces\\{_instrument_temp_filename('kilo', file_type)}"
+        znb_format = {"DB": "LOGP", "AUTO": "COMP", "RI": "COMP", "MA": "LINP"}[sparameter_format]
         active_channel = instrument.query("INST:NSEL?").strip()
         port_count = len(instrument.query("SOUR:GRO:PPOR?").strip().split(","))
-        if len(ports) > port_count:
-            raise ValueError(f"Selected {len(ports)} ports, but instrument reports only {port_count} active ports")
+        invalid_ports = [port for port in ports if port < 1 or port > port_count]
+        if invalid_ports:
+            raise ValueError(f"Selected ports {invalid_ports} exceed instrument port count {port_count}")
         port_list = ",".join(str(port) for port in ports)
         content = _store_read_delete_text(
             instrument,
             setup=("MMEM:CDIR DEF",),
-            store_command=f"MMEM:STOR:TRAC:PORT {active_channel}, 'Traces\\visatmp.{file_type}', {znb_format}, CIMP, {port_list}",
-            read_command=f"MMEM:DATA? 'Traces\\visatmp.{file_type}'",
-            delete_command=f"MMEM:DEL 'Traces\\visatmp.{file_type}'",
+            store_command=f"MMEM:STOR:TRAC:PORT {active_channel}, '{snp_path}', {znb_format}, CIMP, {port_list}",
+            read_command=f"MMEM:DATA? '{snp_path}'",
+            delete_command=f"MMEM:DEL '{snp_path}'",
         )
         return AcquisitionResult(kind="sparameters", file_type=file_type, content=_strip_ieee_header(content))
 
@@ -559,10 +584,8 @@ def _capture_simple_screenshot(instrument: VisaInstrument, command: SimpleScreen
         command.cleanup,
     )
     _write_commands(instrument, command.setup)
-    if command.delay_s:
-        sleep(command.delay_s)
     try:
-        data = _normalize_image_bytes(instrument.query_binary(command.query), command.file_type)
+        data = _normalize_image_bytes(_read_raw_after_write(instrument, command.query, command.delay_s) if command.raw else instrument.query_binary(command.query), command.file_type)
     finally:
         _write_commands(instrument, command.cleanup)
     return AcquisitionResult(kind="screenshot", file_type=command.file_type, content=data)
@@ -612,10 +635,15 @@ def _store_read_delete_text(
         instrument.write(delete_command)
 
 
-def _read_raw_after_write(instrument: VisaInstrument, command: str) -> bytes:
+def _read_raw_after_write(instrument: VisaInstrument, command: str, delay_s: float = 0.0) -> bytes:
     if hasattr(instrument, "read_raw_after_write"):
-        return instrument.read_raw_after_write(command)  # type: ignore[attr-defined]
+        try:
+            return instrument.read_raw_after_write(command, delay_s=delay_s)  # type: ignore[attr-defined]
+        except TypeError:
+            return instrument.read_raw_after_write(command)  # type: ignore[attr-defined]
     instrument.write(command)
+    if delay_s:
+        sleep(delay_s)
     if hasattr(instrument, "read_raw"):
         return instrument.read_raw()  # type: ignore[attr-defined]
     raise NotImplementedError("Instrument does not support raw read after write")
@@ -625,6 +653,12 @@ def _write_commands(instrument: VisaInstrument, commands: tuple[str, ...]) -> No
     for command in commands:
         LOGGER.info("SCPI write command=%s", command)
         instrument.write(command)
+
+
+def _instrument_temp_filename(prefix: str, extension: str) -> str:
+    safe_prefix = "".join(character for character in prefix.upper() if character.isalnum())[:8] or "KILO"
+    safe_extension = "".join(character for character in extension if character.isalnum())[:8] or "TMP"
+    return f"{safe_prefix}{uuid4().hex[:8].upper()}.{safe_extension}"
 
 
 def _set_e740_date_time(instrument: VisaInstrument) -> None:
@@ -703,6 +737,17 @@ def _strip_prefixed_value(value: str, prefix: str) -> str:
     return stripped
 
 
+def _legacy_rf_output_from_level(level: str) -> str:
+    normalized = level.strip().upper().replace(" ", "")
+    off_values = {"OFF", "0", "+0", "LEVEL:RF:OFF", "LEVEL:RFOFF", "LEVEL:RF:0", "LEVEL:RF0"}
+    on_values = {"ON", "1", "+1", "LEVEL:RF:ON", "LEVEL:RFON", "LEVEL:RF:1", "LEVEL:RF1"}
+    if normalized in off_values:
+        return "OFF"
+    if normalized in on_values:
+        return "ON"
+    return "OFF" if ":OFF" in normalized or normalized.endswith("OFF") else "ON"
+
+
 def _parse_dbm(value: str) -> float:
     normalized = value.strip().upper().replace(" ", "")
     for suffix in ("DBM", "DB"):
@@ -710,9 +755,45 @@ def _parse_dbm(value: str) -> float:
             normalized = normalized[: -len(suffix)]
             break
     try:
-        return float(normalized.replace(",", "."))
+        parsed = float(normalized.replace(",", "."))
     except ValueError as exc:
         raise ValueError("Power must be a dBm value, for example -30 dBm") from exc
+    if not isfinite(parsed):
+        raise ValueError("Power must be a finite dBm value")
+    return parsed
+
+
+def _parse_frequency_hz(value: str) -> float:
+    normalized = value.strip().replace(",", ".")
+    if not normalized:
+        raise ValueError("Frequency must not be empty")
+    compact = normalized.replace(" ", "").upper()
+    units = (("GHZ", 1_000_000_000.0), ("MHZ", 1_000_000.0), ("KHZ", 1_000.0), ("HZ", 1.0))
+    multiplier = 1.0
+    for suffix, factor in units:
+        if compact.endswith(suffix):
+            compact = compact[: -len(suffix)]
+            multiplier = factor
+            break
+    try:
+        parsed = float(compact) * multiplier
+    except ValueError as exc:
+        raise ValueError("Frequency must be numeric, for example 100 MHz") from exc
+    if not isfinite(parsed) or parsed <= 0:
+        raise ValueError("Frequency must be a finite value greater than 0")
+    return parsed
+
+
+def _validate_scpi_text_literal(value: str, field_name: str) -> None:
+    if any(character in value for character in ("'", "\r", "\n", ";")):
+        raise ValueError(f"{field_name} must not contain quotes, semicolons or line breaks")
+
+
+def _validate_sparameter_format(value: str) -> str:
+    normalized = value.strip().upper()
+    if normalized not in {"AUTO", "DB", "RI", "MA"}:
+        raise ValueError("S-parameter format must be AUTO, DB, RI or MA")
+    return normalized
 
 
 def _parse_float_with_suffix(value: str, suffixes: tuple[str, ...]) -> float:
@@ -741,7 +822,7 @@ def _format_signal_generator_settings(settings: SignalGeneratorSettings) -> str:
         ["Power", settings.power],
         ["RFOutput", settings.rf_output],
     ]
-    return "\n".join(",".join(row) for row in rows)
+    return _csv_rows(rows)
 
 
 def _format_power_supply_settings(settings: PowerSupplySettings) -> str:
@@ -755,7 +836,7 @@ def _format_power_supply_settings(settings: PowerSupplySettings) -> str:
         ["OutputSelected", settings.output_selected],
         ["OutputGeneral", settings.output_general],
     ]
-    return "\n".join(",".join(row) for row in rows)
+    return _csv_rows(rows)
 
 
 def _format_4395a_waveform(frequency_data: str, trace_data: str, complex_data: str) -> str:
@@ -780,7 +861,14 @@ def _format_4395a_waveform(frequency_data: str, trace_data: str, complex_data: s
         ["Komplex3", *complex_3],
         ["Komplex4", *complex_4],
     ]
-    return "\n".join(",".join(row) for row in rows)
+    return _csv_rows(rows)
+
+
+def _csv_rows(rows: list[list[object]]) -> str:
+    output = StringIO()
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerows(rows)
+    return output.getvalue().rstrip("\n")
 
 
 def _split_numeric_series(value: str) -> list[str]:
@@ -834,7 +922,7 @@ def _capture_3000x_waveform(
 
     error = instrument.query(":SYSTEM:ERROR?").strip()
     if not channels:
-        return f"SystemError,{error}\n"
+        return _csv_rows([["SystemError", error]])
 
     headers = ["Time", *channels.keys()]
     rows = [["WaveformStatus", *channel_status], ["PointMode", point_mode], [], headers]
@@ -846,7 +934,7 @@ def _capture_3000x_waveform(
 
     rows.append([])
     rows.append(["SystemError", error])
-    return "\n".join(",".join(row) for row in rows)
+    return _csv_rows(rows)
 
 
 def _read_3000x_channel_waveform(instrument: VisaInstrument, channel: int, point_mode: str) -> tuple[list[str], str]:
@@ -904,7 +992,7 @@ def _capture_hms_trace(instrument: VisaInstrument) -> str:
 
 def _capture_hp_8591a_trace(instrument: VisaInstrument) -> str:
     trace_values = _split_numeric_series(_strip_ieee_header(instrument.query("TRA?")).lstrip())
-    return "Point,TraceA\n" + "\n".join(f"{index},{value}" for index, value in enumerate(trace_values, start=1))
+    return _csv_rows([["Point", "TraceA"], *[[index, value] for index, value in enumerate(trace_values, start=1)]])
 
 
 def _capture_lecroy_waveform(instrument: VisaInstrument, selected_channels: list[int] | None = None) -> str:
@@ -926,4 +1014,4 @@ def _format_channel_rows(channels: dict[str, list[str]], time_axis: list[str] | 
         row = [time_axis[index] if time_axis and index < len(time_axis) else ""] if time_axis else []
         row.extend(channels[channel][index] if index < len(channels[channel]) else "" for channel in headers)
         rows.append(row)
-    return "\n".join(",".join(row) for row in rows)
+    return _csv_rows(rows)

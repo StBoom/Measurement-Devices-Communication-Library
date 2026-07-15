@@ -18,7 +18,9 @@ from .acquisition import (
 from .config import load_config
 from .excel_export import append_result
 from .logging_utils import setup_logging
-from .sequence import CustomSequenceConfig, SequenceStep, SequenceVariable, create_sequence_instrument, parse_json_bool, run_custom_sequence
+from .picoscope_client import list_picoscope_resources
+from .saleae_client import list_saleae_resources
+from .sequence import CustomSequenceConfig, SequenceStep, SequenceVariable, create_sequence_instrument, list_direct_serial_ports, parse_json_bool, run_custom_sequence
 from .visa_client import VisaInstrument, list_resources
 
 
@@ -45,7 +47,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.action == "list":
-        for resource in list_resources():
+        for resource in _list_all_resources():
             print(resource)
         return 0
 
@@ -124,6 +126,16 @@ def _parse_channels(value: str) -> list[int]:
     return channels
 
 
+def _list_all_resources() -> list[str]:
+    resources = [
+        *list_resources(),
+        *(port.device for port in list_direct_serial_ports()),
+        *list_picoscope_resources(),
+        *list_saleae_resources(),
+    ]
+    return list(dict.fromkeys(resources))
+
+
 def _generator_settings_result(settings) -> AcquisitionResult:
     content = "Setting,Value\n" f"Frequency,{settings.frequency}\n" f"Power,{settings.power}\n" f"RFOutput,{settings.rf_output}"
     return AcquisitionResult(kind="signal_generator", file_type="csv", content=content)
@@ -141,6 +153,7 @@ def _run_sequence_file(sequence_file: Path, output: Path, timeout_ms: int, logge
             config,
             progress=lambda message: print(message),
             step_result_export=lambda _device, info, result: _export_sequence_step_result(output, info, result),
+            artifact_dir=output.with_name(f"{output.stem}_artifacts"),
         )
         first_device = next(iter(config.devices))
         result = AcquisitionResult(kind="custom sequence", file_type="csv", content=result_data.csv_content)

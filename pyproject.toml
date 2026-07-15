@@ -1,7 +1,8 @@
 [project]
 name = "measurement-devices-communication-library"
-version = "0.8.11"
+version = "0.8.12"
 description = "Measurement devices communication library and GUI for VISA/SCPI instruments."
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "openpyxl>=3.1.0",
@@ -29,6 +30,12 @@ measurement-devices-gui = "instrument_visa.gui:main"
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

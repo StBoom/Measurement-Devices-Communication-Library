@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import sys
 import tempfile
 import unittest
@@ -11,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from instrument_visa.acquisition import (  # noqa: E402
     AcquisitionResult,
     capture_screenshot,
+    capture_sparameters,
     capture_waveform,
     read_power_supply_settings,
     read_signal_generator_settings,
@@ -22,11 +24,13 @@ from instrument_visa.acquisition import (  # noqa: E402
     set_signal_generator,
     set_signal_generator_rf_output,
 )
+from instrument_visa.config import SParameterConfig  # noqa: E402
 from instrument_visa.excel_export import append_result  # noqa: E402
-from instrument_visa.cli import _load_sequence_config  # noqa: E402
+from instrument_visa.cli import _list_all_resources, _load_sequence_config  # noqa: E402
 from instrument_visa.picoscope_client import parse_pico_analog_channels, parse_pico_digital_channels, picoscope_analog_channels_for_variant, picoscope_variant_supports_digital  # noqa: E402
 from instrument_visa.saleae_client import SaleaeCanConfig, SaleaeCaptureConfig, SaleaeI2cConfig, SaleaeSpiConfig, SaleaeUartConfig, parse_saleae_channels  # noqa: E402
 from instrument_visa.profiles import detect_profile  # noqa: E402
+from instrument_visa.visa_client import VisaInstrument  # noqa: E402
 from instrument_visa.sequence import (  # noqa: E402
     CustomSequenceConfig,
     CA410Config,
@@ -38,6 +42,7 @@ from instrument_visa.sequence import (  # noqa: E402
     VoltageSweepConfig,
     frequency_points,
     parse_json_bool,
+    _bool_param,
     parse_frequency_hz,
     parse_ssh_target,
     probe_direct_serial_idn,
@@ -56,6 +61,7 @@ from instrument_visa.sequence import (  # noqa: E402
     run_frequency_sweep,
     run_timed_switch,
     run_voltage_sweep,
+    sanitized_step_params,
     voltage_points,
 )
 
@@ -95,7 +101,7 @@ class FakeInstrument:
         self.binary_queries.append(command)
         return self.binary_responses.get(command, b"DATA")
 
-    def read_raw_after_write(self, command: str) -> bytes:
+    def read_raw_after_write(self, command: str, delay_s: float = 0.0) -> bytes:
         self.raw_writes.append(command)
         return self.raw_responses.get(command, b"IN;SP1;PU0,0;PD100,100;")
 
@@ -222,7 +228,14 @@ class AcquisitionTests(unittest.TestCase):
         self.assertIn("[Hz],Trace1[dBm]", str(result.content))
 
     def test_e4402b_uses_e740_style_trace_export(self) -> None:
-        instrument = FakeInstrument(query_responses={":MMEM:DATA? 'R:INTUI.CSV'": "Frequency,Trace\n1.0,-20.0"})
+        class TraceInstrument(FakeInstrument):
+            def query(self, command: str) -> str:
+                self.queries.append(command)
+                if command.startswith(":MMEM:DATA? 'R:IV"):
+                    return "Frequency,Trace\n1.0,-20.0"
+                return super().query(command)
+
+        instrument = TraceInstrument()
 
         result = capture_waveform(instrument, "AGILENT TECHNOLOGIES,E4402B,US123,1.0")  # type: ignore[arg-type]
 
@@ -230,11 +243,11 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(result.content, "Frequency,Trace\n1.0,-20.0")
         self.assertTrue(instrument.writes[0].startswith(":SYST:TIME "))
         self.assertTrue(instrument.writes[1].startswith(":SYST:DATE "))
-        self.assertEqual(
-            instrument.writes[2:],
-            [":DISP:MENU:STATE 0", ':MMEM:STOR:TRAC TRACE1,"R:INTUI.CSV"', ":MMEM:DEL 'R:INTUI.CSV'", ":DISP:MENU:STATE 1"],
-        )
-        self.assertEqual(instrument.queries, [":MMEM:DATA? 'R:INTUI.CSV'"])
+        self.assertEqual(instrument.writes[2], ":DISP:MENU:STATE 0")
+        self.assertRegex(instrument.writes[3], r':MMEM:STOR:TRAC TRACE1,"R:IV[0-9A-F]{8}\.CSV"')
+        self.assertRegex(instrument.writes[4], r":MMEM:DEL 'R:IV[0-9A-F]{8}\.CSV'")
+        self.assertEqual(instrument.writes[5], ":DISP:MENU:STATE 1")
+        self.assertRegex(instrument.queries[0], r":MMEM:DATA\? 'R:IV[0-9A-F]{8}\.CSV'")
 
     def test_hp_8591a_trace_uses_legacy_trace_query(self) -> None:
         instrument = FakeInstrument(query_responses={"TRA?": "-10,-20,-30"})
@@ -281,6 +294,14 @@ class AcquisitionTests(unittest.TestCase):
 
         self.assertEqual(instrument.writes, [])
 
+    def test_signal_generator_rejects_injected_frequency_before_writes(self) -> None:
+        instrument = FakeInstrument()
+
+        with self.assertRaises(ValueError):
+            set_signal_generator(instrument, "Rohde&Schwarz,SMIQ03B,123,1.0", "100 MHz;:OUTP ON", "-30 dBm", True, 0.0, True)  # type: ignore[arg-type]
+
+        self.assertEqual(instrument.writes, [])
+
     def test_signal_generator_rf_off_command(self) -> None:
         instrument = FakeInstrument(query_responses={":SOUR:FREQ:CW?": "100000000", ":SOUR:POW?": "-30", ":OUTP?": "0"})
 
@@ -308,6 +329,15 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(settings.frequency, "123456000")
         self.assertEqual(settings.power, "OFF")
         self.assertEqual(settings.rf_output, "OFF")
+
+    def test_smg_legacy_generator_accepts_alternate_off_responses(self) -> None:
+        for level_response in ("OFF", "0", "LEVEL:RF OFF", "LEVEL:RF:0"):
+            with self.subTest(level_response=level_response):
+                instrument = FakeInstrument(query_responses={"RF?": "RF 123456000", "LEVEL:RF?": level_response})
+
+                settings = read_signal_generator_settings(instrument, "Rohde&Schwarz,SMHU,123,1.0")  # type: ignore[arg-type]
+
+                self.assertEqual(settings.rf_output, "OFF")
 
     def test_hmp4030_power_supply_read_uses_selected_channel(self) -> None:
         instrument = FakeInstrument(
@@ -342,7 +372,7 @@ class AcquisitionTests(unittest.TestCase):
 
         result = set_power_supply(instrument, "HAMEG,HMP4030,123,1.0", 1, "5 V", "0.5 A", True, 10, 1)  # type: ignore[arg-type]
 
-        self.assertEqual(instrument.writes[:5], ["INST:NSEL 1", "VOLT 5 V", "CURR 0.5 A", "OUTP:SEL 1", "OUTP:GEN 1"])
+        self.assertEqual(instrument.writes[:5], ["INST:NSEL 1", "VOLT 5", "CURR 0.5", "OUTP:SEL 1", "OUTP:GEN 1"])
         self.assertIn("VoltageMeasured,4.998", str(result.content))
 
     def test_hmp4030_rejects_voltage_above_limit_before_writes(self) -> None:
@@ -443,14 +473,106 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(instrument.queries, ["MEASurement1:RESult:ACTual?"])
 
     def test_lecroy_screenshot_normalizes_bmp_after_prefix(self) -> None:
-        instrument = FakeInstrument(binary_responses={"SCREEN_DUMP": b"LECROY HEADER BMabcdef"})
+        instrument = FakeInstrument()
+        instrument.raw_responses["SCREEN_DUMP"] = b"LECROY HEADER BMabcdef"
 
         result = capture_screenshot(instrument, "LECROY,WAVERUNNER 610ZI,123,1.0")  # type: ignore[arg-type]
 
         self.assertEqual(result.file_type, "bmp")
         self.assertEqual(result.content, b"BMabcdef")
         self.assertEqual(instrument.writes, ["HARDCOPY_SETUP DEV,BMP,PORT,GPIB"])
-        self.assertEqual(instrument.binary_queries, ["SCREEN_DUMP"])
+        self.assertEqual(instrument.raw_writes, ["SCREEN_DUMP"])
+
+    def test_e5071c_screenshot_restores_display_on_failure(self) -> None:
+        class FailingBinaryInstrument(FakeInstrument):
+            def query_binary(self, command: str) -> bytes:
+                self.binary_queries.append(command)
+                raise RuntimeError("binary failed")
+
+        instrument = FailingBinaryInstrument(query_responses={":DISP:MENU:STATE?": "1", ":DISP:IMAG?": "NORM", ":DISP:SKEY:STAT?": "1"})
+
+        with self.assertRaises(RuntimeError):
+            capture_screenshot(instrument, "AGILENT TECHNOLOGIES,E5071C,MY123,1.0")  # type: ignore[arg-type]
+
+        self.assertEqual(instrument.writes[-3:], [":DISP:IMAG NORM", ":DISP:SKEY:STAT 1", ":DISP:MENU:STATE 1"])
+
+    def test_infinivision_7000_screenshot_waits_after_query_trigger(self) -> None:
+        class RawInstrument(FakeInstrument):
+            def __init__(self) -> None:
+                super().__init__()
+                self.raw_calls: list[tuple[str, float]] = []
+
+            def read_raw_after_write(self, command: str, delay_s: float = 0.0) -> bytes:
+                self.raw_calls.append((command, delay_s))
+                return b"\x89PNG\r\n\x1a\nDATA"
+
+        instrument = RawInstrument()
+
+        result = capture_screenshot(instrument, "AGILENT TECHNOLOGIES,DSO7034B,MY123,1.0")  # type: ignore[arg-type]
+
+        self.assertEqual(result.file_type, "png")
+        self.assertEqual(instrument.writes, [":HARD:INKS ON"])
+        self.assertEqual(instrument.raw_calls, [(":DISP:DATA? PNG, SCR, COL", 2.0)])
+
+    def test_e740_screenshot_rejects_injected_title_before_title_write(self) -> None:
+        instrument = FakeInstrument()
+
+        with self.assertRaises(ValueError):
+            capture_screenshot(instrument, "AGILENT TECHNOLOGIES,E7405A,US123,1.0", "bad';:INST:DEL")  # type: ignore[arg-type]
+
+        self.assertTrue(instrument.writes[0].startswith(":SYST:TIME "))
+        self.assertTrue(instrument.writes[1].startswith(":SYST:DATE "))
+        self.assertEqual(instrument.writes[2:], [])
+
+    def test_e740_screenshot_uses_unique_temp_filename(self) -> None:
+        instrument = FakeInstrument(binary_responses={})
+
+        capture_screenshot(instrument, "AGILENT TECHNOLOGIES,E7405A,US123,1.0")  # type: ignore[arg-type]
+
+        self.assertNotIn("R:INTUI.WMF", "\n".join([*instrument.writes, *instrument.binary_queries]))
+        self.assertRegex(instrument.writes[-2], r":MMEM:DEL 'R:IV[0-9A-F]{8}\.WMF'")
+
+    def test_keysight_e5071c_sparameters_use_unique_temp_filename(self) -> None:
+        instrument = FakeInstrument(query_responses={":MMEM:TRAN? 'D:\\KILO12345678.s1p';*WAI": "! data"})
+
+        capture_sparameters(instrument, "AGILENT TECHNOLOGIES,E5071C,MY123,1.0", SParameterConfig(format="DB", s1=True))  # type: ignore[arg-type]
+
+        joined = "\n".join([*instrument.writes, *instrument.queries])
+        self.assertNotIn("SNP01", joined)
+        self.assertRegex(joined, r"D:\\KILO[0-9A-F]{8}\.s1p")
+
+    def test_sparameters_rejects_invalid_format_before_writes(self) -> None:
+        instrument = FakeInstrument()
+
+        with self.assertRaises(ValueError):
+            capture_sparameters(instrument, "AGILENT TECHNOLOGIES,E5071C,MY123,1.0", SParameterConfig(format="DB;*RST", s1=True))  # type: ignore[arg-type]
+
+        self.assertEqual(instrument.writes, [])
+
+    def test_znb_sparameters_rejects_port_above_reported_count(self) -> None:
+        instrument = FakeInstrument(query_responses={"INST:NSEL?": "1", "SOUR:GRO:PPOR?": "1,2"})
+
+        with self.assertRaises(ValueError):
+            capture_sparameters(instrument, "Rohde&Schwarz,ZNB8,123,1.0", SParameterConfig(format="DB", s4=True))  # type: ignore[arg-type]
+
+        self.assertEqual(instrument.writes, [])
+
+    def test_znb_sparameters_use_unique_temp_filename(self) -> None:
+        instrument = FakeInstrument(query_responses={"INST:NSEL?": "1", "SOUR:GRO:PPOR?": "1,2", "MMEM:DATA? 'Traces\\kilo12345678.s1p'": "! data"})
+
+        capture_sparameters(instrument, "Rohde&Schwarz,ZNB8,123,1.0", SParameterConfig(format="DB", s1=True))  # type: ignore[arg-type]
+
+        joined = "\n".join([*instrument.writes, *instrument.queries])
+        self.assertNotIn("visatmp", joined)
+        self.assertRegex(joined, r"Traces\\KILO[0-9A-F]{8}\.s1p")
+
+    def test_znb_screenshot_can_capture_full_page(self) -> None:
+        instrument = FakeInstrument()
+
+        capture_screenshot(instrument, "Rohde&Schwarz,ZNB8,123,1.0", znb_full_page=True)  # type: ignore[arg-type]
+
+        self.assertIn("HCOP:PAGE:WIND ALL", instrument.writes)
+        self.assertNotIn("HCOP:PAGE:WIND ACT", instrument.writes)
 
     def test_waveform_export_adds_excel_chart(self) -> None:
         from openpyxl import load_workbook
@@ -467,6 +589,55 @@ class AcquisitionTests(unittest.TestCase):
             self.assertEqual(sheet["B8"].value, 1.0)
             self.assertEqual(len(sheet._charts), 1)
             self.assertEqual(sheet.freeze_panes, "A8")
+
+    def test_excel_export_escapes_formula_like_values(self) -> None:
+        from openpyxl import load_workbook
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "results.xlsx"
+            result = AcquisitionResult(kind="serial log", file_type="csv", content="Name,Value\nDUT,=HYPERLINK(\"http://example.invalid\")\n")
+
+            export = append_result(workbook_path, "COM1", "Serial", result)
+            workbook = load_workbook(export.workbook_path, data_only=False)
+            sheet = workbook[export.sheet_name]
+
+            self.assertEqual(sheet["B8"].value, "'=HYPERLINK(\"http://example.invalid\")")
+
+    def test_excel_export_uses_results_sheet_even_when_other_sheet_active(self) -> None:
+        from openpyxl import Workbook, load_workbook
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "results.xlsx"
+            workbook = Workbook()
+            results = workbook.active
+            results.title = "Results"
+            results.append(["Timestamp", "Address", "IDN", "Kind", "FileType", "ValueOrFile"])
+            data = workbook.create_sheet("Waveform")
+            data.append(["do not append here"])
+            workbook.active = workbook.sheetnames.index("Waveform")
+            workbook.save(workbook_path)
+
+            append_result(workbook_path, "USB::TEST", "IDN", AcquisitionResult(kind="value", file_type="value", content="1.23"))
+            loaded = load_workbook(workbook_path)
+
+            self.assertEqual(loaded["Results"].max_row, 2)
+            self.assertEqual(loaded["Waveform"].max_row, 1)
+
+    def test_excel_export_keeps_nan_inf_as_text(self) -> None:
+        from openpyxl import load_workbook
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "results.xlsx"
+            result = AcquisitionResult(kind="value table", file_type="csv", content="Name,Value\nA,NaN\nB,Inf\nC,-Inf\nD,1.5\n")
+
+            export = append_result(workbook_path, "USB::TEST", "IDN", result)
+            workbook = load_workbook(export.workbook_path)
+            sheet = workbook[export.sheet_name]
+
+            self.assertEqual(sheet["B8"].value, "NaN")
+            self.assertEqual(sheet["B9"].value, "Inf")
+            self.assertEqual(sheet["B10"].value, "'-Inf")
+            self.assertEqual(sheet["B11"].value, 1.5)
 
     def test_large_waveform_export_adds_min_max_extract_for_chart(self) -> None:
         from openpyxl import load_workbook
@@ -600,6 +771,17 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(exports, [("Scope1", "USB::TEST", "png", b"PNGDATA")])
         self.assertIn("Datei: screenshot.png", result.csv_content)
 
+    def test_custom_sequence_znb_screenshot_full_page_param(self) -> None:
+        instrument = FakeInstrument(query_responses={"*IDN?": "Rohde&Schwarz,ZNB8,123,1.0"})
+
+        result = run_custom_sequence(
+            {"ZNB1": instrument},  # type: ignore[dict-item]
+            CustomSequenceConfig(devices={"ZNB1": instrument.address}, steps=[SequenceStep("ZNB1", "capture_screenshot", {"znb_full_page": "ON"})], end_rf_off=False),
+        )
+
+        self.assertEqual(result.ok_count, 1)
+        self.assertIn("HCOP:PAGE:WIND ALL", instrument.writes)
+
     def test_msox3054t_waveform_uses_3000x_scpi(self) -> None:
         instrument = FakeInstrument(
             query_responses={
@@ -720,6 +902,8 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(result.ok_count, 1)
         self.assertEqual(instrument.ssh_commands, [("uname -a", "override", "secret", 12.0)])
         self.assertIn("ssh output", result.csv_content)
+        self.assertIn("password=***", result.csv_content)
+        self.assertNotIn("password=secret", result.csv_content)
 
     def test_parse_ssh_target_supports_user_host_port(self) -> None:
         target = parse_ssh_target("ssh://user@example.local:2222")
@@ -763,8 +947,14 @@ class AcquisitionTests(unittest.TestCase):
             connect_kwargs: dict[str, object] = {}
             command = ""
             closed = False
+            loaded_host_keys = False
+            missing_policy = None
+
+            def load_system_host_keys(self) -> None:
+                self.__class__.loaded_host_keys = True
 
             def set_missing_host_key_policy(self, policy: object) -> None:
+                self.__class__.missing_policy = policy
                 return None
 
             def connect(self, **kwargs: object) -> None:
@@ -777,7 +967,8 @@ class AcquisitionTests(unittest.TestCase):
             def close(self) -> None:
                 self.__class__.closed = True
 
-        fake_paramiko = SimpleNamespace(SSHClient=FakeClient, AutoAddPolicy=lambda: object())
+        reject_policy = object()
+        fake_paramiko = SimpleNamespace(SSHClient=FakeClient, RejectPolicy=lambda: reject_policy)
         import instrument_visa.sequence as sequence_module
 
         original_paramiko = sequence_module.paramiko
@@ -792,6 +983,8 @@ class AcquisitionTests(unittest.TestCase):
         self.assertEqual(FakeClient.connect_kwargs["hostname"], "example.local")
         self.assertEqual(FakeClient.connect_kwargs["port"], 2222)
         self.assertEqual(FakeClient.connect_kwargs["username"], "user")
+        self.assertTrue(FakeClient.loaded_host_keys)
+        self.assertIs(FakeClient.missing_policy, reject_policy)
         self.assertTrue(FakeClient.closed)
 
     def test_read_direct_serial_log_decodes_bytes(self) -> None:
@@ -1050,6 +1243,21 @@ class AcquisitionTests(unittest.TestCase):
             self.assertIsNotNone(export.artifact_path)
             self.assertEqual(export.artifact_path.read_text(encoding="utf-8"), "line 1\nline 2")
 
+    def test_append_result_serializes_concurrent_workbook_writes(self) -> None:
+        from openpyxl import load_workbook
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workbook_path = Path(temp_dir) / "results.xlsx"
+            result = AcquisitionResult(kind="value", file_type="value", content="1.23")
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+                list(executor.map(lambda index: append_result(workbook_path, f"USB::{index}", "TEST", result), range(12)))
+
+            workbook = load_workbook(workbook_path)
+            self.assertEqual(workbook.active.max_row, 13)
+            addresses = [row[1] for row in workbook.active.iter_rows(min_row=2, values_only=True)]
+            self.assertEqual(set(addresses), {f"USB::{index}" for index in range(12)})
+
     def test_picoscope_channel_parsers(self) -> None:
         self.assertEqual(parse_pico_analog_channels("A,B,CHC"), ["A", "B", "C"])
         self.assertEqual(parse_pico_digital_channels("D0-D3,D7"), [0, 1, 2, 3, 7])
@@ -1058,6 +1266,8 @@ class AcquisitionTests(unittest.TestCase):
             parse_pico_analog_channels("Z")
         with self.assertRaises(ValueError):
             parse_pico_digital_channels("D16")
+        with self.assertRaises(ValueError):
+            parse_pico_digital_channels("D7-D0")
 
     def test_picoscope_variant_capabilities(self) -> None:
         self.assertEqual(picoscope_analog_channels_for_variant("2206BMSO"), ("A", "B"))
@@ -1150,6 +1360,22 @@ class AcquisitionTests(unittest.TestCase):
         self.assertIn("Timestamp,CH1 TEMP [degC]", str(result.content))
         self.assertIn(",23.5", str(result.content))
         self.assertEqual(instrument.serial_configs, [(19200, 7, "E", 1.0)])
+
+    def test_34970a_rejects_injected_numeric_params_before_measurement(self) -> None:
+        instrument = FakeInstrument()
+
+        with self.assertRaises(ValueError):
+            read_34970a_data_logger(instrument, DataLogger34970AConfig(measurement="VOLT_DC", channels="1", range_value="10;*RST"))
+
+        self.assertEqual(instrument.queries, [])
+
+    def test_34970a_rejects_invalid_thermocouple_type(self) -> None:
+        instrument = FakeInstrument()
+
+        with self.assertRaises(ValueError):
+            read_34970a_data_logger(instrument, DataLogger34970AConfig(measurement="TEMP", channels="1", thermocouple_type="K;*RST"))
+
+        self.assertEqual(instrument.queries, [])
 
     def test_34970a_excel_export_appends_wide_rows_to_same_sheet(self) -> None:
         from openpyxl import load_workbook
@@ -1352,6 +1578,22 @@ class AcquisitionTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             parse_saleae_channels("D16")
+        with self.assertRaises(ValueError):
+            parse_saleae_channels("-1,D0")
+
+    def test_bool_param_rejects_invalid_text(self) -> None:
+        self.assertTrue(_bool_param({"rf": "ON"}, "rf", False))
+        self.assertFalse(_bool_param({"rf": "nein"}, "rf", True))
+        with self.assertRaises(ValueError):
+            _bool_param({"rf": "treu"}, "rf", False)
+
+    def test_unknown_profile_does_not_advertise_unsupported_features(self) -> None:
+        profile = detect_profile("ACME,MODEL,344-SERIAL,1.0")
+
+        self.assertEqual(profile.key, "unknown")
+        self.assertFalse(profile.supports_screenshot)
+        self.assertFalse(profile.supports_waveform)
+        self.assertFalse(profile.supports_dmm_read)
 
     def test_custom_sequence_saleae_capture_step(self) -> None:
         saleae = FakeInstrument(query_responses={"*IDN?": "Saleae"})
@@ -1427,6 +1669,72 @@ class AcquisitionTests(unittest.TestCase):
         config, output_dir = saleae.saleae_spi_configs[0]
         self.assertIsInstance(config, SaleaeSpiConfig)
         self.assertEqual(config.clock_channel, 2)
+        self.assertEqual(config.enable_channel, -1)
+
+    def test_saleae_spi_capture_without_enable_uses_only_required_channels(self) -> None:
+        from instrument_visa.saleae_client import SaleaeInstrument
+
+        captured: dict[str, object] = {}
+
+        class FakeAutomation:
+            class LogicDeviceConfiguration:
+                def __init__(self, **kwargs: object) -> None:
+                    captured["channels"] = kwargs["enabled_digital_channels"]
+
+            class CaptureConfiguration:
+                def __init__(self, **kwargs: object) -> None:
+                    return None
+
+            class TimedCaptureMode:
+                def __init__(self, duration_seconds: float) -> None:
+                    return None
+
+        class FakeCapture:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+                return None
+
+            def wait(self) -> None:
+                return None
+
+            def add_analyzer(self, *args: object, **kwargs: object) -> object:
+                return object()
+
+            def export_data_table(self, **kwargs: object) -> None:
+                return None
+
+            def save_capture(self, **kwargs: object) -> None:
+                return None
+
+        class FakeManager:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+                return None
+
+            def start_capture(self, **kwargs: object):
+                return FakeCapture()
+
+        import instrument_visa.saleae_client as saleae_module
+
+        original_connect = saleae_module._connect_saleae_manager
+        original_automation = saleae_module._saleae_automation
+        saleae_module._connect_saleae_manager = lambda: FakeManager()  # type: ignore[assignment]
+        saleae_module._saleae_automation = lambda: FakeAutomation  # type: ignore[assignment]
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                SaleaeInstrument().capture_spi(SaleaeSpiConfig(0, 1, 2, -1, 0.01, 1000000), Path(temp_dir))
+        finally:
+            saleae_module._connect_saleae_manager = original_connect  # type: ignore[assignment]
+            saleae_module._saleae_automation = original_automation  # type: ignore[assignment]
+
+        self.assertEqual(captured["channels"], [0, 1, 2])
+
+    def test_sanitized_step_params_redacts_passwords(self) -> None:
+        self.assertEqual(sanitized_step_params({"command": "id", "password": "secret"}), {"command": "id", "password": "***"})
 
     def test_custom_sequence_saleae_can_step(self) -> None:
         saleae = FakeInstrument(query_responses={"*IDN?": "Saleae"})
@@ -1515,6 +1823,71 @@ class AcquisitionTests(unittest.TestCase):
     def test_cli_sequence_config_rejects_invalid_boolean_strings(self) -> None:
         with self.assertRaises(ValueError):
             parse_json_bool("maybe", True)
+
+    def test_cli_list_all_resources_includes_non_visa_devices(self) -> None:
+        import instrument_visa.cli as cli_module
+
+        original_list_resources = cli_module.list_resources
+        original_list_direct_serial_ports = cli_module.list_direct_serial_ports
+        original_list_picoscope_resources = cli_module.list_picoscope_resources
+        original_list_saleae_resources = cli_module.list_saleae_resources
+        cli_module.list_resources = lambda: ["USB::1::INSTR", "COM3"]  # type: ignore[assignment]
+        cli_module.list_direct_serial_ports = lambda: [SimpleNamespace(device="COM3"), SimpleNamespace(device="COM4")]  # type: ignore[assignment]
+        cli_module.list_picoscope_resources = lambda: ["PICO2000A::AUTO"]  # type: ignore[assignment]
+        cli_module.list_saleae_resources = lambda: ["SALEAE::LOCAL"]  # type: ignore[assignment]
+        try:
+            resources = _list_all_resources()
+        finally:
+            cli_module.list_resources = original_list_resources  # type: ignore[assignment]
+            cli_module.list_direct_serial_ports = original_list_direct_serial_ports  # type: ignore[assignment]
+            cli_module.list_picoscope_resources = original_list_picoscope_resources  # type: ignore[assignment]
+            cli_module.list_saleae_resources = original_list_saleae_resources  # type: ignore[assignment]
+
+        self.assertEqual(resources, ["USB::1::INSTR", "COM3", "COM4", "PICO2000A::AUTO", "SALEAE::LOCAL"])
+
+    def test_visa_open_closes_resource_manager_if_open_resource_fails(self) -> None:
+        import instrument_visa.visa_client as visa_module
+
+        class FakeResourceManager:
+            closed = False
+
+            def open_resource(self, address: str) -> object:
+                raise RuntimeError(address)
+
+            def close(self) -> None:
+                self.__class__.closed = True
+
+        original_resource_manager = visa_module.pyvisa.ResourceManager
+        visa_module.pyvisa.ResourceManager = lambda: FakeResourceManager()  # type: ignore[assignment]
+        try:
+            with self.assertRaises(RuntimeError):
+                VisaInstrument("USB::FAIL").open()
+        finally:
+            visa_module.pyvisa.ResourceManager = original_resource_manager  # type: ignore[assignment]
+
+        self.assertTrue(FakeResourceManager.closed)
+
+    def test_visa_close_closes_resource_manager_if_instrument_close_fails(self) -> None:
+        class FakeInstrument:
+            def close(self) -> None:
+                raise RuntimeError("instrument close failed")
+
+        class FakeResourceManager:
+            closed = False
+
+            def close(self) -> None:
+                self.__class__.closed = True
+
+        instrument = VisaInstrument("USB::TEST")
+        instrument._instrument = FakeInstrument()  # type: ignore[attr-defined]
+        instrument._resource_manager = FakeResourceManager()  # type: ignore[attr-defined]
+
+        with self.assertRaises(RuntimeError):
+            instrument.close()
+
+        self.assertTrue(FakeResourceManager.closed)
+        self.assertIsNone(instrument._instrument)  # type: ignore[attr-defined]
+        self.assertIsNone(instrument._resource_manager)  # type: ignore[attr-defined]
 
     def test_custom_sequence_stops_on_step_error_and_cleans_up_generator(self) -> None:
         generator = FakeInstrument(query_responses={"*IDN?": "Rohde&Schwarz,SMIQ03B,123,1.0", ":SOUR:FREQ:CW?": "100000000", ":SOUR:POW?": "-30", ":OUTP?": "1"})

@@ -23,11 +23,6 @@ UNKNOWN_PROFILE = DeviceProfile(
     model_family="Unbekannt",
     device_type="Unbekannt",
     key="unknown",
-    supports_scope_measurements=True,
-    supports_waveform=True,
-    supports_dmm_read=True,
-    supports_screenshot=True,
-    supports_sparameters=True,
 )
 
 
@@ -170,7 +165,9 @@ def detect_profile(idn: str) -> DeviceProfile:
             key="konica_minolta_ca410",
         )
 
-    if "344" in compact or "L44" in compact:
+    model = _idn_model(idn)
+    compact_model = _compact_idn(model)
+    if compact_model.startswith("344") or compact_model.startswith("L44"):
         return DeviceProfile(
             manufacturer="Keysight/Agilent",
             model_family="344xx/L44xx",
@@ -311,3 +308,8 @@ def hmp_channel_count(model_or_idn: str) -> int:
 
 def _compact_idn(idn: str) -> str:
     return "".join(character for character in idn.upper() if character.isalnum())
+
+
+def _idn_model(idn: str) -> str:
+    parts = [part.strip() for part in idn.split(",")]
+    return parts[1] if len(parts) > 1 else idn
