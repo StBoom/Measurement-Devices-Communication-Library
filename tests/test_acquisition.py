@@ -31,6 +31,7 @@ from instrument_visa.picoscope_client import parse_pico_analog_channels, parse_p
 from instrument_visa.saleae_client import SaleaeCanConfig, SaleaeCaptureConfig, SaleaeI2cConfig, SaleaeSpiConfig, SaleaeUartConfig, parse_saleae_channels  # noqa: E402
 from instrument_visa.profiles import detect_profile  # noqa: E402
 from instrument_visa.visa_client import VisaInstrument  # noqa: E402
+from instrument_visa.gui import InstrumentVisaApp  # noqa: E402
 from instrument_visa.sequence import (  # noqa: E402
     CustomSequenceConfig,
     CA410Config,
@@ -1984,6 +1985,107 @@ class AcquisitionTests(unittest.TestCase):
             cli_module.list_saleae_resources = original_list_saleae_resources  # type: ignore[assignment]
 
         self.assertEqual(resources, ["USB::1::INSTR", "COM3", "COM4", "PICO2000A::AUTO", "SALEAE::LOCAL"])
+
+    def test_gui_prefers_asrl_for_power_supply_operations(self) -> None:
+        app = object.__new__(InstrumentVisaApp)
+        app.last_found_resources = ["ASRL4::INSTR", "COM4"]
+        app.saved_devices = {}
+        app.current_profile = detect_profile("ROHDE&SCHWARZ,HMP4030,100980,HW50020003/SW2.62")
+        app.logger = SimpleNamespace(info=lambda *args, **kwargs: None)
+
+        self.assertEqual(InstrumentVisaApp._instrument_address_for_operation(app, "COM4"), "ASRL4::INSTR")
+
+    def test_gui_keeps_com_for_ca410_operations(self) -> None:
+        app = object.__new__(InstrumentVisaApp)
+        app.last_found_resources = ["ASRL3::INSTR", "COM3"]
+        app.saved_devices = {}
+        app.current_profile = InstrumentVisaApp._ca410_profile(app)
+        app.logger = SimpleNamespace(info=lambda *args, **kwargs: None)
+
+        self.assertEqual(InstrumentVisaApp._instrument_address_for_operation(app, "COM3"), "COM3")
+
+    def test_gui_keeps_com_for_34970a_operations(self) -> None:
+        app = object.__new__(InstrumentVisaApp)
+        app.last_found_resources = ["ASRL7::INSTR", "COM7"]
+        app.saved_devices = {}
+        app.current_profile = detect_profile("HEWLETT-PACKARD,34970A,0,13-2-2")
+        app.logger = SimpleNamespace(info=lambda *args, **kwargs: None)
+
+        self.assertEqual(InstrumentVisaApp._instrument_address_for_operation(app, "COM7"), "COM7")
+
+    def test_gui_search_reports_asrl_profile_with_asrl_address(self) -> None:
+        app = object.__new__(InstrumentVisaApp)
+        app._canonical_address = InstrumentVisaApp._canonical_address.__get__(app, InstrumentVisaApp)
+        app._serial_port_for_address = InstrumentVisaApp._serial_port_for_address.__get__(app, InstrumentVisaApp)
+        app._serial_unknown_profile = InstrumentVisaApp._serial_unknown_profile.__get__(app, InstrumentVisaApp)
+        app._saved_device_for_address = lambda address: None  # type: ignore[method-assign]
+        app.logger = SimpleNamespace(info=lambda *args, **kwargs: None)
+        messages: list[tuple[str, object]] = []
+        app._messages = SimpleNamespace(put=messages.append)
+
+        import instrument_visa.gui as gui_module
+
+        class FakeVisa:
+            def __init__(self, address: str, timeout_ms: int = 1500) -> None:
+                self.address = address
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback) -> None:
+                return None
+
+            def info(self):
+                from instrument_visa.visa_client import InstrumentInfo
+
+                return InstrumentInfo(self.address, "ROHDE&SCHWARZ,HMP4030,100980,HW50020003/SW2.62")
+
+        original_visa = gui_module.VisaInstrument
+        gui_module.VisaInstrument = FakeVisa  # type: ignore[assignment]
+        try:
+            results = InstrumentVisaApp._identify_discovered_resources(app, ["ASRL4::INSTR", "COM4"])
+        finally:
+            gui_module.VisaInstrument = original_visa  # type: ignore[assignment]
+
+        self.assertEqual(results, ["ASRL4::INSTR: IDN erkannt - ROHDE&SCHWARZ,HMP4030,100980,HW50020003/SW2.62"])
+        self.assertEqual(messages[0][1][1], "ASRL4::INSTR")
+
+    def test_gui_search_reports_34970a_profile_with_com_address(self) -> None:
+        app = object.__new__(InstrumentVisaApp)
+        app._canonical_address = InstrumentVisaApp._canonical_address.__get__(app, InstrumentVisaApp)
+        app._serial_port_for_address = InstrumentVisaApp._serial_port_for_address.__get__(app, InstrumentVisaApp)
+        app._serial_unknown_profile = InstrumentVisaApp._serial_unknown_profile.__get__(app, InstrumentVisaApp)
+        app._saved_device_for_address = lambda address: None  # type: ignore[method-assign]
+        app.logger = SimpleNamespace(info=lambda *args, **kwargs: None)
+        messages: list[tuple[str, object]] = []
+        app._messages = SimpleNamespace(put=messages.append)
+
+        import instrument_visa.gui as gui_module
+
+        class FakeVisa:
+            def __init__(self, address: str, timeout_ms: int = 1500) -> None:
+                self.address = address
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback) -> None:
+                return None
+
+            def info(self):
+                from instrument_visa.visa_client import InstrumentInfo
+
+                return InstrumentInfo(self.address, "HEWLETT-PACKARD,34970A,0,13-2-2")
+
+        original_visa = gui_module.VisaInstrument
+        gui_module.VisaInstrument = FakeVisa  # type: ignore[assignment]
+        try:
+            results = InstrumentVisaApp._identify_discovered_resources(app, ["ASRL7::INSTR", "COM7"])
+        finally:
+            gui_module.VisaInstrument = original_visa  # type: ignore[assignment]
+
+        self.assertEqual(results, ["COM7: IDN erkannt - HEWLETT-PACKARD,34970A,0,13-2-2"])
+        self.assertEqual(messages[0][1][1], "COM7")
 
     def test_visa_open_closes_resource_manager_if_open_resource_fails(self) -> None:
         import instrument_visa.visa_client as visa_module

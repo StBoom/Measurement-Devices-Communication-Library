@@ -2239,8 +2239,9 @@ class InstrumentVisaApp(tk.Tk):
                     profile = detect_profile(idn)
                     if profile.key == "unknown":
                         profile = self._serial_unknown_profile()
-                    self._messages.put(("profile", (profile, port, idn, serial_settings)))
-                    results.append(f"{port}: IDN erkannt - {idn}")
+                    profile_address = port if profile.key == "keysight_34970a" else address
+                    self._messages.put(("profile", (profile, profile_address, idn, None)))
+                    results.append(f"{profile_address}: IDN erkannt - {idn}")
                     continue
 
             try:
@@ -2957,7 +2958,7 @@ class InstrumentVisaApp(tk.Tk):
         )
 
     def _open_instrument(self):
-        address = self.address_var.get().strip()
+        address = self._instrument_address_for_operation(self.address_var.get().strip())
         if not address:
             raise ValueError("Bitte eine VISA-Adresse eintragen.")
         if address.upper().startswith("ASRL"):
@@ -2965,6 +2966,14 @@ class InstrumentVisaApp(tk.Tk):
         if address.upper().startswith(("COM", "PICO::", "PICO2000A::", "SALEAE::")):
             return create_sequence_instrument(address, timeout_ms=10000)
         return VisaInstrument(address=address, timeout_ms=10000)
+
+    def _instrument_address_for_operation(self, address: str) -> str:
+        address = address.strip()
+        preferred = self._preferred_asrl_address(address)
+        if preferred and self._should_prefer_asrl_for_current_profile(address):
+            self.logger.info("Using ASRL resource for SCPI operation current=%s preferred=%s profile=%s", address, preferred, self.current_profile.key)
+            return preferred
+        return address
 
     def _output_path(self) -> Path:
         output = self.output_var.get().strip()
@@ -3177,6 +3186,28 @@ class InstrumentVisaApp(tk.Tk):
         candidate_normalized = candidate.strip().upper()
         current_normalized = current.strip().upper()
         return candidate_normalized.startswith("ASRL") and current_normalized.startswith("COM")
+
+    def _preferred_asrl_address(self, address: str) -> str:
+        normalized = address.strip().upper()
+        if normalized.startswith("ASRL"):
+            return address.strip()
+        if not normalized.startswith("COM") or not normalized[3:].isdigit():
+            return ""
+        port = int(normalized[3:])
+        candidates = [*self.last_found_resources, *self.saved_devices.keys()]
+        for candidate in candidates:
+            candidate_normalized = str(candidate).strip().upper()
+            if candidate_normalized == f"ASRL{port}::INSTR":
+                return str(candidate).strip()
+        return ""
+
+    def _should_prefer_asrl_for_current_profile(self, address: str) -> bool:
+        normalized = address.strip().upper()
+        if not normalized.startswith("COM"):
+            return False
+        if self.current_profile.key in {"konica_minolta_ca410", "direct_serial", "keysight_34970a"}:
+            return False
+        return self.current_profile.supports_power_supply or self.current_profile.supports_signal_generator or self.current_profile.supports_dmm_read or self.current_profile.supports_scope_measurements or self.current_profile.supports_waveform or self.current_profile.supports_screenshot or self.current_profile.supports_sparameters
 
     def _resource_display_label(self, address: str, numbering: dict[str, str] | None = None) -> str:
         saved = self._saved_device_for_address(address)
